@@ -2,7 +2,7 @@
 
 //RootController
 app.run(function($rootScope, search, api) {
-  var $scope = (window.scope = $rootScope);
+  var $scope = $rootScope;
 
   //velox
   $scope.state = {};

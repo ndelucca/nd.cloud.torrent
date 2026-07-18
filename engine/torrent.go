@@ -6,6 +6,8 @@ import (
 	"github.com/anacrolix/torrent"
 )
 
+// Torrent is the view model handed to the server and marshalled straight to the
+// browser. Exported field names are part of the UI contract.
 type Torrent struct {
 	//anacrolix/torrent
 	InfoHash   string
@@ -16,13 +18,15 @@ type Torrent struct {
 	Files      []*File
 	//cloud torrent
 	Started      bool
-	Dropped      bool
 	Percent      float32
 	DownloadRate float32
-	t            *torrent.Torrent
-	updatedAt    time.Time
+	//internal — never leaves the engine
+	t         *torrent.Torrent
+	spec      *torrent.TorrentSpec
+	updatedAt time.Time
 }
 
+// File is the per-file view model.
 type File struct {
 	//anacrolix/torrent
 	Path      string
@@ -32,73 +36,92 @@ type File struct {
 	//cloud torrent
 	Started bool
 	Percent float32
-	f       *torrent.File
 }
 
-func (torrent *Torrent) Update(t *torrent.Torrent) {
-	torrent.Name = t.Name()
-	torrent.Loaded = t.Info() != nil
-	if torrent.Loaded {
-		torrent.updateLoaded(t)
+// clone returns a deep copy safe to hand to another goroutine. The internal
+// handles are deliberately dropped: callers outside the engine must not be able
+// to reach the underlying client.
+func (t *Torrent) clone() *Torrent {
+	c := *t
+	c.t = nil
+	c.spec = nil
+	c.Files = make([]*File, len(t.Files))
+	for i, f := range t.Files {
+		if f == nil {
+			continue
+		}
+		cf := *f
+		c.Files[i] = &cf
 	}
-	torrent.t = t
+	return &c
 }
 
-func (torrent *Torrent) updateLoaded(t *torrent.Torrent) {
-
-	torrent.Size = t.Length()
-	totalChunks := 0
-	totalCompleted := 0
-
-	tfiles := t.Files()
-	if len(tfiles) > 0 && torrent.Files == nil {
-		torrent.Files = make([]*File, len(tfiles))
+// update copies live state out of the underlying torrent. Callers must hold the
+// engine mutex.
+func (t *Torrent) update(tt *torrent.Torrent) {
+	t.Name = tt.Name()
+	t.Loaded = tt.Info() != nil
+	if t.Loaded {
+		t.updateLoaded(tt)
 	}
-	//merge in files
+	t.t = tt
+}
+
+func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
+	t.Size = tt.Length()
+
+	tfiles := tt.Files()
+	// Resize on every pass: the file list is only trustworthy once info has
+	// arrived, and an under-sized slice used to panic on index.
+	if len(t.Files) != len(tfiles) {
+		resized := make([]*File, len(tfiles))
+		copy(resized, t.Files)
+		t.Files = resized
+	}
 	for i, f := range tfiles {
-		path := f.Path()
-		file := torrent.Files[i]
+		file := t.Files[i]
 		if file == nil {
-			file = &File{Path: path}
-			torrent.Files[i] = file
+			file = &File{Path: f.Path(), Started: t.Started}
+			t.Files[i] = file
 		}
 		chunks := f.State()
-
-		file.Size = f.Length()
-		file.Chunks = len(chunks)
 		completed := 0
 		for _, p := range chunks {
 			if p.Complete {
 				completed++
 			}
 		}
+		file.Size = f.Length()
+		file.Chunks = len(chunks)
 		file.Completed = completed
-		file.Percent = percent(int64(file.Completed), int64(file.Chunks))
-		file.f = f
-
-		totalChunks += file.Chunks
-		totalCompleted += file.Completed
+		file.Percent = percent(int64(completed), int64(len(chunks)))
 	}
 
-	//cacluate rate
 	now := time.Now()
-	bytes := t.BytesCompleted()
-	torrent.Percent = percent(bytes, torrent.Size)
-	if !torrent.updatedAt.IsZero() {
-		dt := float32(now.Sub(torrent.updatedAt))
-		db := float32(bytes - torrent.Downloaded)
-		rate := db * (float32(time.Second) / dt)
-		if rate >= 0 {
-			torrent.DownloadRate = rate
+	bytes := tt.BytesCompleted()
+	t.Percent = percent(bytes, t.Size)
+	// Rate is a derivative, so it needs both a previous sample and a non-zero
+	// interval — a zero dt used to yield +Inf, which fails json.Marshal and
+	// freezes the entire UI.
+	if dt := now.Sub(t.updatedAt); !t.updatedAt.IsZero() && dt > 0 {
+		if db := bytes - t.Downloaded; db >= 0 {
+			t.DownloadRate = float32(float64(db) * float64(time.Second) / float64(dt))
+		} else {
+			// Bytes went backwards (torrent was re-added); the old rate is
+			// meaningless now.
+			t.DownloadRate = 0
 		}
 	}
-	torrent.Downloaded = bytes
-	torrent.updatedAt = now
+	t.Downloaded = bytes
+	t.updatedAt = now
 }
 
+// percent returns n/total as a percentage rounded to two decimals.
 func percent(n, total int64) float32 {
 	if total == 0 {
-		return float32(0)
+		return 0
 	}
-	return float32(int(float64(10000)*(float64(n)/float64(total)))) / 100
+	const scale = 100 // two decimal places
+	pct := float64(n) / float64(total) * 100
+	return float32(int64(pct*scale)) / scale
 }

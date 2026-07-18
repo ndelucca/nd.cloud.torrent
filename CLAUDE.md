@@ -91,7 +91,7 @@ Cloud Torrent: self-hosted remote torrent client in Go. A single binary embeds a
 - `version` is injected at build time with `-ldflags "-X main.version=..."`; the `0.0.0-src` default means an unreleased local build
 - Runtime config persists to `cloud-torrent.json` (path overridable with `--config-path`)
 
-Request flow: `main` → `server.Server.Run` → handler chain (requestlog → cookieauth → gzip → `Server.handle`) → velox sync / scraper search / `/api/*` / static files.
+Request flow: `main` → `server.New` → `Server.Run` → handler chain (requestlog → security headers → cookieauth → gzip → `Server.route`) → velox sync / scraper search / `/api/*` / `/download/` / static files.
 
 ## Repo-Wide Contracts
 
@@ -102,14 +102,15 @@ Request flow: `main` → `server.Server.Run` → handler chain (requestlog → c
 ## Work Guidance
 
 - Keep the binary dependency-free at runtime: `CGO_ENABLED=0` builds must keep working across linux/darwin/windows/openbsd
-- Prefer standard library and the already-vendored `jpillora/*` helpers over new dependencies
+- Prefer the standard library. Several `jpillora/*` helpers are single-maintainer and pre-1.0 — `velox` (real-time transport) and `cookieauth` (all authentication) are the load-bearing ones; weigh that before depending on more.
 - Run `go mod tidy` after touching `go.mod`
 
 ## Verification
 
 - `go build -v -o /dev/null .`
-- `go test -v ./...` (no test files exist yet; the command must still pass)
-- CI runs both on every push and pull request
+- `go vet ./...` and `gofmt -l .` (both must be clean; CI enforces them)
+- `go test -race ./...` — the race detector is not optional here: the bugs this codebase actually shipped were unsynchronized map access
+- CI runs these plus `staticcheck` and `govulncheck` on every push and pull request, across linux/macos/windows
 
 ## Child DOX Index
 

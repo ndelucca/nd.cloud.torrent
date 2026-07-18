@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/jpillora/cloud-torrent/server"
 	"github.com/jpillora/opts"
@@ -10,19 +14,25 @@ import (
 var version = "0.0.0-src" //set with ldflags
 
 func main() {
-	s := server.Server{
-		Title:      "Cloud Torrent",
-		Port:       3000,
-		ConfigPath: "cloud-torrent.json",
+	o := server.DefaultOptions()
+
+	p := opts.New(&o)
+	p.Version(version)
+	p.PkgRepo()
+	p.SetLineWidth(96)
+	p.Parse()
+
+	// Ctrl-C and SIGTERM trigger a graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	s, err := server.New(o, version)
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer s.Close()
 
-	o := opts.New(&s)
-	o.Version(version)
-	o.PkgRepo()
-	o.SetLineWidth(96)
-	o.Parse()
-
-	if err := s.Run(version); err != nil {
+	if err := s.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
 }

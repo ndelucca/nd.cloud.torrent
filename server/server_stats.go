@@ -1,15 +1,16 @@
 package server
 
 import (
+	"log"
 	"runtime"
 
-	velox "github.com/jpillora/velox/go"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
-type stats struct {
+// SystemStats is a point-in-time sample of host resource usage.
+type SystemStats struct {
 	Set         bool    `json:"set"`
 	CPU         float64 `json:"cpu"`
 	DiskUsed    int64   `json:"diskUsed"`
@@ -18,32 +19,51 @@ type stats struct {
 	MemoryTotal int64   `json:"memoryTotal"`
 	GoMemory    int64   `json:"goMemory"`
 	GoRoutines  int     `json:"goRoutines"`
-	//internal
-	pusher velox.Pusher
 }
 
-func (s *stats) loadStats(diskDir string) {
-	//count cpu cycles between last count
+// sampleSystemStats collects a fresh sample. It is a pure function of the host:
+// it neither mutates shared state nor pushes, so the caller decides both.
+//
+// cpu.Percent(0, false) reports usage since the previous call in this process,
+// so the caller's sampling period defines the measurement window.
+func sampleSystemStats(diskDir string) SystemStats {
+	var s SystemStats
+	// Set reports whether *every* source succeeded; a partial sample would
+	// otherwise show stale numbers as though they were current.
+	ok := true
+
 	if percents, err := cpu.Percent(0, false); err == nil && len(percents) == 1 {
 		s.CPU = percents[0]
+	} else {
+		ok = false
+		logStatErr("cpu", err)
 	}
-	//count disk usage
 	if stat, err := disk.Usage(diskDir); err == nil {
 		s.DiskUsed = int64(stat.Used)
 		s.DiskTotal = int64(stat.Total)
+	} else {
+		ok = false
+		logStatErr("disk", err)
 	}
-	//count memory usage
 	if stat, err := mem.VirtualMemory(); err == nil {
 		s.MemoryUsed = int64(stat.Used)
 		s.MemoryTotal = int64(stat.Total)
+	} else {
+		ok = false
+		logStatErr("memory", err)
 	}
-	//count total bytes allocated by the go runtime
+
 	memStats := runtime.MemStats{}
 	runtime.ReadMemStats(&memStats)
 	s.GoMemory = int64(memStats.Alloc)
-	//count current number of goroutines
 	s.GoRoutines = runtime.NumGoroutine()
-	//done
-	s.Set = true
-	s.pusher.Push()
+
+	s.Set = ok
+	return s
+}
+
+func logStatErr(what string, err error) {
+	if err != nil {
+		log.Printf("stats: %s sample failed: %s", what, err)
+	}
 }

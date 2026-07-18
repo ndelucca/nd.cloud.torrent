@@ -1,8 +1,14 @@
 name: CI
 on:
   pull_request: {}
-  push: {}
-permissions: write-all
+  push:
+    branches: ["master", "refactor/**"]
+    tags: ["v*"]
+
+# Least privilege by default; jobs that need more opt in explicitly.
+permissions:
+  contents: read
+
 jobs:
   # ================
   # BUILD AND TEST JOB
@@ -10,69 +16,114 @@ jobs:
   test:
     name: Build & Test
     strategy:
+      fail-fast: false
       matrix:
-        # optionally test/build across multiple platforms/Go-versions
-        go-version: ["1.23"]
-        platform: [ubuntu-latest]
+        # Must stay >= the `go` directive in go.mod.
+        go-version: ["1.25"]
+        platform: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
           check-latest: true
+          cache: true
+      - name: gofmt
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
       - name: Build
         run: go build -v -o /dev/null .
-      - name: Test
-        run: go test -v ./...
+      - name: Test (race)
+        run: go test -race -v ./...
+
+  # ================
+  # STATIC ANALYSIS + VULN SCAN
+  # ================
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: "latest"
+          install-go: false
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   # ================
   # RELEASE BINARIES (on push "v*" tag)
   # ================
   release_binaries:
     name: Release Binaries
-    needs: test
+    needs: [test, analyze]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          distribution: goreleaser # or 'goreleaser-pro'
-          version: "~> v2" # or 'latest', 'nightly', semver
+          distribution: goreleaser
+          version: "~> v2"
           args: release --config .github/goreleaser.yml
         env:
           GITHUB_USER: ${{ github.repository_owner }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ================
   # RELEASE DOCKER IMAGES (on push "v*" tag)
   # ================
   release_docker:
     name: Release Docker Images
-    needs: test
+    needs: [test, analyze]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          # goreleaser and the Dockerfile both derive the version from tags.
+          fetch-depth: 0
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -80,11 +131,14 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
       - name: Build and push
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v6
         with:
+          context: .
           file: .github/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/ppc64le,linux/386,linux/arm/v7,linux/arm/v6
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

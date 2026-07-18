@@ -6,35 +6,44 @@ The process shell and every HTTP surface: flag/config handling, the velox-synced
 
 ## Ownership
 
-- `server.go` — `Server` struct (CLI flags + shared `state`), `Run`, `reconfigure`, and the `handle` router
+- `server.go` — `Options` (CLI flags), `Server` runtime, `New`, `Run`, `reconfigure`, the `route` dispatcher and the middleware chain
+- `state.go` — the named `State` type, its `Update`/`Read` accessors and the `Stats` block
+- `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
 - `server_api.go` — `/api/*` actions: `url`, `magnet`, `torrentfile`, `configure`, `torrent`, `file`
 - `server_files.go` — `fsNode` tree of the download directory, static/download file serving, archive downloads
-- `server_search.go` — search provider config: embedded default plus a periodic fetch of a remote scraper config
-- `server_stats.go` — `stats` struct sampled from `gopsutil` (CPU, disk, memory, goroutines)
+- `server_search.go` — search providers: `search-config.json` embedded via `go:embed`, plus an opt-in periodic fetch of a remote scraper config
+- `server_stats.go` — `SystemStats` and `sampleSystemStats`, a pure sampler over `gopsutil/v4`
 
 ## Local Contracts
 
-- Routing in `handle` is prefix-based and order-sensitive: `/js/velox.js` → `/sync` → `/search` → `/api/` → static files as fallback. Anything unmatched is treated as a static file request.
-- `s.state` is the single source of truth pushed to browsers. Every mutation must be followed by `s.state.Push()`, and concurrent writers must hold `s.state.Mutex`.
+- Routing in `route` is prefix-based and order-sensitive: `/js/velox.js` → `/sync` → `/search`(+`/search/`) → `/api/` → `/download/` → static files as fallback.
+- `s.state` is the single source of truth pushed to browsers. Mutate it **only** through `State.Update`, which takes the lock and pushes; read through `State.Read`.
+- Wire it with `velox.SyncHandler(&s.state)`, never `velox.Sync`: the latter builds a detached `State`, leaving the embedded one without a `Data` function so every `Push` is a silent no-op.
 - Exported field names inside `state` are the wire format consumed by the AngularJS app — renaming one breaks the UI
-- API handlers take only `*http.Request` and return `error`: nil renders `200 OK`, non-nil renders `400` with the raw error text. Error strings are user-visible.
+- API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine sentinels → 404/409/501/503, `apiError` carries its own). Error strings are user-visible.
+- All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`); the bodies are `text/plain`, which browsers send cross-origin without a preflight.
+- `/download/` paths must go through `resolveWithin`, which uses `filepath.Rel` plus symlink resolution — a prefix check has no separator boundary.
+- `/api/url` fetches through `guardedDialContext`, which refuses loopback, private and link-local addresses.
 - All API calls must be `POST`; the action is the path suffix after `/api/`
-- `reconfigure` absolutizes the download directory, applies it to the engine, then writes `ConfigPath` — the engine restart happens before the file is persisted
-- Two background goroutines run for the process lifetime: torrent/file polling every 1s and stats sampling every 5s
+- `reconfigure` absolutizes the download directory, applies it to the engine, then writes `ConfigPath` (0600) — the engine restart happens before the file is persisted, so a failed restart persists nothing
+- Three background goroutines run until the `Run` context is cancelled: torrent/file polling (1s), stats sampling (5s) and the optional search-config fetch
+- `Run` shuts down gracefully on context cancellation; `Close` releases the engine
 - HTTP/2 is disabled via an empty `TLSNextProto` because velox misbehaves under it. Do not re-enable it.
 - TLS requires both `CertPath` and `KeyPath` or startup fails
 
 ## Work Guidance
 
-- New CLI options are struct tags on `Server`; `jpillora/opts` derives flags, `help`, and `env` from them
-- `server_search.go` reaches out to a hardcoded gist URL on a backoff loop; failures are intentionally non-fatal
+- New CLI options are struct tags on `Options`; `jpillora/opts` derives flags, `help`, and `env` from them. Defaults live in `DefaultOptions`, not in `main`.
+- The remote search-config fetch is opt-in via `--search-config-url`; it is off by default because that document dictates which hosts the server will contact. Pass the scraper a **copy** of the config bytes: its selector unmarshaler mutates the buffer.
+- The scraper handler is wrapped in `readOnly` (it treats POST at its root as "replace my whole config") and `safeSearchParams` (it only escapes params that appear after `?` in a provider URL)
 - `fileNumberLimit` caps the listed download tree — keep the traversal bounded
 
 ## Verification
 
 - `go build ./...`
-- `go test ./...`
-- Manual: `go run . --port 3000` and confirm the UI connects (lightning icon turns green, meaning `/sync` is live)
+- `go test -race ./...`
+- Manual: `go run . --port 3000` and confirm the UI connects (lightning icon turns green). To prove pushes are live rather than a single snapshot:
+  `curl -sN -H 'Accept: text/event-stream' 'localhost:3000/sync?v=eventsource'` must show an increasing `version`.
 
 ## Child DOX Index
 

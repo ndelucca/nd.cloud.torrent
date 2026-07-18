@@ -1,0 +1,8 @@
+.git
+.github
+dist
+downloads
+tmp
+cloud-torrent.json
+dev.sh
+*.md

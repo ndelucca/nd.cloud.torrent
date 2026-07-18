@@ -1,7 +1,6 @@
 /* globals app,window */
 
 app.factory("api", function($rootScope, $http, reqerr) {
-  window.http = $http;
   var request = function(action, data) {
     var url = "api/" + action;
     $rootScope.apiing = true;
