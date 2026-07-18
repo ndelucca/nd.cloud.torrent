@@ -30,6 +30,18 @@
         <p class="muted">Connecting…</p>
       </div>
     </section>
+
+    <section class="panel">
+      <h2>Downloads</h2>
+      {{/* Pulled rather than streamed. The server only pings when the tree
+           actually changed; see downloadsChangedEvent. */}}
+      <div id="downloads"
+           hx-get="/fragments/downloads"
+           hx-trigger="load, sse:downloads-changed delay:300ms"
+           hx-swap="innerHTML">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
   </main>
 
   <footer id="stats" class="stats" sse-swap="stats" hx-swap="morph:innerHTML">

@@ -160,3 +160,74 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
   font-size: .78rem;
   color: var(--muted);
 }
+
+/* --- download tree ------------------------------------------------------- */
+.tree-list { list-style: none; margin: 0; padding-left: 1.1rem; }
+.tree > .tree-list { padding-left: 0; }
+
+.tree-item { border-radius: 6px; }
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .2rem .35rem;
+  border-radius: 6px;
+}
+.tree-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+.caret {
+  display: inline-block;
+  transition: transform .12s ease;
+  color: var(--muted);
+}
+.caret.is-open { transform: rotate(90deg); }
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-name.is-file { color: var(--accent); text-decoration: none; }
+.tree-name.is-file:hover { text-decoration: underline; }
+
+.tree-meta { margin-left: auto; font-size: .74rem; color: var(--muted); white-space: nowrap; }
+.tree-actions { display: flex; gap: .2rem; }
+
+.icon-btn {
+  font: inherit;
+  font-size: .78rem;
+  line-height: 1;
+  padding: .2rem .4rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.icon-btn:hover { border-color: var(--line); color: var(--text); }
+.icon-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.tree-preview { padding: .4rem 0 .4rem 1.5rem; }
+.tree-preview video, .tree-preview img, .tree-preview audio { max-width: 100%; border-radius: 6px; }
+
+.warn {
+  margin: 0 0 .5rem;
+  padding: .4rem .6rem;
+  border-radius: 6px;
+  font-size: .8rem;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}

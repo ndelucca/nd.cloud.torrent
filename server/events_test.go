@@ -246,11 +246,20 @@ func TestIdleServerIsQuiet(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go s.pollLoop(ctx)
-	go s.statsLoop(ctx)
 
 	ts := httptest.NewServer(s.handler())
 	defer ts.Close()
+
+	// Warm the regions before measuring. Each region's very first render is a
+	// legitimate one-time event; counting those as steady traffic would make
+	// the bound depend on how many regions exist rather than on whether
+	// suppression works.
+	s.renderRegions()
+	s.renderTorrents(s.engine.GetTorrents())
+	s.renderDownloads(s.listFiles())
+
+	go s.pollLoop(ctx)
+	go s.statsLoop(ctx)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events", nil)
 	if err != nil {

@@ -38,6 +38,68 @@
     };
   }
 
+  // --- download tree state --------------------------------------------------
+  //
+  // The tree fragment is re-fetched and replaced wholesale whenever it changes,
+  // so per-node state cannot live in the DOM. localStorage is what makes a
+  // folder stay open across a refetch, a page reload, and an EventSource
+  // reconnect — and reconnects do happen (laptop sleep, wifi), so without this
+  // the tree would silently re-collapse and read as broken.
+  //
+  // The key comes from data-path rather than being interpolated into x-data:
+  // Alpine leaves _x_marker set on an initialised element, so changing an
+  // x-data expression in place never re-initialises and breaks permanently.
+  var TREE_KEY = "ct.tree.";
+
+  function readOpen(id, dflt) {
+    try {
+      var v = localStorage.getItem(TREE_KEY + id);
+      return v === null ? dflt : v === "1";
+    } catch (e) {
+      return dflt; // private mode, quota, or storage disabled
+    }
+  }
+
+  function writeOpen(id, open) {
+    try {
+      localStorage.setItem(TREE_KEY + id, open ? "1" : "0");
+    } catch (e) { /* non-fatal: the tree just will not remember */ }
+  }
+
+  window.treeNode = function () {
+    return {
+      open: false,
+      preview: false,
+      confirm: false,
+      init: function () {
+        var id = this.$el.dataset.id;
+        // Top-level entries default to open, deeper ones to closed, so a fresh
+        // visit shows something useful without unfolding an entire tree.
+        this.open = readOpen(id, this.$el.closest(".tree-list") === this.$el.parentElement &&
+          this.$el.parentElement.parentElement.classList.contains("tree"));
+        this.$watch("open", function (v) { writeOpen(id, v); });
+      },
+      ask: function () {
+        var self = this;
+        this.confirm = true;
+        // Revert on its own, so a half-pressed delete does not sit armed.
+        setTimeout(function () { self.confirm = false; }, 3000);
+      },
+    };
+  };
+
+  window.treeLeaf = function () {
+    return {
+      preview: false,
+      confirm: false,
+      ask: function () {
+        var self = this;
+        this.confirm = true;
+        setTimeout(function () { self.confirm = false; }, 3000);
+      },
+    };
+  };
+
   // --- connection indicator -------------------------------------------------
   function setConn(state) {
     var el = document.getElementById("connection");

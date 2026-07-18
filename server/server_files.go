@@ -21,6 +21,9 @@ type fsNode struct {
 	Size     int64
 	Modified time.Time
 	Children []*fsNode
+	// IsDir is recorded rather than inferred from len(Children): an empty
+	// directory has no children but is still a directory.
+	IsDir bool `json:",omitempty"`
 	// Truncated marks a tree that hit fileNumberLimit, so the UI can say so
 	// instead of presenting a partial listing as complete.
 	Truncated bool `json:",omitempty"`
@@ -69,6 +72,7 @@ func list(path string, info os.FileInfo, node *fsNode, n *int) error {
 	node.Name = info.Name()
 	node.Size = info.Size()
 	node.Modified = info.ModTime()
+	node.IsDir = info.IsDir()
 	if !info.IsDir() {
 		return nil
 	}

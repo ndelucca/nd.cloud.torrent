@@ -26,11 +26,19 @@ inside the per-torrent swap target.
         Files
       </button>
     </div>
-    {{/* Loaded on first expand, not streamed: the file table is the bulky part
-         and the server has no idea whether it is open. */}}
+    {{/* Fetched on expand, not streamed: the file table is the bulky part and
+         the server has no idea whether a row is open.
+
+         from:closest article, because Alpine's $dispatch bubbles UP from the
+         button and this panel is the button's SIBLING — an event listener here
+         would never see it.
+
+         Deliberately not `once`: re-fetching on each expand costs one request
+         and keeps per-file progress current, where `once` would freeze the
+         table at whatever it showed the first time. */}}
     <div id="tf-{{.InfoHash}}" class="torrent-files" x-show="files" x-cloak
          hx-get="/fragments/torrent/{{.InfoHash}}/files"
-         hx-trigger="load-files once"
+         hx-trigger="load-files from:closest article"
          hx-swap="innerHTML">
       <p class="muted">Loading files…</p>
     </div>

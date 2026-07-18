@@ -297,6 +297,7 @@ func (s *Server) pollLoop(ctx context.Context) {
 			})
 			s.renderRegions()
 			s.renderTorrents(torrents)
+			s.renderDownloads(downloads)
 		}
 		select {
 		case <-ctx.Done():

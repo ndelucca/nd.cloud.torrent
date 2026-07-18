@@ -1,0 +1,79 @@
+{{define "downloads"}}
+<div class="tree">
+  {{if .Truncated}}
+  <p class="warn">Showing the first {{.Limit}} entries only — this directory has more.</p>
+  {{end}}
+  {{if not .Root.Children}}
+  <p class="muted">Nothing downloaded yet.</p>
+  {{else}}
+  <ul class="tree-list">
+    {{range .Root.Children}}{{template "fsnode" .}}{{end}}
+  </ul>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+fsnode recurses into itself. It opens and closes in HTML text context, which is
+what keeps html/template's contextual autoescaper able to reach a fixed point —
+recursing from inside an attribute or a <script> fails with ErrOutputContext at
+parse time.
+
+x-data is a constant literal on purpose. Alpine skips re-initialisation when an
+already-initialised element's x-data value changes (it leaves _x_marker set), so
+interpolating server data into it breaks silently and permanently. The path
+arrives via data-path instead and treeNode() reads it from $el.
+*/}}
+{{define "fsnode"}}
+<li class="tree-item{{if .IsDir}} is-dir{{end}}" id="n-{{.ID}}" data-path="{{.Path}}" data-id="{{.ID}}"
+    {{if .IsDir}}x-data="treeNode()"{{else}}x-data="treeLeaf()"{{end}}>
+  <div class="tree-row">
+    {{if .IsDir}}
+    <button type="button" class="tree-toggle" @click="open = !open"
+            :aria-expanded="open" aria-controls="c-{{.ID}}">
+      <span class="caret" :class="open && 'is-open'" aria-hidden="true">&rsaquo;</span>
+      <span class="tree-name">{{.Name}}</span>
+    </button>
+    {{else}}
+    <a class="tree-name is-file" href="/download/{{.Path}}">{{.Name}}</a>
+    {{end}}
+
+    <span class="tree-meta">{{bytes .Size}} &middot; {{.Modified}}</span>
+
+    <span class="tree-actions">
+      {{if .Preview}}
+      <button type="button" class="icon-btn" @click="preview = !preview"
+              :aria-pressed="preview" title="Preview">&#9654;</button>
+      {{end}}
+      {{/* Two-step delete, so a stray click cannot remove a download. */}}
+      <button type="button" class="icon-btn danger" x-show="!confirm" @click="ask()" title="Delete">&times;</button>
+      <button type="button" class="icon-btn danger" x-show="confirm" x-cloak
+              hx-delete="/download/{{.Path}}"
+              hx-target="#downloads" hx-swap="innerHTML"
+              @click="confirm = false" title="Confirm delete">Delete?</button>
+    </span>
+  </div>
+
+  {{if .Preview}}
+  {{/* data-preserve keeps idiomorph from touching a playing media element, and
+       the src is only set once opened so nothing is prefetched. */}}
+  <div class="tree-preview" x-show="preview" x-cloak data-preserve>
+    <template x-if="preview">
+      {{if eq .Preview "video"}}
+      <video controls preload="none" src="/download/{{.Path}}"></video>
+      {{else if eq .Preview "audio"}}
+      <audio controls preload="none" src="/download/{{.Path}}"></audio>
+      {{else}}
+      <img loading="lazy" src="/download/{{.Path}}" alt="{{.Name}}">
+      {{end}}
+    </template>
+  </div>
+  {{end}}
+
+  {{if .Children}}
+  <ul class="tree-list" id="c-{{.ID}}" x-show="open" x-cloak>
+    {{range .Children}}{{template "fsnode" .}}{{end}}
+  </ul>
+  {{end}}
+</li>
+{{end}}

@@ -26,9 +26,31 @@ func (s *Server) serveFragment(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(rest, "torrent/") && strings.HasSuffix(rest, "/files"):
 		hash := strings.TrimSuffix(strings.TrimPrefix(rest, "torrent/"), "/files")
 		s.serveTorrentFiles(w, hash)
+	case rest == "downloads":
+		s.serveDownloadsTree(w)
 	default:
 		http.Error(w, "Not found", http.StatusNotFound)
 	}
+}
+
+func (s *Server) serveDownloadsTree(w http.ResponseWriter) {
+	root := s.listFiles()
+	view := struct {
+		Root      fsView
+		Truncated bool
+		Limit     int
+	}{
+		Root:      newRootView(root),
+		Truncated: root.Truncated,
+		Limit:     fileNumberLimit,
+	}
+	var buf bytes.Buffer
+	if err := s.renderer.tmpl.ExecuteTemplate(&buf, "downloads", view); err != nil {
+		log.Printf("render downloads: %s", err)
+		writeFragment(w, http.StatusInternalServerError, `<p class="muted">Could not render downloads.</p>`)
+		return
+	}
+	writeFragment(w, http.StatusOK, buf.String())
 }
 
 func (s *Server) serveTorrentFiles(w http.ResponseWriter, hash string) {
