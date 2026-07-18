@@ -2,28 +2,20 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/fetch"
 )
 
-const (
-	// maxAPIBody caps request bodies. A .torrent file is comfortably under this.
-	maxAPIBody = 4 << 20 // 4 MiB
-	// maxRemoteTorrent caps what /api/url will pull from a third party.
-	maxRemoteTorrent = 4 << 20
-	// remoteFetchTimeout bounds the server-side fetch in /api/url.
-	remoteFetchTimeout = 15 * time.Second
-)
+// maxAPIBody caps request bodies. A .torrent file is comfortably under this.
+const maxAPIBody = 4 << 20 // 4 MiB
 
 // apiError carries an HTTP status alongside the message shown to the user.
 type apiError struct {
@@ -52,6 +44,11 @@ func statusFor(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, engine.ErrNotConfigured):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, fetch.ErrInvalidURL):
+		return http.StatusBadRequest
+	// A remote that is down or refuses us is not the caller's mistake.
+	case errors.Is(err, fetch.ErrUpstream):
+		return http.StatusBadGateway
 	default:
 		return http.StatusBadRequest
 	}
@@ -197,84 +194,4 @@ func checkSameOrigin(r *http.Request) error {
 		return rejected
 	}
 	return nil
-}
-
-// fetchRemoteTorrent downloads a .torrent by URL. It refuses non-HTTP schemes and
-// private address ranges: without that, this endpoint is an SSRF pivot into the
-// host's own network and the cloud metadata service.
-func fetchRemoteTorrent(ctx context.Context, raw string) ([]byte, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return nil, badRequest("Invalid remote torrent URL")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, badRequest("Remote torrent URL must be http or https")
-	}
-
-	client := &http.Client{
-		Timeout: remoteFetchTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many redirects")
-			}
-			return nil
-		},
-		// Filtering at dial time also covers redirects and closes the
-		// DNS-rebinding gap a hostname pre-check would leave open.
-		Transport: &http.Transport{DialContext: guardedDialContext},
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, remoteFetchTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, badRequest("Invalid remote torrent URL")
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, apiError{http.StatusBadGateway, fmt.Errorf("Failed to fetch remote torrent: %s", err)}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, apiError{http.StatusBadGateway, fmt.Errorf("Remote torrent returned HTTP %d", resp.StatusCode)}
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteTorrent))
-	if err != nil {
-		return nil, apiError{http.StatusBadGateway, fmt.Errorf("Failed to download remote torrent: %s", err)}
-	}
-	return body, nil
-}
-
-// guardedDialContext blocks connections to loopback, link-local and private
-// ranges.
-func guardedDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	d := &net.Dialer{Timeout: 10 * time.Second}
-	for _, ip := range ips {
-		if isDisallowedIP(ip.IP) {
-			continue
-		}
-		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-	}
-	return nil, fmt.Errorf("refusing to connect to %s: no permitted address", host)
-}
-
-func isDisallowedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsUnspecified() ||
-		ip.IsMulticast()
 }

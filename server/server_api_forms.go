@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/fetch"
 )
 
 // maxUploadMemory is how much of a multipart upload is buffered in RAM before
@@ -32,7 +33,7 @@ func (s *Server) addURI(r *http.Request, uri string) error {
 	case strings.HasPrefix(uri, "magnet:"):
 		return s.engine.NewMagnet(uri)
 	case strings.HasPrefix(uri, "http://"), strings.HasPrefix(uri, "https://"):
-		body, err := fetchRemoteTorrent(r.Context(), uri)
+		body, err := fetch.Torrent(r.Context(), uri)
 		if err != nil {
 			return err
 		}
