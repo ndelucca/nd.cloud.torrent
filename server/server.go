@@ -1,6 +1,7 @@
-// Package server owns the process shell and every HTTP surface: the shared
-// state snapshot, server-side rendering of the web UI, the SSE stream that
-// drives it, the /api/* command endpoints, and download file serving.
+// Package server owns the process shell and the HTTP surface: flags, config, the
+// middleware chain, the route dispatcher, the /api/* command endpoints and the
+// background loops. Rendering, file serving and the remote fetch are delegated
+// to the web, files and fetch packages.
 package server
 
 import (
@@ -24,6 +25,7 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/internal/auth"
 	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
+	"github.com/ndelucca/nd.cloud.torrent/web"
 )
 
 const (
@@ -78,15 +80,8 @@ type Server struct {
 	engine *engine.Engine
 	stats  sampledStats
 
-	renderer *renderer
-	hub      *hub
-	kickCh   chan struct{}
-	// renderMu serializes rendering. pollLoop and statsLoop both render, and
-	// without it two goroutines can broadcast samples in the opposite order to
-	// the one they were taken in, leaving browsers on the older one.
-	// seenTorrents is covered by it too.
-	renderMu     sync.Mutex
-	seenTorrents map[string]bool
+	ui     *web.UI
+	kickCh chan struct{}
 
 	static    http.Handler
 	downloads http.Handler
@@ -127,23 +122,32 @@ func New(o Options, version string) (*Server, error) {
 		isTLS:     isTLS,
 		goRuntime: strings.TrimPrefix(runtime.Version(), "go"),
 		startedAt: time.Now(),
-		hub:       newHub(),
 		// Buffered and coalesced: a burst of API calls between two ticks costs
 		// one extra render, not one per call.
 		kickCh: make(chan struct{}, 1),
 	}
 
-	tmpl, err := parseTemplates()
+	s.engine = engine.New()
+
+	ui, err := web.New(web.Deps{
+		Title:    o.Title,
+		Version:  version,
+		Runtime:  s.goRuntime,
+		Uptime:   s.startedAt,
+		Torrents: s.engine.GetTorrents,
+		Tree:     func() *files.Node { return files.List(s.downloadDir()) },
+		Config:   s.engine.Config,
+		Kick:     s.kick,
+	})
 	if err != nil {
 		return nil, err
 	}
-	s.renderer = newRenderer(tmpl)
+	s.ui = ui
 	s.static = ctstatic.FileSystemHandler()
 	// StripPrefix because files.Handler reads the request path as relative to
 	// the download root.
 	s.downloads = http.StripPrefix("/download/", &files.Handler{Root: s.downloadDir})
 
-	s.engine = engine.New()
 	c, err := s.loadConfig()
 	if err != nil {
 		return nil, err
@@ -196,7 +200,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer wg.Wait()
 	defer cancel()
 	// Covers every return path, including a failed Listen below. Idempotent.
-	defer s.hub.close()
+	defer s.ui.Close()
 
 	wg.Add(2)
 	go func() { defer wg.Done(); s.pollLoop(ctx) }()
@@ -264,7 +268,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// long-lived /events handler is never released by it: with one browser
 		// connected this burned the entire budget and then exited non-zero on a
 		// deadline the server had set for itself.
-		s.hub.close()
+		s.ui.Close()
 
 		shutdownCtx, done := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer done()
@@ -300,11 +304,9 @@ func (s *Server) pollLoop(ctx context.Context) {
 		// listFiles walks the download directory with up to fileNumberLimit stat
 		// calls, so with nobody connected it is pure waste.
 		if s.watchers() > 0 {
-			torrents := s.engine.GetTorrents()
-			downloads := files.List(s.downloadDir())
-			s.renderRegions()
-			s.renderTorrents(torrents)
-			s.renderDownloads(downloads)
+			s.renderStats()
+			s.ui.RenderTorrents(s.engine.GetTorrents())
+			s.ui.RenderDownloads(files.List(s.downloadDir()))
 		}
 		select {
 		case <-ctx.Done():
@@ -328,8 +330,8 @@ func (s *Server) statsLoop(ctx context.Context) {
 		// Sampling is cheap but not free, and with nobody watching the result
 		// is discarded — same reasoning as pollLoop.
 		if s.watchers() > 0 {
-			s.stats.set(sampleSystemStats(s.engine.Config().DownloadDirectory))
-			s.renderRegions()
+			s.stats.set(sampleSystemStats(s.downloadDir()))
+			s.renderStats()
 		}
 		select {
 		case <-ctx.Done():
@@ -340,48 +342,28 @@ func (s *Server) statsLoop(ctx context.Context) {
 }
 
 // watchers counts connected browsers.
-func (s *Server) watchers() int { return s.hub.count() }
+func (s *Server) watchers() int { return s.ui.Watchers() }
 
-// renderRegions renders every SSE region once and fans the same bytes out to
-// every subscriber. Rendering is deliberately not per-client.
-func (s *Server) renderRegions() {
-	s.renderMu.Lock()
-	defer s.renderMu.Unlock()
-
+// renderStats hands the latest sample to the UI.
+//
+// This is the one place SystemStats is mapped onto web.StatsData. The two types
+// exist separately because SystemStats carries the JSON tags that are the
+// /api/state wire contract — the server's to keep — while StatsData is the
+// renderer's view model. A dozen field copies is the price of neither format
+// being hostage to the other.
+func (s *Server) renderStats() {
 	sys := s.stats.get()
-	view := statsView{
-		Title:          s.opts.Title,
-		Version:        s.version,
-		Runtime:        s.goRuntime,
-		Uptime:         s.startedAt,
+	s.ui.RenderStats(web.StatsData{
 		ConnectedUsers: s.watchers(),
-		System:         sys,
-		MemPercent:     percentOf(sys.MemoryUsed, sys.MemoryTotal),
-		DiskPercent:    percentOf(sys.DiskUsed, sys.DiskTotal),
-		DiskFree:       sys.DiskTotal - sys.DiskUsed,
-	}
-	frame, err := s.renderer.render("stats", "stats", view)
-	if err != nil {
-		log.Printf("render stats: %s", err)
-		return
-	}
-	s.hub.broadcast(frame)
-}
-
-// statsView is the stats region's view model. Percentages are computed here
-// rather than in the template: html/template has no arithmetic, and the
-// AngularJS version doing `100*used/total` inline was a source of divide-by-zero
-// producing +Inf.
-type statsView struct {
-	Title          string
-	Version        string
-	Runtime        string
-	Uptime         time.Time
-	ConnectedUsers int
-	System         SystemStats
-	MemPercent     float64
-	DiskPercent    float64
-	DiskFree       int64
+		Set:            sys.Set,
+		CPU:            sys.CPU,
+		DiskUsed:       sys.DiskUsed,
+		DiskTotal:      sys.DiskTotal,
+		MemoryUsed:     sys.MemoryUsed,
+		MemoryTotal:    sys.MemoryTotal,
+		GoMemory:       sys.GoMemory,
+		GoRoutines:     sys.GoRoutines,
+	})
 }
 
 // reconfigure applies a config to the engine and persists it. The engine restart
@@ -447,13 +429,13 @@ func (s *Server) gzip(h http.Handler) http.Handler {
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/events":
-		s.serveEvents(w, r)
+		s.ui.ServeEvents(w, r)
 	case r.URL.Path == "/api/state":
 		s.serveState(w, r)
 	case r.URL.Path == "/":
-		s.servePage(w, r)
+		s.ui.ServePage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/fragments/"):
-		s.serveFragment(w, r)
+		s.ui.ServeFragment(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/"):
 		s.serveAPI(w, r)
 	case strings.HasPrefix(r.URL.Path, "/download/"):

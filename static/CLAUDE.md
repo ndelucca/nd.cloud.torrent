@@ -4,7 +4,7 @@
 
 Compiles the web UI's client-side assets into the binary and exposes them as an
 `http.Handler`. The HTML itself is *not* here — it is rendered server-side from
-`server/templates/`; this package ships only CSS, JavaScript and the favicon.
+`web/templates/`; this package ships only CSS, JavaScript and the favicon.
 
 ## Ownership
 

@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"net/http"
@@ -125,8 +125,8 @@ func (h *hub) broadcast(frame []byte) {
 	}
 }
 
-// serveEvents streams rendered fragments as named SSE events.
-func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
+// ServeEvents streams rendered fragments as named SSE events.
+func (u *UI) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -163,12 +163,12 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	sub := s.hub.subscribe()
-	defer s.hub.unsubscribe(sub)
+	sub := u.hub.subscribe()
+	defer u.hub.unsubscribe(sub)
 
 	// A client connecting mid-tick must see current state immediately rather
 	// than wait for something to change.
-	for _, frame := range s.renderer.snapshot() {
+	for _, frame := range u.renderer.snapshot() {
 		if !write(frame) {
 			return
 		}
@@ -177,7 +177,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Waking the render loop makes the very first connection populate the
 	// regions, and refreshes ConnectedUsers for everyone already watching.
-	s.kick()
+	u.kick()
 
 	keepalive := time.NewTicker(keepaliveInterval)
 	defer keepalive.Stop()

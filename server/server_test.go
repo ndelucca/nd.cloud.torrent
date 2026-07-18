@@ -96,7 +96,7 @@ func TestRunShutsDownPromptlyWithSSEClients(t *testing.T) {
 	}
 	s := newTestServer(t)
 	// Populate a region so a connecting client gets a snapshot frame.
-	s.renderRegions()
+	s.renderStats()
 
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -240,26 +240,42 @@ func TestStateIsLiveWithoutWatchers(t *testing.T) {
 // produced "fatal error: concurrent map writes", which Go cannot recover from.
 //
 // The map is gone — connections are counted, not rostered — but the shape of
-// the risk moved to the SSE hub, so the test moved with it. Run under -race.
+// the risk moved to the SSE hub. web.TestHubConcurrentSubscribers hammers the
+// hub directly, which is where the data race would now live; this one keeps the
+// original shape of the bug, real simultaneous /events connections against a
+// real handler chain, because that is what reproduced it. Run under -race.
 func TestConcurrentEventStreams(t *testing.T) {
 	s := newTestServer(t)
 
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(3)
+	for i := 0; i < 25; i++ {
+		wg.Add(2)
+		// A client that connects, reads a little and leaves.
 		go func() {
 			defer wg.Done()
-			sub := s.hub.subscribe()
-			s.hub.unsubscribe(sub)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events", nil)
+			if err != nil {
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			buf := make([]byte, 256)
+			_, _ = resp.Body.Read(buf)
 		}()
-		go func() {
-			defer wg.Done()
-			s.hub.broadcast([]byte("event: x\ndata: <i>y</i>\n\n"))
-		}()
+		// And the render loop's side of it, running concurrently.
 		go func() {
 			defer wg.Done()
 			s.stats.set(SystemStats{Set: true, GoRoutines: s.watchers()})
-			s.renderRegions()
+			s.renderStats()
 		}()
 	}
 	wg.Wait()

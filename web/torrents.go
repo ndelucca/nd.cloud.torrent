@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"log"
@@ -79,7 +79,7 @@ func displayName(t *engine.Torrent) string {
 	return "Fetching metadata… " + t.InfoHash[:min(8, len(t.InfoHash))]
 }
 
-// renderTorrents implements the two-tier event scheme.
+// RenderTorrents implements the two-tier event scheme.
 //
 // Tier 1, "torrent-list", is the membership skeleton. It is emitted only when
 // the set of infohashes changes, because it is the only thing that can create
@@ -94,9 +94,9 @@ func displayName(t *engine.Torrent) string {
 // alone outweighs the payload, and 1000 morphs per second would jank the tab.
 // Per torrent also keeps each frame well inside deflate's 32 KiB window, which
 // is what makes a persistent gzip stream act as a cheap delta encoder.
-func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
-	s.renderMu.Lock()
-	defer s.renderMu.Unlock()
+func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	views := make([]torrentView, 0, len(torrents))
 	for _, t := range torrents {
@@ -126,7 +126,7 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	// tick — and shipped an *empty* torrent-list event, which would have wiped
 	// the whole list in the browser once per second.
 	var removed []string
-	for hash := range s.seenTorrents {
+	for hash := range u.seen {
 		if !current[hash] {
 			removed = append(removed, torrentEventPrefix+hash)
 		}
@@ -142,14 +142,14 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	// It is still re-rendered every tick, because the cache is what a late
 	// subscriber receives on connect and a stale skeleton would show them stale
 	// rows until each one next changed.
-	membershipChanged := !sameHashes(current, s.seenTorrents)
+	membershipChanged := !sameHashes(current, u.seen)
 	// seenTorrents is updated even if the skeleton fails to render: bailing out
 	// early would leave it describing a state that no longer exists, so the
 	// next tick would compute the wrong membership delta and never emit the
 	// forget events for torrents that had already gone.
-	defer func() { s.seenTorrents = current }()
+	defer func() { u.seen = current }()
 
-	listFrame, err := s.renderer.render(torrentListEvent, "torrent-list", views)
+	listFrame, err := u.renderer.render(torrentListEvent, "torrent-list", views)
 	if err != nil {
 		log.Printf("render torrent-list: %s", err)
 		return
@@ -157,9 +157,9 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	if membershipChanged {
 		if listFrame == nil {
 			// Bytes unchanged but membership moved: send the cached framing.
-			listFrame = s.renderer.framed(torrentListEvent)
+			listFrame = u.renderer.framed(torrentListEvent)
 		}
-		s.hub.broadcast(listFrame)
+		u.hub.broadcast(listFrame)
 	}
 
 	// Tier 2. Torrents whose row arrived with this tick's skeleton are skipped:
@@ -167,25 +167,25 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	// element races the extension's registration (observed in-browser: missed
 	// at 300 ms, delivered at 600 ms). They refresh on the next tick.
 	for _, v := range views {
-		if listFrame != nil && s.newThisTick(v.InfoHash) {
+		if listFrame != nil && u.newThisTick(v.InfoHash) {
 			continue
 		}
-		frame, err := s.renderer.render(torrentEventPrefix+v.InfoHash, "torrent-row", v)
+		frame, err := u.renderer.render(torrentEventPrefix+v.InfoHash, "torrent-row", v)
 		if err != nil {
 			log.Printf("render torrent %s: %s", v.InfoHash, err)
 			continue
 		}
-		s.hub.broadcast(frame)
+		u.hub.broadcast(frame)
 	}
 
 	for _, name := range removed {
-		s.hub.broadcast(s.renderer.forget(name))
+		u.hub.broadcast(u.renderer.forget(name))
 	}
 }
 
 // newThisTick reports whether this infohash had no region before this render,
 // i.e. its row was created by the skeleton we just sent.
-func (s *Server) newThisTick(hash string) bool { return !s.seenTorrents[hash] }
+func (u *UI) newThisTick(hash string) bool { return !u.seen[hash] }
 
 // sortFilesByPath orders a torrent's files for display. The AngularJS UI did
 // this client-side with orderBy:'Path' on every digest.

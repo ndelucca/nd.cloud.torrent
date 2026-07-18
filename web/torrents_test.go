@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"bytes"
@@ -17,10 +17,10 @@ import (
 // hub's buffer is subBuffer deep and broadcast *disconnects* a subscriber that
 // fills it, so a test with more than a handful of torrents would silently lose
 // events instead of failing.
-func collect(t *testing.T, s *Server, fn func()) []string {
+func collect(t *testing.T, u *UI, fn func()) []string {
 	t.Helper()
-	sub := s.hub.subscribe()
-	defer s.hub.unsubscribe(sub)
+	sub := u.hub.subscribe()
+	defer u.hub.unsubscribe(sub)
 
 	var mu sync.Mutex
 	var out []string
@@ -53,7 +53,7 @@ func collect(t *testing.T, s *Server, fn func()) []string {
 	// Let the drainer catch up; broadcast is synchronous into the channel, so a
 	// short settle is enough.
 	time.Sleep(50 * time.Millisecond)
-	s.hub.unsubscribe(sub)
+	u.hub.unsubscribe(sub)
 	<-done
 
 	mu.Lock()
@@ -80,20 +80,20 @@ func torrent(hash, name string, pct float32) *engine.Torrent {
 // *empty* torrent-list event, which htmx would have swapped in, wiping the
 // entire torrent list once per second.
 func TestTorrentListIsNotTreatedAsATorrent(t *testing.T) {
-	s := newTestServer(t)
+	u := newTestUI(t)
 	torrents := map[string]*engine.Torrent{
 		"aaa": torrent("aaa", "Alpha", 10),
 	}
 
-	first := collect(t, s, func() { s.renderTorrents(torrents) })
+	first := collect(t, u, func() { u.RenderTorrents(torrents) })
 	if len(first) == 0 {
 		t.Fatal("first render produced nothing")
 	}
 	// Second render emits the row, which the first deliberately deferred.
-	collect(t, s, func() { s.renderTorrents(torrents) })
+	collect(t, u, func() { u.RenderTorrents(torrents) })
 
 	// By now nothing at all has changed, so this must be completely silent.
-	third := collect(t, s, func() { s.renderTorrents(torrents) })
+	third := collect(t, u, func() { u.RenderTorrents(torrents) })
 	for _, ev := range third {
 		if strings.HasPrefix(ev, torrentListEvent) {
 			t.Errorf("torrent-list re-sent with no membership change (%q); "+
@@ -111,15 +111,15 @@ func TestTorrentListIsNotTreatedAsATorrent(t *testing.T) {
 // Gating its emission on rendered bytes would therefore re-send the entire
 // skeleton every second and collapse the two tiers back into one.
 func TestSkeletonIsGatedOnMembershipNotBytes(t *testing.T) {
-	s := newTestServer(t)
+	u := newTestUI(t)
 	m := map[string]*engine.Torrent{"aaa": torrent("aaa", "Alpha", 10)}
-	collect(t, s, func() { s.renderTorrents(m) })
-	collect(t, s, func() { s.renderTorrents(m) })
+	collect(t, u, func() { u.RenderTorrents(m) })
+	collect(t, u, func() { u.RenderTorrents(m) })
 
 	// Progress moves on every tick, which changes the skeleton's bytes.
 	for i, p := range []float32{20, 30, 40} {
 		m["aaa"] = torrent("aaa", "Alpha", p)
-		got := collect(t, s, func() { s.renderTorrents(m) })
+		got := collect(t, u, func() { u.RenderTorrents(m) })
 		if contains(got, torrentListEvent) {
 			t.Fatalf("tick %d: skeleton re-sent for a progress change (%v); "+
 				"the whole list would be re-shipped every second", i, got)
@@ -132,14 +132,14 @@ func TestSkeletonIsGatedOnMembershipNotBytes(t *testing.T) {
 
 // TestTorrentTwoTierEvents covers the membership/volatile split.
 func TestTorrentTwoTierEvents(t *testing.T) {
-	s := newTestServer(t)
+	u := newTestUI(t)
 
 	// 1. A new torrent emits the skeleton. Its row is NOT emitted in the same
 	//    flush: emitting an item event alongside the event that creates its
 	//    element races the extension's registration (observed in-browser as a
 	//    missed update at 300 ms).
 	one := map[string]*engine.Torrent{"aaa": torrent("aaa", "Alpha", 10)}
-	got := collect(t, s, func() { s.renderTorrents(one) })
+	got := collect(t, u, func() { u.RenderTorrents(one) })
 	if !contains(got, torrentListEvent) {
 		t.Errorf("new torrent: got %v, want torrent-list", got)
 	}
@@ -149,7 +149,7 @@ func TestTorrentTwoTierEvents(t *testing.T) {
 
 	// 2. Progress changes emit only the row, never the skeleton.
 	one["aaa"] = torrent("aaa", "Alpha", 42)
-	got = collect(t, s, func() { s.renderTorrents(one) })
+	got = collect(t, u, func() { u.RenderTorrents(one) })
 	if !contains(got, "torrent-aaa") {
 		t.Errorf("progress change: got %v, want torrent-aaa", got)
 	}
@@ -159,7 +159,7 @@ func TestTorrentTwoTierEvents(t *testing.T) {
 
 	// 3. Adding a torrent changes membership, so the skeleton returns.
 	one["bbb"] = torrent("bbb", "Beta", 0)
-	got = collect(t, s, func() { s.renderTorrents(one) })
+	got = collect(t, u, func() { u.RenderTorrents(one) })
 	if !contains(got, torrentListEvent) {
 		t.Errorf("added torrent: got %v, want torrent-list", got)
 	}
@@ -167,7 +167,7 @@ func TestTorrentTwoTierEvents(t *testing.T) {
 	// 4. Removing one must emit a final EMPTY event for its name, or htmx never
 	//    unregisters the listener and leaks the detached subtree.
 	delete(one, "bbb")
-	got = collect(t, s, func() { s.renderTorrents(one) })
+	got = collect(t, u, func() { u.RenderTorrents(one) })
 	if !contains(got, "torrent-bbb [EMPTY]") {
 		t.Errorf("removed torrent: got %v, want an empty torrent-bbb event", got)
 	}
@@ -183,4 +183,19 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// newTestUI builds a UI with no engine, no server and no ports.
+//
+// These tests assert on SSE event names, which is a property of the renderer
+// and the hub alone. Before the split they went through newTestServer, which
+// meant a real torrent client, a temp config file and two bound ports to check
+// that a string starts with "torrent-".
+func newTestUI(t *testing.T) *UI {
+	t.Helper()
+	u, err := New(Deps{Title: "test"})
+	if err != nil {
+		t.Fatalf("web.New: %v", err)
+	}
+	return u
 }

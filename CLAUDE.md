@@ -91,13 +91,24 @@ Cloud Torrent: self-hosted remote torrent client in Go. A single binary embeds a
 - `version` is injected at build time with `-ldflags "-X main.version=..."`; the `0.0.0-src` default means an unreleased local build
 - Runtime config persists to `cloud-torrent.json` (path overridable with `--config-path`)
 
-Request flow: `main` → `server.New` → `Server.Run` → handler chain (requestlog → security headers → cookieauth → gzip → `Server.route`) → `/events` SSE / `/` page / `/fragments/*` / `/api/*` / `/download/` / static assets.
+Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlog` → security headers → `auth` → gzip → `Server.route`) → `/events` SSE / `/` page / `/fragments/*` (all three in `web`) / `/api/*` / `/download/` (in `files`) / static assets.
 
 ## Repo-Wide Contracts
 
-- The server owns all HTTP surface and process lifecycle; the engine owns torrent state and never imports `server`
+- The server owns the HTTP surface and process lifecycle; the engine owns torrent state. Below the server sit three leaf packages with one job each: `web` renders, `files` walks and serves the download directory, `fetch` pulls a remote `.torrent`. None of them imports `server` or each other, except `web` → `files` for the tree type.
 - Frontend assets and HTML templates are compiled into the binary via `go:embed`; any change to either requires a rebuild to take effect
-- Dependency direction is one-way: `main` → {`server`, `internal/cli`} and `server` → {`engine`, `static`, `internal/auth`, `internal/reqlog`}. Nothing under `internal/` imports `server` or `engine`. Do not introduce back-edges.
+- Dependency direction is one-way and enforced by the compiler:
+
+  ```
+  main   → { server, internal/cli }
+  server → { engine, web, files, fetch, static, internal/auth, internal/reqlog }
+  web    → { engine, files }
+  files  → stdlib only
+  fetch  → stdlib only
+  engine → anacrolix/torrent
+  ```
+
+  Do not introduce back-edges. `web` importing `server` is the specific one to watch for: the temptation is shared state, and it undoes the split.
 
 ## Work Guidance
 
@@ -118,8 +129,11 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (reques
 
 - `engine/CLAUDE.md` — torrent engine: client lifecycle, torrent/file state, start/stop/delete semantics
 - `internal/CLAUDE.md` — stdlib-only replacements for third-party helpers: `auth` (session cookies), `cli` (flags), `reqlog` (request logging)
-- `server/CLAUDE.md` — HTTP server, server-side rendering, the SSE stream, `/api/*`, file serving, system stats
-- `static/CLAUDE.md` — embedded CSS/JS assets (covers `static/files/` too; no doc may live under `files/`, it would be embedded and served). The HTML lives in `server/templates/`.
+- `server/CLAUDE.md` — process lifecycle, middleware chain, routing, `/api/*`, `/api/state`, system stats
+- `web/CLAUDE.md` — templates, view models, the SSE hub, and every handler that produces HTML (owns `web/templates/`)
+- `files/CLAUDE.md` — the download tree walk, path containment, file and zip serving
+- `fetch/CLAUDE.md` — the SSRF-guarded remote `.torrent` download
+- `static/CLAUDE.md` — embedded CSS/JS assets (covers `static/files/` too; no doc may live under it, it would be embedded and served). The HTML lives in `web/templates/`.
 - `.github/CLAUDE.md` — CI, release, and Docker packaging
 
 Owned by this doc: `main.go`, `go.mod`/`go.sum`, `README.md`, `CONTRIBUTING.md`, `LICENSE`, `.gitignore`.

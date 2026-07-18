@@ -1,11 +1,9 @@
 package server
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,7 +64,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	// default, so the outcome is reported as a 200 fragment; the status codes
 	// stay intact for every other client (curl, the CLI, the AngularJS UI).
 	if r.Header.Get("HX-Request") == "true" {
-		s.writeAPIFragment(w, err)
+		s.ui.WriteAPIResult(w, err)
 		return
 	}
 
@@ -77,20 +75,6 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
-}
-
-func (s *Server) writeAPIFragment(w http.ResponseWriter, err error) {
-	name, msg := "api-ok", "Done."
-	if err != nil {
-		name, msg = "api-error", err.Error()
-	}
-	var buf bytes.Buffer
-	if rerr := s.renderer.tmpl.ExecuteTemplate(&buf, name, msg); rerr != nil {
-		log.Printf("render %s: %s", name, rerr)
-		writeFragment(w, http.StatusOK, `<p class="err-msg">Unexpected error.</p>`)
-		return
-	}
-	writeFragment(w, http.StatusOK, buf.String())
 }
 
 func (s *Server) api(w http.ResponseWriter, r *http.Request) error {

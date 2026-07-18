@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"fmt"
@@ -143,17 +143,17 @@ func treeSignature(n *files.Node) uint64 {
 	return h.Sum64()
 }
 
-// renderDownloads emits the ping when the tree changed. It renders no HTML: the
+// RenderDownloads emits the ping when the tree changed. It renders no HTML: the
 // browser pulls the fragment.
-func (s *Server) renderDownloads(root *files.Node) {
-	s.renderMu.Lock()
-	defer s.renderMu.Unlock()
+func (u *UI) RenderDownloads(root *files.Node) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 
 	sig := treeSignature(root)
 	// Wrapped in a comment so the payload is still element-shaped; nothing
 	// swaps this event, it only fires an hx-trigger.
 	body := []byte("<!--" + strconv.FormatUint(sig, 36) + "-->")
-	if frame := s.renderer.store(downloadsChangedEvent, body); frame != nil {
-		s.hub.broadcast(frame)
+	if frame := u.renderer.store(downloadsChangedEvent, body); frame != nil {
+		u.hub.broadcast(frame)
 	}
 }

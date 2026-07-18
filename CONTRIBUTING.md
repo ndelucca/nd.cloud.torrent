@@ -5,13 +5,16 @@
 ```
 main.go              flag parsing and process lifecycle
 engine/              torrent engine: wraps anacrolix/torrent
-server/              HTTP surface, server-side rendering, SSE
-server/templates/    html/template fragments — the UI's HTML
+server/              process shell, middleware, routing, /api/*
+web/                 rendering, view models, the SSE stream
+web/templates/       html/template fragments — the UI's HTML
+files/               download tree, path containment, file serving
+fetch/               SSRF-guarded remote .torrent download
 static/files/        embedded CSS and JavaScript
 ```
 
-Dependencies flow one way: `main` → `server` → {`engine`, `static`}. The engine
-must never import the server.
+Dependencies flow one way: `main` → `server` → {`engine`, `web`, `files`,
+`fetch`, `static`}, and `web` → `files`. Nothing below the server imports it.
 
 ## Building
 
@@ -20,7 +23,7 @@ go build -o nd-cloud-torrent .
 ./nd-cloud-torrent --port 3000
 ```
 
-**Editing anything under `static/files/` or `server/templates/` requires a
+**Editing anything under `static/files/` or `web/templates/` requires a
 rebuild before it is visible.** Both are compiled into the binary with
 `go:embed`; there is no file-watching dev server and no build step. This is the
 single most common thing to trip over.

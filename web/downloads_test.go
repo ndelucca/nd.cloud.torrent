@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"github.com/ndelucca/nd.cloud.torrent/files"
