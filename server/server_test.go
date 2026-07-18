@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // freePort returns a port that is currently unbound.
@@ -47,6 +51,118 @@ func newTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// waitForListener blocks until addr accepts a connection. A dial loop rather
+// than a sleep: the point is to start the test as soon as Run is serving, not
+// to guess how long that takes.
+func waitForListener(t *testing.T, addr string, limit time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+			c.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("nothing listening on %s after %s", addr, limit)
+}
+
+// waitFor polls cond until it holds.
+func waitFor(t *testing.T, limit time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for %s", limit, what)
+}
+
+// TestRunShutsDownPromptlyWithSSEClients is the regression test for a shutdown
+// that could not finish.
+//
+// http.Server.Shutdown waits for connections to become idle and does not cancel
+// request contexts. An /events handler parked in its select is therefore never
+// released by it, so with a single browser connected Shutdown burned its entire
+// 10s budget, returned context.DeadlineExceeded, and main turned that into
+// log.Fatal — a clean Ctrl-C exiting 1 after a ten second hang.
+func TestRunShutsDownPromptlyWithSSEClients(t *testing.T) {
+	if testing.Short() {
+		t.Skip("binds a port and waits on a real shutdown")
+	}
+	s := newTestServer(t)
+	// Populate a region so a connecting client gets a snapshot frame.
+	s.renderRegions()
+
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run(runCtx) }()
+
+	addr := net.JoinHostPort("127.0.0.1", fmt.Sprint(s.opts.Port))
+	waitForListener(t, addr, 5*time.Second)
+
+	// A transport of our own, and deliberately no context tied to runCtx.
+	// Sharing it would cancel these requests at the same instant we ask the
+	// server to stop; the handlers would exit through r.Context().Done() and the
+	// test would pass against the very bug it exists to catch.
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr}
+
+	const clients = 2
+	bodies := make([]io.ReadCloser, 0, clients)
+	for i := 0; i < clients; i++ {
+		resp, err := client.Get("http://" + addr + "/events")
+		if err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+		defer resp.Body.Close()
+		// Reading a line proves the handler is past its headers and parked in
+		// the select, which is where the bug lives.
+		if _, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil {
+			t.Fatalf("client %d first line: %v", i, err)
+		}
+		bodies = append(bodies, resp.Body)
+	}
+	// Otherwise the test could pass trivially with nobody subscribed.
+	waitFor(t, 2*time.Second, "both clients to subscribe", func() bool {
+		return s.watchers() == clients
+	})
+
+	start := time.Now()
+	stop()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Errorf("Run = %v, want nil: a requested shutdown is not a failed run, "+
+				"and main log.Fatals on a non-nil error (exit 1)", err)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("shutdown took %s: Shutdown is waiting out its full budget on the "+
+				"SSE streams — the hub must be released before srv.Shutdown", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s of cancellation")
+	}
+
+	// The client-facing half: a released stream must actually end. Draining one
+	// that is still held open would block until the test binary times out.
+	for i, body := range bodies {
+		drained := make(chan struct{})
+		go func() { io.Copy(io.Discard, body); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(2 * time.Second):
+			t.Errorf("client %d: stream did not end after shutdown", i)
+		}
+	}
 }
 
 // TestStateIsServedAsJSON keeps the machine-readable feed alive.

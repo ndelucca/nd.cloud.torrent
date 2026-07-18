@@ -33,6 +33,11 @@ func (s *subscriber) stall() { s.once.Do(func() { close(s.done) }) }
 type hub struct {
 	mu   sync.Mutex
 	subs map[*subscriber]struct{}
+	// closed latches on shutdown. Without it a request arriving between
+	// hub.close and srv.Shutdown subscribes to a hub nobody will ever release,
+	// and pins Shutdown open for its whole budget — the original bug, in a
+	// narrower window.
+	closed bool
 }
 
 func newHub() *hub { return &hub{subs: map[*subscriber]struct{}{}} }
@@ -40,9 +45,47 @@ func newHub() *hub { return &hub{subs: map[*subscriber]struct{}{}} }
 func (h *hub) subscribe() *subscriber {
 	s := &subscriber{ch: make(chan []byte, subBuffer), done: make(chan struct{})}
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		s.stall() // serveEvents returns immediately
+		return s
+	}
 	h.subs[s] = struct{}{}
 	h.mu.Unlock()
 	return s
+}
+
+// close releases every subscriber and latches the hub shut. It is idempotent
+// and one-way: a Server is not restartable.
+//
+// This reuses the stall mechanism but does not mean the same thing. A stalled
+// subscriber is expected back — EventSource reconnects and replays the
+// snapshot, which is what makes dropping one self-correcting. Here the server
+// is going away, so nothing self-corrects; the stream is simply closed cleanly
+// and the browser's own reconnect covers the case that actually matters, a
+// restart. Unlike a stall, this also evicts: the reader may already be gone, so
+// nobody is left to call unsubscribe.
+//
+// Deliberately no farewell event telling the page to stop retrying. htmx owns
+// the EventSource, so closing it from page code means driving unexported
+// internals (see the note at the foot of static/files/js/ct.js), whose failure
+// mode is a permanently dead UI. Retrying a closed port is a SYN/RST every few
+// seconds against a process that no longer exists.
+func (h *hub) close() {
+	h.mu.Lock()
+	h.closed = true
+	subs := make([]*subscriber, 0, len(h.subs))
+	for s := range h.subs {
+		subs = append(subs, s)
+	}
+	clear(h.subs)
+	h.mu.Unlock()
+
+	// Outside the lock: stall only closes a channel, but keeping the critical
+	// section narrow keeps broadcast's "never blocks" contract obviously intact.
+	for _, s := range subs {
+		s.stall()
+	}
 }
 
 func (h *hub) unsubscribe(s *subscriber) {

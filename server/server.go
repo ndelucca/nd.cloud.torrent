@@ -35,6 +35,10 @@ const (
 	// kickFloor rate-limits event-driven renders so a burst of API calls cannot
 	// spin the render loop.
 	kickFloor = 200 * time.Millisecond
+	// shutdownTimeout bounds the graceful drain. SSE streams are released before
+	// it starts, so what remains is real transfers: a large /download/ read, or
+	// a zip still streaming.
+	shutdownTimeout = 10 * time.Second
 )
 
 // Options is the CLI surface. The flags, shorthands and environment variables
@@ -153,13 +157,27 @@ func (s *Server) loadConfig() (engine.Config, error) {
 	return c, nil
 }
 
-// Run serves until ctx is cancelled, then shuts down gracefully.
+// Run serves until ctx is cancelled, then shuts down gracefully. It is
+// one-shot: the hub latches closed, so a second call would serve no events.
+//
+// It returns nil for any completed shutdown, including one that overran its
+// drain budget — Ctrl-C is a requested action, and a slow-draining download is
+// not a failed run. A non-nil error means serving genuinely failed (the port
+// could not be bound, TLS could not start), which is what main exits 1 on.
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	// Registered before cancel so it runs after it — defers are LIFO, and
+	// waiting before cancelling would deadlock. Joining the loops means no
+	// engine call is in flight when main's deferred Close releases the engine.
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	defer cancel()
+	// Covers every return path, including a failed Listen below. Idempotent.
+	defer s.hub.close()
 
-	go s.pollLoop(ctx)
-	go s.statsLoop(ctx)
+	wg.Add(2)
+	go func() { defer wg.Done(); s.pollLoop(ctx) }()
+	go func() { defer wg.Done(); s.statsLoop(ctx) }()
 
 	host := s.opts.Host
 	if host == "" {
@@ -217,9 +235,24 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		log.Printf("Shutting down…")
-		shutdownCtx, done := context.WithTimeout(context.Background(), 10*time.Second)
+
+		// Release the SSE streams BEFORE Shutdown. Shutdown waits for
+		// connections to become idle and does not cancel request contexts, so a
+		// long-lived /events handler is never released by it: with one browser
+		// connected this burned the entire budget and then exited non-zero on a
+		// deadline the server had set for itself.
+		s.hub.close()
+
+		shutdownCtx, done := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer done()
-		return srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			// Only real transfers can reach this now — a large download or a zip
+			// still streaming. Stop waiting on them.
+			log.Printf("graceful shutdown exceeded %s, closing remaining connections: %s",
+				shutdownTimeout, err)
+			_ = srv.Close()
+		}
+		return nil
 	}
 }
 

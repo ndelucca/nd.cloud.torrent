@@ -195,6 +195,51 @@ func TestHubDropsStalledSubscriber(t *testing.T) {
 	}
 }
 
+// TestHubCloseReleasesSubscribers pins the mechanism the shutdown path relies
+// on. TestRunShutsDownPromptlyWithSSEClients covers the same bug end to end;
+// this one is deterministic and names each invariant separately, so a
+// regression says which part broke.
+func TestHubCloseReleasesSubscribers(t *testing.T) {
+	h := newHub()
+	sub := h.subscribe()
+
+	h.close()
+
+	select {
+	case <-sub.done:
+	default:
+		t.Error("close must release every subscriber, or Shutdown waits them out")
+	}
+
+	// Unlike a stall, shutdown evicts: the reader may already be gone, so
+	// nobody is left to call unsubscribe.
+	if h.count() != 0 {
+		t.Errorf("count = %d, want 0 after close", h.count())
+	}
+
+	// The latch. Without it a request arriving between hub.close and
+	// srv.Shutdown subscribes to a hub nobody will ever release, reopening the
+	// bug in a narrower window.
+	late := h.subscribe()
+	select {
+	case <-late.done:
+	default:
+		t.Error("subscribe after close must return an already-released subscriber")
+	}
+
+	// And the hub must stay safe to broadcast into: the render loop can still
+	// be mid-tick when shutdown lands.
+	done := make(chan struct{})
+	go func() { h.broadcast([]byte("event: x\ndata: y\n\n")); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcast blocked after close")
+	}
+
+	h.close() // idempotent: Run closes on both the cancellation path and a defer
+}
+
 // TestEventsArriveImmediately is the regression test for the gzip trap.
 // gzhttp buffers until DefaultMinSize (1 KiB) before deciding whether to
 // compress; an SSE frame is typically smaller, so without an explicit
