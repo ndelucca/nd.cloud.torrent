@@ -4,7 +4,6 @@ go 1.25.4
 
 require (
 	github.com/anacrolix/torrent v1.59.1
-	github.com/jpillora/cookieauth v1.1.1
 	github.com/klauspost/compress v1.19.0
 	github.com/shirou/gopsutil/v4 v4.26.6
 )
@@ -37,8 +36,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/edsrzf/mmap-go v1.2.0 // indirect
-	github.com/elithrar/simple-scrypt v1.3.0 // indirect
-	github.com/floatdrop/lru v1.3.0 // indirect
 	github.com/go-llsqlite/adapter v0.2.0 // indirect
 	github.com/go-llsqlite/crawshaw v0.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

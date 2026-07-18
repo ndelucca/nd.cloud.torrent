@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jpillora/cookieauth"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/internal/auth"
 	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
 )
@@ -374,7 +374,9 @@ func (s *Server) handler() http.Handler {
 	h = s.gzip(h)
 	if s.opts.Auth != "" {
 		user, pass, _ := strings.Cut(s.opts.Auth, ":")
-		h = cookieauth.New().SetUserPass(user, pass).Wrap(h)
+		// isTLS decides the Secure attribute: setting it without TLS would stop
+		// the browser ever sending the cookie back.
+		h = auth.Wrap(h, user, pass, s.isTLS)
 		log.Printf("Enabled HTTP authentication")
 	}
 	h = securityHeaders(h)

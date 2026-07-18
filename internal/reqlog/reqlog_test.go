@@ -31,9 +31,11 @@ func capture(t *testing.T) *bytes.Buffer {
 func TestWriteDeadlineReachesRealWriter(t *testing.T) {
 	capture(t)
 
-	var deadlineErr error
+	// Buffered channel, not a variable: the handler runs on the server's
+	// goroutine and Get can return before it finishes.
+	deadlineErr := make(chan error, 1)
 	h := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		deadlineErr = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Second))
+		deadlineErr <- http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Second))
 	}))
 
 	// httptest.NewRecorder does not support deadlines, so this needs a real
@@ -46,9 +48,14 @@ func TestWriteDeadlineReachesRealWriter(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if deadlineErr != nil {
-		t.Errorf("SetWriteDeadline through the log wrapper: %v "+
-			"(the recorder must implement Unwrap)", deadlineErr)
+	select {
+	case err := <-deadlineErr:
+		if err != nil {
+			t.Errorf("SetWriteDeadline through the log wrapper: %v "+
+				"(the recorder must implement Unwrap)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never ran")
 	}
 }
 
@@ -58,16 +65,19 @@ func TestWriteDeadlineReachesRealWriter(t *testing.T) {
 func TestFlusherSurvivesWrapping(t *testing.T) {
 	capture(t)
 
-	flushed := false
+	// A channel rather than a plain bool: Flush sends the response headers, so
+	// the client's Get returns while the handler is still running and reading a
+	// variable it writes would be a data race.
+	flushed := make(chan bool, 1)
 	h := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f, ok := w.(http.Flusher)
 		if !ok {
-			t.Error("wrapped writer is not an http.Flusher: SSE would 500")
+			flushed <- false
 			return
 		}
 		_, _ = w.Write([]byte("x"))
 		f.Flush()
-		flushed = true
+		flushed <- true
 	}))
 
 	ts := httptest.NewServer(h)
@@ -78,7 +88,12 @@ func TestFlusherSurvivesWrapping(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if !flushed {
+	select {
+	case ok := <-flushed:
+		if !ok {
+			t.Error("wrapped writer is not an http.Flusher: SSE would 500")
+		}
+	case <-time.After(2 * time.Second):
 		t.Error("handler did not reach Flush")
 	}
 }
