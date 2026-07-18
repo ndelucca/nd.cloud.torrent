@@ -1,4 +1,4 @@
-package server
+package files
 
 import (
 	"os"
@@ -31,9 +31,9 @@ func TestResolveWithin(t *testing.T) {
 	allowed := []string{"ok.txt", "sub", "sub/nested.txt"}
 	for _, rel := range allowed {
 		t.Run("allow/"+rel, func(t *testing.T) {
-			got, err := resolveWithin(root, rel)
+			got, err := ResolveWithin(root, rel)
 			if err != nil {
-				t.Fatalf("resolveWithin(%q) = error %v, want success", rel, err)
+				t.Fatalf("ResolveWithin(%q) = error %v, want success", rel, err)
 			}
 			if !isWithin(root, got) {
 				t.Fatalf("resolved %q escaped the root", got)
@@ -53,8 +53,8 @@ func TestResolveWithin(t *testing.T) {
 	}
 	for _, c := range denied {
 		t.Run("deny/"+c.name, func(t *testing.T) {
-			if got, err := resolveWithin(root, c.rel); err == nil {
-				t.Fatalf("resolveWithin(%q) = %q, want error", c.rel, got)
+			if got, err := ResolveWithin(root, c.rel); err == nil {
+				t.Fatalf("ResolveWithin(%q) = %q, want error", c.rel, got)
 			}
 		})
 	}
@@ -83,7 +83,7 @@ func TestResolveWithinRejectsSymlink(t *testing.T) {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
-	if got, err := resolveWithin(root, "escape"); err == nil {
+	if got, err := ResolveWithin(root, "escape"); err == nil {
 		t.Fatalf("symlink escape allowed: %q", got)
 	}
 }
@@ -92,7 +92,7 @@ func TestResolveWithinRejectsSymlink(t *testing.T) {
 // silently producing a partial tree the UI renders as complete.
 func TestListFileLimit(t *testing.T) {
 	root := t.TempDir()
-	for i := 0; i < fileNumberLimit+50; i++ {
+	for i := 0; i < Limit+50; i++ {
 		p := filepath.Join(root, string(rune('a'+i%26))+string(rune('a'+i/26))+".txt")
 		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
 			t.Fatal(err)
@@ -102,14 +102,14 @@ func TestListFileLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := &fsNode{}
+	node := &Node{}
 	n := 0
 	err = list(root, info, node, &n)
 	if err == nil {
 		t.Fatal("expected the walk to abort once over the limit")
 	}
-	if n <= fileNumberLimit {
-		t.Fatalf("walked %d entries, expected to exceed %d", n, fileNumberLimit)
+	if n <= Limit {
+		t.Fatalf("walked %d entries, expected to exceed %d", n, Limit)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestListSkipsDotfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(root)
-	node := &fsNode{}
+	node := &Node{}
 	n := 0
 	if err := list(root, info, node, &n); err != nil {
 		t.Fatalf("unexpected error: %v", err)

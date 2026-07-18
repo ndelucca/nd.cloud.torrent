@@ -1,16 +1,17 @@
 package server
 
 import (
+	"github.com/ndelucca/nd.cloud.torrent/files"
 	"strings"
 	"testing"
 	"time"
 )
 
-func dir(name string, children ...*fsNode) *fsNode {
-	return &fsNode{Name: name, IsDir: true, Children: children, Modified: time.Now()}
+func dir(name string, children ...*files.Node) *files.Node {
+	return &files.Node{Name: name, IsDir: true, Children: children, Modified: time.Now()}
 }
-func file(name string, size int64) *fsNode {
-	return &fsNode{Name: name, Size: size, Modified: time.Now()}
+func file(name string, size int64) *files.Node {
+	return &files.Node{Name: name, Size: size, Modified: time.Now()}
 }
 
 // TestTreePathsAreServerComputed covers the replacement for the AngularJS

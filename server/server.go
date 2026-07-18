@@ -20,6 +20,7 @@ import (
 
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/files"
 	"github.com/ndelucca/nd.cloud.torrent/internal/auth"
 	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
@@ -87,7 +88,29 @@ type Server struct {
 	renderMu     sync.Mutex
 	seenTorrents map[string]bool
 
-	static http.Handler
+	static    http.Handler
+	downloads http.Handler
+}
+
+// downloadDir reads the live directory from the engine, which owns the config.
+// /api/configure can move it at any time, which is why the files handler holds
+// this func rather than a string.
+func (s *Server) downloadDir() string {
+	return s.engine.Config().DownloadDirectory
+}
+
+// serveDownload gates mutation, then delegates.
+//
+// The authorization decision stays in this package: files.Handler performs no
+// checks of its own and will delete for anyone who reaches it.
+func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		if err := checkSameOrigin(r); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+	s.downloads.ServeHTTP(w, r)
 }
 
 // New builds a server from options. It performs no I/O beyond reading the config
@@ -116,6 +139,9 @@ func New(o Options, version string) (*Server, error) {
 	}
 	s.renderer = newRenderer(tmpl)
 	s.static = ctstatic.FileSystemHandler()
+	// StripPrefix because files.Handler reads the request path as relative to
+	// the download root.
+	s.downloads = http.StripPrefix("/download/", &files.Handler{Root: s.downloadDir})
 
 	s.engine = engine.New()
 	c, err := s.loadConfig()
@@ -275,7 +301,7 @@ func (s *Server) pollLoop(ctx context.Context) {
 		// calls, so with nobody connected it is pure waste.
 		if s.watchers() > 0 {
 			torrents := s.engine.GetTorrents()
-			downloads := s.listFiles()
+			downloads := files.List(s.downloadDir())
 			s.renderRegions()
 			s.renderTorrents(torrents)
 			s.renderDownloads(downloads)

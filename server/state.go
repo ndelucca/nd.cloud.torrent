@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // sampledStats holds the one thing the server genuinely has to remember between
@@ -43,7 +44,7 @@ func (s *sampledStats) get() SystemStats {
 // consuming it.
 type stateDocument struct {
 	Torrents       map[string]*engine.Torrent
-	Downloads      *fsNode
+	Downloads      *files.Node
 	ConnectedUsers int
 	Stats          statsDocument
 }
@@ -74,7 +75,7 @@ func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
 	}
 	doc := stateDocument{
 		Torrents:       s.engine.GetTorrents(),
-		Downloads:      s.listFiles(),
+		Downloads:      files.List(s.downloadDir()),
 		ConnectedUsers: s.watchers(),
 		Stats: statsDocument{
 			Title:   s.opts.Title,

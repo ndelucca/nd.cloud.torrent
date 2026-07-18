@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // serveFragment answers the hx-get requests for content that is deliberately
@@ -36,7 +37,7 @@ func (s *Server) serveFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveDownloadsTree(w http.ResponseWriter) {
-	root := s.listFiles()
+	root := files.List(s.downloadDir())
 	view := struct {
 		Root      fsView
 		Truncated bool
@@ -44,7 +45,7 @@ func (s *Server) serveDownloadsTree(w http.ResponseWriter) {
 	}{
 		Root:      newRootView(root),
 		Truncated: root.Truncated,
-		Limit:     fileNumberLimit,
+		Limit:     files.Limit,
 	}
 	var buf bytes.Buffer
 	if err := s.renderer.tmpl.ExecuteTemplate(&buf, "downloads", view); err != nil {

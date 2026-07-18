@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // TestFrameSSE pins the framing. Rendered HTML is full of newlines, and every
@@ -120,7 +121,7 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 			Root      fsView
 			Truncated bool
 			Limit     int
-		}{Root: newRootView(&fsNode{Name: "d", IsDir: true}), Limit: 10}},
+		}{Root: newRootView(&files.Node{Name: "d", IsDir: true}), Limit: 10}},
 	}
 	for _, f := range fragments {
 		var buf bytes.Buffer
@@ -326,7 +327,7 @@ func TestIdleServerIsQuiet(t *testing.T) {
 	// suppression works.
 	s.renderRegions()
 	s.renderTorrents(s.engine.GetTorrents())
-	s.renderDownloads(s.listFiles())
+	s.renderDownloads(files.List(s.downloadDir()))
 
 	go s.pollLoop(ctx)
 	go s.statsLoop(ctx)

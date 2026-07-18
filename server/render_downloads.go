@@ -6,6 +6,8 @@ import (
 	"path"
 	"sort"
 	"strconv"
+
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // downloadsChangedEvent is a content-free ping. The tree itself is fetched with
@@ -36,7 +38,7 @@ type fsView struct {
 // newRootView adapts the walk's root. The root node carries the download
 // directory's own name, but every path the UI emits must be relative to it, so
 // its children start from an empty parent.
-func newRootView(root *fsNode) fsView {
+func newRootView(root *files.Node) fsView {
 	v := fsView{Name: root.Name, IsDir: true}
 	for _, c := range root.Children {
 		if c == nil {
@@ -48,7 +50,7 @@ func newRootView(root *fsNode) fsView {
 	return v
 }
 
-func newFSView(n *fsNode, parent string) fsView {
+func newFSView(n *files.Node, parent string) fsView {
 	p := n.Name
 	if parent != "" {
 		p = parent + "/" + n.Name
@@ -125,10 +127,10 @@ func ext(name string) string {
 // treeSignature is a cheap fingerprint of the tree's shape and contents. It is
 // compared instead of rendering the tree every tick, because the fragment is
 // only ever rendered on demand.
-func treeSignature(n *fsNode) uint64 {
+func treeSignature(n *files.Node) uint64 {
 	h := fnv.New64a()
-	var walk func(*fsNode)
-	walk = func(x *fsNode) {
+	var walk func(*files.Node)
+	walk = func(x *files.Node) {
 		if x == nil {
 			return
 		}
@@ -143,7 +145,7 @@ func treeSignature(n *fsNode) uint64 {
 
 // renderDownloads emits the ping when the tree changed. It renders no HTML: the
 // browser pulls the fragment.
-func (s *Server) renderDownloads(root *fsNode) {
+func (s *Server) renderDownloads(root *files.Node) {
 	s.renderMu.Lock()
 	defer s.renderMu.Unlock()
 
