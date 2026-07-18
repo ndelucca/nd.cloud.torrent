@@ -121,6 +121,93 @@
     if (input) input.value = "";
   });
 
+  // --- drag and drop .torrent files ----------------------------------------
+  //
+  // Ported from the AngularJS ondropfile directive. Files are handed to the
+  // upload form's file input and submitted through htmx, so dropping and
+  // clicking take exactly the same path — including progress reporting, which
+  // the original drop handler did not have.
+  var dragDepth = 0;
+
+  function setDropVisible(on) {
+    document.body.classList.toggle("dropping", on);
+  }
+
+  document.addEventListener("dragenter", function (e) {
+    if (!hasFiles(e)) return;
+    dragDepth++;
+    setDropVisible(true);
+  });
+
+  document.addEventListener("dragover", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); // required, or the browser opens the file instead
+    e.dataTransfer.dropEffect = "copy";
+  });
+
+  // dragleave fires for every child element, so a plain hide flickers; count
+  // enter/leave pairs instead.
+  document.addEventListener("dragleave", function (e) {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDropVisible(false);
+  });
+
+  document.addEventListener("drop", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    setDropVisible(false);
+
+    var input = document.getElementById("torrent-file");
+    var form = document.getElementById("upload-form");
+    if (!input || !form) return;
+
+    var accepted = new DataTransfer();
+    for (var i = 0; i < e.dataTransfer.files.length; i++) {
+      var f = e.dataTransfer.files[i];
+      if (/\.torrent$/i.test(f.name)) accepted.items.add(f);
+    }
+    if (!accepted.files.length) {
+      showStatus('<p class="err-msg">Only .torrent files can be dropped here.</p>');
+      return;
+    }
+    input.files = accepted.files;
+    form.requestSubmit();
+  });
+
+  function hasFiles(e) {
+    return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1;
+  }
+
+  function showStatus(html) {
+    var el = document.getElementById("omni-status");
+    if (el) el.innerHTML = html;
+  }
+
+  // --- spacebar toggles the first on-screen media ---------------------------
+  // Ported from run.js. Survives swaps because it is delegated from document.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== " " && e.keyCode !== 32) return;
+    var el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" ||
+               el.tagName === "BUTTON" || el.isContentEditable)) {
+      return;
+    }
+    var height = window.innerHeight || document.documentElement.clientHeight;
+    var medias = document.querySelectorAll("video,audio");
+    for (var i = 0; i < medias.length; i++) {
+      var m = medias[i];
+      var rect = m.getBoundingClientRect();
+      var inView = (rect.top >= 0 && rect.top <= height) ||
+                   (rect.bottom >= 0 && rect.bottom <= height);
+      if (!inView) continue;
+      if (m.paused) { m.play(); } else { m.pause(); }
+      e.preventDefault();
+      break;
+    }
+  });
+
   // --- connection indicator -------------------------------------------------
   function setConn(state) {
     var el = document.getElementById("connection");

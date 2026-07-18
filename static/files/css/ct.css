@@ -278,3 +278,29 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 .field-actions { display: flex; align-items: center; gap: .75rem; }
 .config-status { font-size: .82rem; }
 .hint { margin: 0; font-size: .78rem; }
+
+/* --- drag and drop overlay ----------------------------------------------- */
+body.dropping::after {
+  content: "Drop .torrent files to add them";
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 3px dashed var(--accent);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+/* --- reduced motion ------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

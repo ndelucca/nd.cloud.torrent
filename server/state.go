@@ -4,7 +4,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jpillora/scraper/scraper"
 	"github.com/jpillora/velox"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
@@ -19,10 +18,9 @@ type State struct {
 	velox.State
 	mu sync.Mutex
 
-	Config          engine.Config
-	SearchProviders scraper.Config
-	Downloads       *fsNode
-	Torrents        map[string]*engine.Torrent
+	Config    engine.Config
+	Downloads *fsNode
+	Torrents  map[string]*engine.Torrent
 	// ConnectedUsers is a count, not a roster: the previous map exposed every
 	// client's IP:port to every other client.
 	ConnectedUsers int

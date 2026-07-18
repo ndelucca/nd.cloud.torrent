@@ -4,18 +4,15 @@ go 1.25.4
 
 require (
 	github.com/anacrolix/torrent v1.59.1
-	github.com/jpillora/backoff v1.0.0
 	github.com/jpillora/cookieauth v1.1.1
 	github.com/jpillora/opts v1.2.3
 	github.com/jpillora/requestlog v1.0.0
-	github.com/jpillora/scraper v0.3.0
 	github.com/jpillora/velox v0.4.2
 	github.com/klauspost/compress v1.19.0
 	github.com/shirou/gopsutil/v4 v4.26.6
 )
 
 require (
-	github.com/PuerkitoBio/goquery v1.11.0 // indirect
 	github.com/RoaringBitmap/roaring v1.9.4 // indirect
 	github.com/ajwerner/btree v0.0.0-20211221152037-f427b3e689c0 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
@@ -35,7 +32,6 @@ require (
 	github.com/anacrolix/upnp v0.1.4 // indirect
 	github.com/anacrolix/utp v0.2.0 // indirect
 	github.com/andrew-d/go-termutil v0.0.0-20150726205930-009166a695a2 // indirect
-	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/benbjohnson/immutable v0.4.3 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect

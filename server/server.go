@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/jpillora/cookieauth"
 	"github.com/jpillora/requestlog"
-	"github.com/jpillora/scraper/scraper"
 	"github.com/jpillora/velox"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
@@ -49,9 +47,6 @@ type Options struct {
 	CertPath   string `help:"TLS Certicate file path" short:"r"`
 	Log        bool   `help:"Enable request logging"`
 	Open       bool   `help:"Open now with your default browser"`
-	// Opt-in: the document at this URL decides which hosts the server scrapes,
-	// so it is off unless explicitly configured.
-	SearchConfigURL string `help:"Optional URL to periodically fetch search providers from"`
 }
 
 // DefaultOptions returns the shipped defaults. Keeping them here rather than in
@@ -85,12 +80,6 @@ type Server struct {
 
 	static      http.Handler
 	syncHandler http.Handler
-	scraper     *scraper.Handler
-	scraperh    http.Handler
-
-	// searchConfig is the last scraper config successfully applied; guarded by
-	// state's lock via applySearchConfig.
-	searchConfig []byte
 }
 
 // New builds a server from options. It performs no I/O beyond reading the config
@@ -126,10 +115,6 @@ func New(o Options, version string) (*Server, error) {
 
 	s.static = ctstatic.FileSystemHandler()
 
-	if err := s.setupScraper(); err != nil {
-		return nil, err
-	}
-
 	// velox.SyncHandler initializes the *embedded* velox.State. velox.Sync does
 	// not — it builds a detached State, which silently made every Push a no-op.
 	s.syncHandler = velox.SyncHandler(&s.state)
@@ -143,27 +128,6 @@ func New(o Options, version string) (*Server, error) {
 		return nil, fmt.Errorf("initial configure failed: %w", err)
 	}
 	return s, nil
-}
-
-func (s *Server) setupScraper() error {
-	s.scraper = &scraper.Handler{
-		Log: false, Debug: false,
-		Headers: map[string]string{
-			"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		},
-	}
-	// Pass a copy: the scraper's selector unmarshaler mutates the buffer it is
-	// given, which would corrupt the embedded config for any later load.
-	cfg := bytes.Clone(defaultSearchConfig)
-	if err := s.scraper.LoadConfig(cfg); err != nil {
-		return fmt.Errorf("failed to load search config: %w", err)
-	}
-	s.searchConfig = bytes.Clone(defaultSearchConfig)
-	s.state.SearchProviders = s.scraper.Config
-	// The scraper treats POST to its root as "replace my whole config", which is
-	// an unauthenticated SSRF pivot. Only reads reach it.
-	s.scraperh = readOnly(safeSearchParams(http.StripPrefix("/search", s.scraper)))
-	return nil
 }
 
 func (s *Server) loadConfig() (engine.Config, error) {
@@ -199,7 +163,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.pollLoop(ctx)
 	go s.statsLoop(ctx)
-	go s.fetchSearchConfigLoop(ctx)
 
 	host := s.opts.Host
 	if host == "" {
@@ -447,8 +410,6 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.servePage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/fragments/"):
 		s.serveFragment(w, r)
-	case r.URL.Path == "/search" || strings.HasPrefix(r.URL.Path, "/search/"):
-		s.scraperh.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/"):
 		s.serveAPI(w, r)
 	case strings.HasPrefix(r.URL.Path, "/download/"):
