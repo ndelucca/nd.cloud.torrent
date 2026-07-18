@@ -37,18 +37,18 @@ const (
 	kickFloor = 200 * time.Millisecond
 )
 
-// Options is the CLI surface. jpillora/opts derives flags, help and env from
-// these struct tags.
+// Options is the CLI surface. The flags, shorthands and environment variables
+// that fill it are registered in main, not derived from tags here.
 type Options struct {
-	Title      string `help:"Title of this instance" env:"TITLE"`
-	Port       int    `help:"Listening port" env:"PORT"`
-	Host       string `help:"Listening interface (default all)"`
-	Auth       string `help:"Optional basic auth in form 'user:password'" env:"AUTH"`
-	ConfigPath string `help:"Configuration file path"`
-	KeyPath    string `help:"TLS Key file path"`
-	CertPath   string `help:"TLS Certicate file path" short:"r"`
-	Log        bool   `help:"Enable request logging"`
-	Open       bool   `help:"Open now with your default browser"`
+	Title      string
+	Port       int
+	Host       string // empty means every interface
+	Auth       string // "user:password"; empty disables authentication
+	ConfigPath string
+	KeyPath    string
+	CertPath   string
+	Log        bool
+	Open       bool
 }
 
 // DefaultOptions returns the shipped defaults. Keeping them here rather than in
