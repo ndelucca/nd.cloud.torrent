@@ -79,6 +79,9 @@ type Server struct {
 	renderer *renderer
 	hub      *hub
 	kickCh   chan struct{}
+	// seenTorrents is the infohash set as of the last render; only the render
+	// loop touches it.
+	seenTorrents map[string]bool
 
 	static      http.Handler
 	syncHandler http.Handler
@@ -293,6 +296,7 @@ func (s *Server) pollLoop(ctx context.Context) {
 				st.ConnectedUsers = conns
 			})
 			s.renderRegions()
+			s.renderTorrents(torrents)
 		}
 		select {
 		case <-ctx.Done():
@@ -435,6 +439,13 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.syncHandler.ServeHTTP(w, r)
 	case r.URL.Path == "/events":
 		s.serveEvents(w, r)
+	// The htmx UI is served alongside the AngularJS one until it reaches parity,
+	// so the two can be compared on a running instance. It takes over "/" in the
+	// commit that deletes Angular.
+	case r.URL.Path == "/next" || r.URL.Path == "/next/":
+		s.servePage(w, r)
+	case strings.HasPrefix(r.URL.Path, "/fragments/"):
+		s.serveFragment(w, r)
 	case r.URL.Path == "/search" || strings.HasPrefix(r.URL.Path, "/search/"):
 		s.scraperh.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/"):

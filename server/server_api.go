@@ -103,9 +103,18 @@ func (s *Server) api(r *http.Request) error {
 		}
 		return s.reconfigure(c)
 	case "torrent":
-		state, infohash, ok := strings.Cut(string(data), ":")
-		if !ok {
-			return badRequest("Invalid request")
+		var state, infohash string
+		if v := formValues(r, data); v != nil {
+			state, infohash = v.Get("action"), v.Get("infohash")
+			if state == "" || infohash == "" {
+				return badRequest("Invalid request")
+			}
+		} else {
+			var ok bool
+			state, infohash, ok = strings.Cut(string(data), ":")
+			if !ok {
+				return badRequest("Invalid request")
+			}
 		}
 		switch state {
 		case "start":
@@ -134,6 +143,28 @@ func (s *Server) api(r *http.Request) error {
 	default:
 		return apiError{http.StatusNotFound, fmt.Errorf("Invalid action: %s", action)}
 	}
+}
+
+// formValues parses a form-encoded body, or returns nil if the request is not
+// form-encoded.
+//
+// htmx posts application/x-www-form-urlencoded; the AngularJS UI posts a
+// colon-delimited text/plain body (`start:<infohash>`), which cannot represent
+// a path containing a colon. Both are accepted while the two UIs coexist; the
+// colon scheme goes away with Angular.
+//
+// The body is parsed from the bytes already read rather than via r.ParseForm,
+// which would find the body drained.
+func formValues(r *http.Request, data []byte) url.Values {
+	ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if strings.TrimSpace(ct) != "application/x-www-form-urlencoded" {
+		return nil
+	}
+	v, err := url.ParseQuery(string(data))
+	if err != nil {
+		return nil
+	}
+	return v
 }
 
 // checkSameOrigin rejects cross-site writes. Requests with no Origin (curl, the

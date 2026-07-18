@@ -256,6 +256,10 @@ func TestIdleServerIsQuiet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Measured before connecting: regions created later are live events, not
+	// part of this client's snapshot.
+	snapshot := len(s.renderer.snapshot())
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -264,18 +268,18 @@ func TestIdleServerIsQuiet(t *testing.T) {
 
 	// Drain the initial snapshot and whatever the first kick produces.
 	window := 3 * time.Second
-	events := make(chan int, 1)
+	events := make(chan []string, 1)
 	go func() {
 		r := bufio.NewReader(resp.Body)
-		n := 0
+		var names []string
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
-				events <- n
+				events <- names
 				return
 			}
-			if strings.HasPrefix(line, "event: ") {
-				n++
+			if name, ok := strings.CutPrefix(line, "event: "); ok {
+				names = append(names, strings.TrimSpace(name))
 			}
 		}
 	}()
@@ -284,13 +288,27 @@ func TestIdleServerIsQuiet(t *testing.T) {
 	cancel()
 	resp.Body.Close()
 
-	n := <-events
-	// Ticks in the window: ~3 poll renders + ~1 stats sample. Anything at or
-	// above the poll count means suppression is broken.
-	maxEvents := int(window/statsInterval) + 3
-	if n > maxEvents {
-		t.Errorf("received %d events in %s on an idle server (max %d): "+
-			"change detection is not suppressing unchanged regions", n, window, maxEvents)
+	names := <-events
+	n := len(names)
+	// The initial snapshot delivers one event per region and is not idle
+	// traffic, so discount it. Deriving it from the renderer keeps the bound
+	// correct as regions are added rather than needing a new magic number each
+	// time.
+	steady := n - snapshot
+
+	// What remains should only be the stats sample, whose heap and goroutine
+	// numbers legitimately move every statsInterval. One frame per poll tick
+	// would mean suppression is broken.
+	maxSteady := int(window/statsInterval) + 1
+	if steady > maxSteady {
+		t.Errorf("%d events in %s after a %d-event snapshot (max %d steady): "+
+			"change detection is not suppressing unchanged regions",
+			n, window, snapshot, maxSteady)
 	}
-	t.Logf("idle traffic: %d events in %s", n, window)
+	pollTicks := int(window / pollInterval)
+	if steady >= pollTicks {
+		t.Errorf("steady traffic (%d) reached the poll tick count (%d): "+
+			"regions are being pushed every tick regardless of change", steady, pollTicks)
+	}
+	t.Logf("idle traffic in %s: %d total, %d snapshot, %d steady — sequence: %v", window, n, snapshot, steady, names)
 }

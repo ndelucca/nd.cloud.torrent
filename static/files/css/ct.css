@@ -1,0 +1,162 @@
+/* ct.css — the replacement for the 1.4 MB Semantic UI bundle.
+   Grown alongside the htmx UI; no build step, no framework. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #fff;
+  --text: #1c2024;
+  --muted: #6b7280;
+  --line: #e3e6ea;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --panel: #1c2024;
+    --text: #e6e8ea;
+    --muted: #9aa3ad;
+    --line: #2b3138;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+[x-cloak] { display: none !important; }
+
+.muted { color: var(--muted); }
+
+/* --- top bar ------------------------------------------------------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .75rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { font-size: 1.1rem; margin: 0; font-weight: 600; }
+
+.conn { display: flex; align-items: center; gap: .5rem; font-size: .8rem; color: var(--muted); }
+.conn .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--muted); }
+.conn[data-state="live"] .dot { background: var(--ok); }
+.conn[data-state="offline"] .dot { background: var(--danger); }
+.conn[data-state="paused"] .dot { background: var(--muted); }
+
+/* --- layout -------------------------------------------------------------- */
+main { max-width: 62rem; margin: 0 auto; padding: 1.25rem; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.panel > h2 { margin: 0 0 .75rem; font-size: .95rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+
+.empty { color: var(--muted); margin: .5rem 0; }
+
+/* --- torrents ------------------------------------------------------------ */
+.torrent {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .85rem 1rem;
+  margin-bottom: .75rem;
+}
+
+.torrent-main { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.torrent-info { flex: 1 1 20rem; min-width: 0; }
+.torrent-side { flex: 0 0 auto; text-align: right; }
+
+.torrent-name {
+  margin: 0 0 .15rem;
+  font-size: 1rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.torrent-hash {
+  margin: 0 0 .5rem;
+  font: .72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.torrent-status { margin: .4rem 0 0; font-size: .82rem; color: var(--muted); }
+
+progress {
+  width: 100%;
+  height: .5rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line);
+  /* The value bar animates because idiomorph morphs the element in place
+     instead of recreating it; a plain innerHTML swap would restart it. */
+  transition: none;
+}
+progress::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
+progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width .3s linear; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+
+.torrent-actions { display: flex; gap: .4rem; justify-content: flex-end; flex-wrap: wrap; }
+.torrent-files-row { margin-top: .6rem; }
+.torrent-files { margin-top: .6rem; }
+
+/* --- buttons ------------------------------------------------------------- */
+.btn {
+  font: inherit;
+  font-size: .82rem;
+  padding: .35rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--muted); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.active { border-color: var(--accent); color: var(--accent); }
+
+/* --- file table ---------------------------------------------------------- */
+.files-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.files-table th, .files-table td {
+  text-align: left;
+  padding: .35rem .5rem;
+  border-bottom: 1px solid var(--line);
+}
+.files-table th { color: var(--muted); font-weight: 600; font-size: .78rem; }
+.files-table td:last-child, .files-table th:last-child { text-align: right; white-space: nowrap; }
+.files-table progress { width: 6rem; height: .35rem; vertical-align: middle; }
+.percent { font-size: .75rem; color: var(--muted); }
+.done { color: var(--ok); }
+
+/* Wide content scrolls inside its own box; the page never scrolls sideways. */
+.torrent-files { overflow-x: auto; }
+
+/* --- stats footer -------------------------------------------------------- */
+.stats {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 2rem;
+}
+.stats-inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem 1rem;
+  font-size: .78rem;
+  color: var(--muted);
+}

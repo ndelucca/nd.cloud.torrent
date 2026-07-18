@@ -1,0 +1,40 @@
+{{define "page"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {{/* No maximum-scale/user-scalable: the AngularJS page blocked pinch zoom. */}}
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" href="/cloud-favicon.png">
+  <link rel="stylesheet" href="/css/ct.css">
+  <script src="/js/vendor/htmx.min.js" defer></script>
+  <script src="/js/vendor/sse.js" defer></script>
+  <script src="/js/vendor/idiomorph-ext.min.js" defer></script>
+  <script src="/js/ct.js" defer></script>
+  <script src="/js/vendor/alpine.min.js" defer></script>
+</head>
+<body hx-ext="sse,morph" sse-connect="/events">
+  <header class="topbar">
+    <h1>{{.Title}}</h1>
+    <div id="connection" class="conn" data-state="connecting" title="Connection">
+      <span class="dot"></span><span class="label">connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Torrents</h2>
+      {{/* Populated by the torrent-list SSE event. */}}
+      <div id="torrents" sse-swap="torrent-list" hx-swap="morph:innerHTML">
+        <p class="muted">Connecting…</p>
+      </div>
+    </section>
+  </main>
+
+  <footer id="stats" class="stats" sse-swap="stats" hx-swap="morph:innerHTML">
+    <div class="stats-inner"><span class="stat">…</span></div>
+  </footer>
+</body>
+</html>
+{{end}}

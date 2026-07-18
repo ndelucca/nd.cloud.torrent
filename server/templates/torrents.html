@@ -1,0 +1,113 @@
+{{/*
+torrent-list is the membership skeleton: it creates and destroys rows, and is
+emitted only when the set of infohashes changes. A row cannot listen for
+torrent-<hash> before it exists, so this is the only thing that can bootstrap
+one.
+
+Everything Alpine owns lives here, in the <article> scaffolding, and never
+inside the per-torrent swap target.
+*/}}
+{{define "torrent-list"}}
+<div id="torrent-list">
+  {{if not .}}
+  <p class="empty">No torrents. Add a magnet link or upload a .torrent file above.</p>
+  {{end}}
+  {{range .}}
+  <article class="torrent" id="t-{{.InfoHash}}" x-data="{files:false}">
+    <div id="tr-{{.InfoHash}}" sse-swap="torrent-{{.InfoHash}}" hx-swap="morph:innerHTML">
+      {{template "torrent-row" .}}
+    </div>
+    <div class="torrent-files-row">
+      <button type="button" class="btn"
+              :class="files && 'active'"
+              :aria-expanded="files"
+              aria-controls="tf-{{.InfoHash}}"
+              @click="files = !files; if (files) $dispatch('load-files')">
+        Files
+      </button>
+    </div>
+    {{/* Loaded on first expand, not streamed: the file table is the bulky part
+         and the server has no idea whether it is open. */}}
+    <div id="tf-{{.InfoHash}}" class="torrent-files" x-show="files" x-cloak
+         hx-get="/fragments/torrent/{{.InfoHash}}/files"
+         hx-trigger="load-files once"
+         hx-swap="innerHTML">
+      <p class="muted">Loading files…</p>
+    </div>
+  </article>
+  {{end}}
+</div>
+{{end}}
+
+{{/* torrent-row is the volatile part, morphed once per second. */}}
+{{define "torrent-row"}}
+<div class="torrent-main">
+  <div class="torrent-info">
+    <h3 class="torrent-name" title="{{.Name}}">{{.Name}}</h3>
+    <p class="torrent-hash">{{.InfoHash}}</p>
+    {{if .Loaded}}
+    {{/* <progress> rather than a styled div: no value ever reaches a CSS
+         context, so there is no ZgotmplZ risk, and it is accessible for free. */}}
+    <progress class="torrent-progress" value="{{pct .Percent}}" max="100"
+              aria-label="Download progress">{{pct .Percent}}%</progress>
+    {{else}}
+    <p class="muted">Fetching metadata…</p>
+    {{end}}
+  </div>
+
+  <div class="torrent-side">
+    <div class="torrent-actions">
+      {{if .Started}}
+      <button type="button" class="btn danger"
+              hx-post="/api/torrent" hx-vals='{"action":"stop","infohash":"{{.InfoHash}}"}'
+              hx-swap="none">Stop</button>
+      {{else}}
+      <button type="button" class="btn primary"
+              hx-post="/api/torrent" hx-vals='{"action":"start","infohash":"{{.InfoHash}}"}'
+              hx-swap="none">Start</button>
+      <button type="button" class="btn danger"
+              hx-post="/api/torrent" hx-vals='{"action":"delete","infohash":"{{.InfoHash}}"}'
+              hx-confirm="Remove this torrent?"
+              hx-swap="none">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
+      {{end}}
+    </div>
+    {{if .Started}}
+    <p class="torrent-status">
+      <span{{if eq .Downloaded 0}} class="muted"{{end}}>{{bytes .Downloaded}}</span>
+      / {{bytes .Size}} &middot; {{pct .Percent}}%
+      <strong{{if eq .DownloadRate 0.0}} class="muted"{{end}}>{{bytes .Rate}}/s</strong>
+    </p>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "torrent-files"}}
+<table class="files-table">
+  <thead>
+    <tr><th>File</th><th>Size</th></tr>
+  </thead>
+  <tbody>
+    {{if not .Files}}
+    <tr><td colspan="2" class="muted">No files</td></tr>
+    {{end}}
+    {{range .Files}}
+    <tr>
+      <td>
+        {{filename .Path}}
+        {{if and (gt .Percent 0.0) (lt .Percent 100.0)}}
+        <progress value="{{pct .Percent}}" max="100" aria-label="File progress"></progress>
+        <span class="percent">{{pct .Percent}}%</span>
+        {{end}}
+      </td>
+      <td>{{bytes .Size}}{{if eq .Percent 100.0}} <span class="done" title="Complete">&check;</span>{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+  {{if gt (len .Files) 1}}
+  <tfoot>
+    <tr><th>{{len .Files}} files</th><th>{{bytes .Size}} total</th></tr>
+  </tfoot>
+  {{end}}
+</table>
+{{end}}

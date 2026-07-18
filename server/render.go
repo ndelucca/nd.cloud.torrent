@@ -105,16 +105,16 @@ func humanAgo(t time.Time) string {
 type renderer struct {
 	tmpl *template.Template
 
-	mu     sync.Mutex
-	body   map[string][]byte // event name -> last rendered body
-	framed map[string][]byte // event name -> last body, SSE-framed
+	mu         sync.Mutex
+	body       map[string][]byte // event name -> last rendered body
+	framedBody map[string][]byte // event name -> last body, SSE-framed
 }
 
 func newRenderer(t *template.Template) *renderer {
 	return &renderer{
-		tmpl:   t,
-		body:   map[string][]byte{},
-		framed: map[string][]byte{},
+		tmpl:       t,
+		body:       map[string][]byte{},
+		framedBody: map[string][]byte{},
 	}
 }
 
@@ -164,7 +164,7 @@ func (r *renderer) store(event string, body []byte) []byte {
 	}
 	framed := frameSSE(event, body)
 	r.body[event] = bytes.Clone(body)
-	r.framed[event] = framed
+	r.framedBody[event] = framed
 	return framed
 }
 
@@ -180,8 +180,16 @@ func (r *renderer) forget(event string) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.body, event)
-	delete(r.framed, event)
+	delete(r.framedBody, event)
 	return frameSSE(event, nil)
+}
+
+// framed returns the cached framing for a region, for callers that must emit it
+// even though its bytes did not change.
+func (r *renderer) framed(event string) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.framedBody[event]
 }
 
 // snapshot returns the current framed body of every region, in a stable order,
@@ -189,14 +197,14 @@ func (r *renderer) forget(event string) []byte {
 func (r *renderer) snapshot() [][]byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	names := make([]string, 0, len(r.framed))
-	for name := range r.framed {
+	names := make([]string, 0, len(r.framedBody))
+	for name := range r.framedBody {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	out := make([][]byte, 0, len(names))
 	for _, name := range names {
-		out = append(out, r.framed[name])
+		out = append(out, r.framedBody[name])
 	}
 	return out
 }
