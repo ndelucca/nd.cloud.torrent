@@ -83,6 +83,12 @@ For anything reachable from the internet, use `--auth` together with
 `--cert-path`/`--key-path`, or put it behind a reverse proxy that terminates TLS
 and handles authentication.
 
+`--auth` uses HTTP basic auth to log in, then issues a session cookie holding a
+random token — nothing derived from the password. The cookie is `HttpOnly` and
+`SameSite=Lax`, and is marked `Secure` when the server is serving TLS. Sessions
+last a fortnight, are checked against the clock on every request, and are held
+in memory, so restarting the server ends them.
+
 ## HTTP endpoints
 
 | Path | Purpose |

@@ -87,7 +87,7 @@ When the user requests a durable behavior change, record it here or in the relev
 Cloud Torrent: self-hosted remote torrent client in Go. A single binary embeds a server-rendered web UI (`html/template` + htmx + Alpine), a torrent engine backed by `anacrolix/torrent`, and an HTTP server that streams downloaded files and pushes live HTML fragments to browsers over Server-Sent Events.
 
 - Module path: `github.com/ndelucca/nd.cloud.torrent` (Go 1.25.4)
-- Entry point: `main.go` — builds `server.Server` defaults, parses flags via `jpillora/opts`, calls `Run(version)`
+- Entry point: `main.go` — builds `server.Server` defaults, registers the CLI flags via `internal/cli`, calls `Run(version)`
 - `version` is injected at build time with `-ldflags "-X main.version=..."`; the `0.0.0-src` default means an unreleased local build
 - Runtime config persists to `cloud-torrent.json` (path overridable with `--config-path`)
 
@@ -97,12 +97,12 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (reques
 
 - The server owns all HTTP surface and process lifecycle; the engine owns torrent state and never imports `server`
 - Frontend assets and HTML templates are compiled into the binary via `go:embed`; any change to either requires a rebuild to take effect
-- Dependency direction is one-way: `main` → `server` → {`engine`, `static`}. Do not introduce back-edges.
+- Dependency direction is one-way: `main` → {`server`, `internal/cli`} and `server` → {`engine`, `static`, `internal/auth`, `internal/reqlog`}. Nothing under `internal/` imports `server` or `engine`. Do not introduce back-edges.
 
 ## Work Guidance
 
 - Keep the binary dependency-free at runtime: `CGO_ENABLED=0` builds must keep working across linux/darwin/windows/openbsd
-- Prefer the standard library. Three `jpillora/*` helpers remain, all single-maintainer and pre-1.0: `cookieauth` (all authentication, the load-bearing one), `opts` (CLI parsing) and `requestlog`. Weigh that before depending on more.
+- Prefer the standard library. Three direct dependencies remain, each earning its place by encapsulating platform or protocol detail: `anacrolix/torrent` (the engine), `klauspost/compress` (gzip middleware) and `gopsutil/v4` (cross-platform system stats). Authentication, CLI parsing and request logging now live in `internal/` — weigh that precedent before adding a dependency for something small.
 - Run `go mod tidy` after touching `go.mod`
 
 ## Verification
@@ -115,6 +115,7 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (reques
 ## Child DOX Index
 
 - `engine/CLAUDE.md` — torrent engine: client lifecycle, torrent/file state, start/stop/delete semantics
+- `internal/CLAUDE.md` — stdlib-only replacements for third-party helpers: `auth` (session cookies), `cli` (flags), `reqlog` (request logging)
 - `server/CLAUDE.md` — HTTP server, server-side rendering, the SSE stream, `/api/*`, file serving, system stats
 - `static/CLAUDE.md` — embedded CSS/JS assets (covers `static/files/` too; no doc may live under `files/`, it would be embedded and served). The HTML lives in `server/templates/`.
 - `.github/CLAUDE.md` — CI, release, and Docker packaging

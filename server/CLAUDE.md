@@ -15,6 +15,7 @@ The process shell and every HTTP surface: flag/config handling, the shared state
 - `render.go` — `parseTemplates`, the template funcs, and `renderer`: per-region change detection and SSE framing
 - `events.go` — `hub` (fan-out with backpressure) and `serveEvents`, the `/events` SSE endpoint
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
+- Authentication and request logging are not owned here: `handler` wires in `internal/auth` and `internal/reqlog`
 - `server_api.go` — `/api/*` actions: `add`, `url`, `magnet`, `torrentfile`, `configure`, `torrent`, `file`
 - `server_files.go` — `fsNode` tree of the download directory, static/download file serving, archive downloads
 - `server_stats.go` — `SystemStats` and `sampleSystemStats`, a pure sampler over `gopsutil/v4`
@@ -43,6 +44,8 @@ Server-rendered / SSE path:
 - **Any path rendered into a URL attribute must go through the `urlpath` template func.** `html/template` only normalizes attributes it recognises as URLs (`href`, `src`); an htmx attribute like `hx-delete` is plain text to it, so a file named `a#b.mkv` produced a request for `/download/a` and deleted a *different* file with a 200. File names come from torrents, so this is attacker-reachable.
 - Rendering is serialized by `renderMu`: `pollLoop` and `statsLoop` both render, and unsynchronized they can broadcast samples out of order. `seenTorrents` is covered by it.
 - The SSE stream sets a per-write deadline. There is no server-wide `WriteTimeout` (the stream and large downloads are both long-lived), and a blocked `Write` is not unblocked by request-context cancellation — without it a dead client keeps a subscriber slot and the poll loop walking the download directory forever.
+- That deadline is set through an `http.ResponseController`, so **every middleware wrapping the `ResponseWriter` must implement `Unwrap`**, and any that a streaming path passes through must implement `Flush`. `serveEvents` type-asserts `http.Flusher` and 500s if it fails, while a missing `Unwrap` fails silently: `SetWriteDeadline` returns `ErrNotSupported` and the stream runs with no timeout. This is exactly what `--log` did before `internal/reqlog`.
+- The handler chain is, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` → `route`. Authentication sits inside the security headers and outside gzip so a 401 is never compressed and never misses its headers.
 - Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 - `/download/` paths must go through `resolveWithin`, which uses `filepath.Rel` plus symlink resolution — a prefix check has no separator boundary.
 - `/api/url` fetches through `guardedDialContext`, which refuses loopback, private and link-local addresses.
@@ -54,7 +57,7 @@ Server-rendered / SSE path:
 
 ## Work Guidance
 
-- New CLI options are struct tags on `Options`; `jpillora/opts` derives flags, `help`, and `env` from them. Defaults live in `DefaultOptions`, not in `main`.
+- A new CLI option is a field on `Options` plus a registration line in `main`, using `internal/cli`. Defaults live in `DefaultOptions`, not in `main`. `Options` carries no struct tags — the flag names, shorthands and env vars are declared at the registration site.
 - `fileNumberLimit` caps the listed download tree — keep the traversal bounded
 
 ## Verification
