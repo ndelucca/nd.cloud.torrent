@@ -32,6 +32,9 @@ const (
 	// statsInterval must stay fixed: cpu.Percent(0, …) reports usage since the
 	// previous call, so the sampling period defines the window.
 	statsInterval = 5 * time.Second
+	// kickFloor rate-limits event-driven renders so a burst of API calls cannot
+	// spin the render loop.
+	kickFloor = 200 * time.Millisecond
 )
 
 // Options is the CLI surface. jpillora/opts derives flags, help and env from
@@ -70,6 +73,13 @@ type Server struct {
 	engine *engine.Engine
 	state  State
 
+	// renderer, hub and kickCh are the htmx/SSE path. They run alongside velox
+	// while the AngularJS UI is being replaced; velox and everything under
+	// static/files/ go away once the migration lands.
+	renderer *renderer
+	hub      *hub
+	kickCh   chan struct{}
+
 	static      http.Handler
 	syncHandler http.Handler
 	scraper     *scraper.Handler
@@ -88,7 +98,21 @@ func New(o Options, version string) (*Server, error) {
 		return nil, errors.New("You must provide both key and cert paths")
 	}
 
-	s := &Server{opts: o, version: version, isTLS: isTLS}
+	s := &Server{
+		opts:    o,
+		version: version,
+		isTLS:   isTLS,
+		hub:     newHub(),
+		// Buffered and coalesced: a burst of API calls between two ticks costs
+		// one extra render, not one per call.
+		kickCh: make(chan struct{}, 1),
+	}
+
+	tmpl, err := parseTemplates()
+	if err != nil {
+		return nil, err
+	}
+	s.renderer = newRenderer(tmpl)
 
 	s.state.Stats = Stats{
 		Title:   o.Title,
@@ -243,22 +267,44 @@ func (s *Server) Close() error {
 	return s.engine.Close()
 }
 
+// kick asks the render loop to run before its next tick. Without it, pressing
+// Start would take up to a full pollInterval to show any effect.
+func (s *Server) kick() {
+	select {
+	case s.kickCh <- struct{}{}:
+	default: // a render is already pending; coalesce
+	}
+}
+
 func (s *Server) pollLoop(ctx context.Context) {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {
-		torrents := s.engine.GetTorrents()
-		downloads := s.listFiles()
-		conns := s.state.NumConnections()
-		s.state.Update(func(st *State) {
-			st.Torrents = torrents
-			st.Downloads = downloads
-			st.ConnectedUsers = conns
-		})
+		// velox clients and SSE clients both count as watchers. listFiles walks
+		// the download directory with up to fileNumberLimit stat calls, so with
+		// nobody connected it is pure waste.
+		if s.watchers() > 0 {
+			torrents := s.engine.GetTorrents()
+			downloads := s.listFiles()
+			conns := s.watchers()
+			s.state.Update(func(st *State) {
+				st.Torrents = torrents
+				st.Downloads = downloads
+				st.ConnectedUsers = conns
+			})
+			s.renderRegions()
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-s.kickCh:
+			// Floor the rate so a burst of API calls cannot spin this loop.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(kickFloor):
+			}
 		}
 	}
 }
@@ -269,12 +315,57 @@ func (s *Server) statsLoop(ctx context.Context) {
 	for {
 		sys := sampleSystemStats(s.engine.Config().DownloadDirectory)
 		s.state.Update(func(st *State) { st.Stats.System = sys })
+		s.renderRegions()
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
 	}
+}
+
+// watchers counts browsers on either transport.
+func (s *Server) watchers() int { return s.state.NumConnections() + s.hub.count() }
+
+// renderRegions renders every SSE region once and fans the same bytes out to
+// every subscriber. Rendering is deliberately not per-client.
+func (s *Server) renderRegions() {
+	var view statsView
+	s.state.Read(func(st *State) {
+		view = statsView{
+			Title:          st.Stats.Title,
+			Version:        st.Stats.Version,
+			Runtime:        st.Stats.Runtime,
+			Uptime:         st.Stats.Uptime,
+			ConnectedUsers: st.ConnectedUsers,
+			System:         st.Stats.System,
+			MemPercent:     percentOf(st.Stats.System.MemoryUsed, st.Stats.System.MemoryTotal),
+			DiskPercent:    percentOf(st.Stats.System.DiskUsed, st.Stats.System.DiskTotal),
+			DiskFree:       st.Stats.System.DiskTotal - st.Stats.System.DiskUsed,
+		}
+	})
+	frame, err := s.renderer.render("stats", "stats", view)
+	if err != nil {
+		log.Printf("render stats: %s", err)
+		return
+	}
+	s.hub.broadcast(frame)
+}
+
+// statsView is the stats region's view model. Percentages are computed here
+// rather than in the template: html/template has no arithmetic, and the
+// AngularJS version doing `100*used/total` inline was a source of divide-by-zero
+// producing +Inf.
+type statsView struct {
+	Title          string
+	Version        string
+	Runtime        string
+	Uptime         time.Time
+	ConnectedUsers int
+	System         SystemStats
+	MemPercent     float64
+	DiskPercent    float64
+	DiskFree       int64
 }
 
 // reconfigure applies a config to the engine and persists it. The engine restart
@@ -306,7 +397,12 @@ func (s *Server) handler() http.Handler {
 	var h http.Handler = http.HandlerFunc(s.route)
 	// gzhttp skips already-compressed content types, so /download/ no longer
 	// burns CPU re-compressing media and zip archives.
-	h = gzhttp.GzipHandler(h)
+	//
+	// text/event-stream must be excluded outright. gzhttp buffers until
+	// DefaultMinSize (1 KiB) before deciding whether to compress, and an SSE
+	// frame is usually smaller than that — the first event would sit in the
+	// buffer and never reach the browser. TestEventsArriveImmediately pins this.
+	h = s.gzip(h)
 	if s.opts.Auth != "" {
 		user, pass, _ := strings.Cut(s.opts.Auth, ":")
 		h = cookieauth.New().SetUserPass(user, pass).Wrap(h)
@@ -319,6 +415,17 @@ func (s *Server) handler() http.Handler {
 	return h
 }
 
+// gzip wraps h, compressing everything except the SSE stream.
+func (s *Server) gzip(h http.Handler) http.Handler {
+	wrapper, err := gzhttp.NewWrapper(gzhttp.ExceptContentTypes([]string{"text/event-stream"}))
+	if err != nil {
+		// Only reachable from a bad option constant, i.e. a programming error.
+		log.Printf("gzip wrapper: %s; serving uncompressed", err)
+		return h
+	}
+	return wrapper(h)
+}
+
 // route dispatches by path prefix; order matters.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -326,6 +433,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		velox.JS.ServeHTTP(w, r)
 	case r.URL.Path == "/sync":
 		s.syncHandler.ServeHTTP(w, r)
+	case r.URL.Path == "/events":
+		s.serveEvents(w, r)
 	case r.URL.Path == "/search" || strings.HasPrefix(r.URL.Path, "/search/"):
 		s.scraperh.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/"):

@@ -1,0 +1,16 @@
+{{define "stats"}}
+<div class="stats-inner">
+  {{if gt .ConnectedUsers 1}}
+  <span class="stat users" title="Browsers connected">{{.ConnectedUsers}} users</span>
+  {{end}}
+  {{if .System.Set}}
+  <span class="stat" title="CPU usage">cpu {{round .System.CPU}}%</span>
+  <span class="stat" title="Memory usage">mem {{round .MemPercent}}%</span>
+  <span class="stat" title="Disk usage">disk {{round .DiskPercent}}% &middot; {{bytes .DiskFree}} free</span>
+  {{end}}
+  <span class="stat" title="Go heap">heap {{bytes .System.GoMemory}}</span>
+  <span class="stat" title="Goroutines">{{.System.GoRoutines}} goroutines</span>
+  <span class="stat" title="Go {{.Runtime}}">{{.Version}}</span>
+  <span class="stat" title="Started {{.Uptime}}">up {{ago .Uptime}}</span>
+</div>
+{{end}}
