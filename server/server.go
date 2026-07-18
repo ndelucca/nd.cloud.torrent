@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/jpillora/cookieauth"
 	"github.com/jpillora/requestlog"
-	"github.com/jpillora/velox"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
@@ -68,9 +66,6 @@ type Server struct {
 	engine *engine.Engine
 	state  State
 
-	// renderer, hub and kickCh are the htmx/SSE path. They run alongside velox
-	// while the AngularJS UI is being replaced; velox and everything under
-	// static/files/ go away once the migration lands.
 	renderer *renderer
 	hub      *hub
 	kickCh   chan struct{}
@@ -78,8 +73,7 @@ type Server struct {
 	// loop touches it.
 	seenTorrents map[string]bool
 
-	static      http.Handler
-	syncHandler http.Handler
+	static http.Handler
 }
 
 // New builds a server from options. It performs no I/O beyond reading the config
@@ -114,10 +108,6 @@ func New(o Options, version string) (*Server, error) {
 	}
 
 	s.static = ctstatic.FileSystemHandler()
-
-	// velox.SyncHandler initializes the *embedded* velox.State. velox.Sync does
-	// not — it builds a detached State, which silently made every Push a no-op.
-	s.syncHandler = velox.SyncHandler(&s.state)
 
 	s.engine = engine.New()
 	c, err := s.loadConfig()
@@ -180,9 +170,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// Without these a single idle connection can hold a goroutine forever.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		// No WriteTimeout: /sync is long-lived and downloads can be large.
-		//disable http2 due to velox bug
-		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
+		// No WriteTimeout: /events is long-lived and downloads can be large.
 	}
 
 	// Bind before announcing, so the logged URL is only printed once it is real.
@@ -246,9 +234,8 @@ func (s *Server) pollLoop(ctx context.Context) {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {
-		// velox clients and SSE clients both count as watchers. listFiles walks
-		// the download directory with up to fileNumberLimit stat calls, so with
-		// nobody connected it is pure waste.
+		// listFiles walks the download directory with up to fileNumberLimit stat
+		// calls, so with nobody connected it is pure waste.
 		if s.watchers() > 0 {
 			torrents := s.engine.GetTorrents()
 			downloads := s.listFiles()
@@ -292,8 +279,8 @@ func (s *Server) statsLoop(ctx context.Context) {
 	}
 }
 
-// watchers counts browsers on either transport.
-func (s *Server) watchers() int { return s.state.NumConnections() + s.hub.count() }
+// watchers counts connected browsers.
+func (s *Server) watchers() int { return s.hub.count() }
 
 // renderRegions renders every SSE region once and fans the same bytes out to
 // every subscriber. Rendering is deliberately not per-client.
@@ -397,16 +384,11 @@ func (s *Server) gzip(h http.Handler) http.Handler {
 // route dispatches by path prefix; order matters.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case r.URL.Path == "/js/velox.js":
-		velox.JS.ServeHTTP(w, r)
-	case r.URL.Path == "/sync":
-		s.syncHandler.ServeHTTP(w, r)
 	case r.URL.Path == "/events":
 		s.serveEvents(w, r)
-	// The htmx UI is served alongside the AngularJS one until it reaches parity,
-	// so the two can be compared on a running instance. It takes over "/" in the
-	// commit that deletes Angular.
-	case r.URL.Path == "/next" || r.URL.Path == "/next/":
+	case r.URL.Path == "/api/state":
+		s.serveState(w, r)
+	case r.URL.Path == "/":
 		s.servePage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/fragments/"):
 		s.serveFragment(w, r)

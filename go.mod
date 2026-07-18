@@ -7,7 +7,6 @@ require (
 	github.com/jpillora/cookieauth v1.1.1
 	github.com/jpillora/opts v1.2.3
 	github.com/jpillora/requestlog v1.0.0
-	github.com/jpillora/velox v0.4.2
 	github.com/klauspost/compress v1.19.0
 	github.com/shirou/gopsutil/v4 v4.26.6
 )
@@ -42,7 +41,6 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/edsrzf/mmap-go v1.2.0 // indirect
 	github.com/elithrar/simple-scrypt v1.3.0 // indirect
-	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/floatdrop/lru v1.3.0 // indirect
 	github.com/go-llsqlite/adapter v0.2.0 // indirect
 	github.com/go-llsqlite/crawshaw v0.6.0 // indirect
@@ -56,7 +54,6 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/jpillora/ansi v1.0.3 // indirect
-	github.com/jpillora/eventsource v1.1.0 // indirect
 	github.com/jpillora/sizestr v1.0.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20251013123823-9fd1530e3ec3 // indirect

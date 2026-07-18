@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -48,61 +49,62 @@ func newTestServer(t *testing.T) *Server {
 	return s
 }
 
-// TestPushIsWired is the regression test for the highest-severity bug found in
-// review: server.handle called velox.Sync, which builds a *detached* State and
-// leaves the embedded one without a Data function. State.Push short-circuits on
-// nil Data, so every push in the package was a silent no-op and the UI never
-// received an update after the initial snapshot.
+// TestStateIsServedAsJSON keeps the machine-readable feed alive.
 //
-// velox.SyncHandler is the correct entry point: it detects the embedded State
-// and initializes it.
-func TestPushIsWired(t *testing.T) {
+// The velox /sync endpoint used to publish exactly this document, so scripts
+// and monitoring could consume it. Replacing the UI with HTML fragments would
+// have dropped that with no replacement; /api/state is the replacement, and it
+// is also what makes a mis-rendering fragment debuggable.
+func TestStateIsServedAsJSON(t *testing.T) {
 	s := newTestServer(t)
+	h := s.handler()
 
-	// Data is the exact field Push short-circuits on. Asserting on Push()'s
-	// return value would be wrong: it also returns false when a push is already
-	// in flight, which is normal.
-	if s.state.Data == nil {
-		t.Fatal("the embedded velox.State has no Data function: every " +
-			"state.Push() in this package is a silent no-op and the UI will " +
-			"never update after its initial snapshot")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/state = %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	// And the data function must actually produce the state document.
-	b, err := s.state.Data()
-	if err != nil {
-		t.Fatalf("state marshal failed: %v", err)
+	var doc map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("state is not valid JSON: %v", err)
 	}
-	for _, field := range []string{`"Config"`, `"Torrents"`, `"Stats"`} {
-		if !strings.Contains(string(b), field) {
-			t.Errorf("state document missing %s: %s", field, b)
+	for _, field := range []string{"Config", "Torrents", "Stats", "ConnectedUsers"} {
+		if _, ok := doc[field]; !ok {
+			t.Errorf("state document missing %q", field)
 		}
 	}
 }
 
-// TestConcurrentSyncRequests guards the remote-DoS fix. The old code wrote and
-// deleted s.state.Users[conn.ID()] from each HTTP connection's goroutine without
-// holding the mutex; two simultaneous /sync clients produced
-// "fatal error: concurrent map writes", which Go cannot recover from.
+// TestConcurrentEventStreams guards the remote-DoS fix that predates the
+// migration: the old code wrote and deleted a per-connection map entry from
+// each HTTP goroutine without holding the mutex, and two simultaneous clients
+// produced "fatal error: concurrent map writes", which Go cannot recover from.
 //
-// The per-connection map is gone entirely — connection count is now sampled.
-// Run under -race to catch any reintroduction.
-func TestConcurrentSyncRequests(t *testing.T) {
+// The map is gone — connections are counted, not rostered — but the shape of
+// the risk moved to the SSE hub, so the test moved with it. Run under -race.
+func TestConcurrentEventStreams(t *testing.T) {
 	s := newTestServer(t)
-	h := s.handler()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
-		wg.Add(1)
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			w := httptest.NewRecorder()
-			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sync", nil))
+			sub := s.hub.subscribe()
+			s.hub.unsubscribe(sub)
 		}()
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.state.Update(func(st *State) { st.ConnectedUsers = st.NumConnections() })
+			s.hub.broadcast([]byte("event: x\ndata: <i>y</i>\n\n"))
+		}()
+		go func() {
+			defer wg.Done()
+			s.state.Update(func(st *State) { st.ConnectedUsers = s.watchers() })
+			s.renderRegions()
 		}()
 	}
 	wg.Wait()
