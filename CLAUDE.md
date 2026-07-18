@@ -86,7 +86,7 @@ When the user requests a durable behavior change, record it here or in the relev
 
 Cloud Torrent: self-hosted remote torrent client in Go. A single binary embeds an AngularJS web UI, a torrent engine backed by `anacrolix/torrent`, and an HTTP server that streams downloaded files and pushes live state to browsers over velox.
 
-- Module path: `github.com/jpillora/cloud-torrent` (Go 1.25.4)
+- Module path: `github.com/ndelucca/nd.cloud.torrent` (Go 1.25.4)
 - Entry point: `main.go` — builds `server.Server` defaults, parses flags via `jpillora/opts`, calls `Run(version)`
 - `version` is injected at build time with `-ldflags "-X main.version=..."`; the `0.0.0-src` default means an unreleased local build
 - Runtime config persists to `cloud-torrent.json` (path overridable with `--config-path`)

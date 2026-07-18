@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jpillora/cloud-torrent/engine"
-	ctstatic "github.com/jpillora/cloud-torrent/static"
 	"github.com/jpillora/cookieauth"
 	"github.com/jpillora/requestlog"
 	"github.com/jpillora/scraper/scraper"
 	"github.com/jpillora/velox"
 	"github.com/klauspost/compress/gzhttp"
+	"github.com/ndelucca/nd.cloud.torrent/engine"
+	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
 )
 
 const (

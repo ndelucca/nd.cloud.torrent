@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jpillora/cloud-torrent/server"
 	"github.com/jpillora/opts"
+	"github.com/ndelucca/nd.cloud.torrent/server"
 )
 
 var version = "0.0.0-src" //set with ldflags

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jpillora/cloud-torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 // collect drains everything the hub broadcast during fn, as (event, body) pairs.

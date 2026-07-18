@@ -1,4 +1,4 @@
-module github.com/jpillora/cloud-torrent
+module github.com/ndelucca/nd.cloud.torrent
 
 go 1.25.4
 

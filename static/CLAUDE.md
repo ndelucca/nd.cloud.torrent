@@ -23,7 +23,7 @@ Compiles the web UI into the binary and exposes it as an `http.Handler`. Also ow
 
 Embedding:
 
-- Package name is `ctstatic`, not `static`; the server imports it as `github.com/jpillora/cloud-torrent/static`
+- Package name is `ctstatic`, not `static`; the server imports it as `github.com/ndelucca/nd.cloud.torrent/static`
 - `files/` is the web root — `files/index.html` is served at `/`, `files/js/run.js` at `/js/run.js`
 - Everything under `files/` ships inside the binary and is publicly served. Do not put documentation, notes, or secrets there — this doc lives at `static/CLAUDE.md` for exactly that reason.
 - `go:embed` skips names beginning with `_` or `.`; never rely on such a name inside `files/`

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jpillora/cloud-torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 const (
