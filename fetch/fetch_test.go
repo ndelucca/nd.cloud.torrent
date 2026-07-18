@@ -85,22 +85,30 @@ func TestTorrentRefusesLinkLocalMetadata(t *testing.T) {
 	}
 }
 
-// allowLoopback swaps in an unguarded dialer for the duration of a test, so the
-// paths *after* the guard can be exercised against a local target. Anything
-// asserting the guard itself must not use it.
-func allowLoopback(t *testing.T) {
-	t.Helper()
-	prev := dialContext
-	dialContext = (&net.Dialer{}).DialContext
-	t.Cleanup(func() { dialContext = prev })
+// loopbackClient is a Client that may reach a local target, so the paths *after*
+// the guard can be exercised. Anything asserting the guard itself must use the
+// zero Client instead.
+func loopbackClient() *Client {
+	return &Client{Dial: (&net.Dialer{}).DialContext}
+}
+
+// TestZeroClientIsGuarded pins the direction the default has to fail in: a
+// Client nobody configured must refuse, not allow.
+func TestZeroClientIsGuarded(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the zero Client reached a loopback listener")
+	}))
+	defer target.Close()
+
+	if _, err := (&Client{}).Torrent(context.Background(), target.URL); err == nil {
+		t.Fatal("a Client with no Dial set must still be guarded")
+	}
 }
 
 // TestTorrentCapsTheBody pins that a hostile or broken remote cannot stream an
 // unbounded body into memory. It asserts on what Torrent returned, not on a
 // re-implementation of the limit.
 func TestTorrentCapsTheBody(t *testing.T) {
-	allowLoopback(t)
-
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for written := 0; written < MaxSize+(1<<16); written += 1 << 16 {
 			if _, err := w.Write(make([]byte, 1<<16)); err != nil {
@@ -110,7 +118,7 @@ func TestTorrentCapsTheBody(t *testing.T) {
 	}))
 	defer target.Close()
 
-	body, err := Torrent(context.Background(), target.URL)
+	body, err := loopbackClient().Torrent(context.Background(), target.URL)
 	if err != nil {
 		t.Fatalf("Torrent: %v", err)
 	}
@@ -122,15 +130,13 @@ func TestTorrentCapsTheBody(t *testing.T) {
 // TestTorrentReturnsTheBody covers the success path, which is otherwise
 // unreachable in a unit test: every listener a test can bind is on loopback.
 func TestTorrentReturnsTheBody(t *testing.T) {
-	allowLoopback(t)
-
 	want := "d8:announce…" // not a real torrent; fetch does not parse
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(want))
 	}))
 	defer target.Close()
 
-	got, err := Torrent(context.Background(), target.URL)
+	got, err := loopbackClient().Torrent(context.Background(), target.URL)
 	if err != nil {
 		t.Fatalf("Torrent: %v", err)
 	}
@@ -142,14 +148,12 @@ func TestTorrentReturnsTheBody(t *testing.T) {
 // TestTorrentReportsUpstreamStatus: a 404 from the remote is not a client error
 // here, and the server maps ErrUpstream to 502.
 func TestTorrentReportsUpstreamStatus(t *testing.T) {
-	allowLoopback(t)
-
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	defer target.Close()
 
-	_, err := Torrent(context.Background(), target.URL)
+	_, err := loopbackClient().Torrent(context.Background(), target.URL)
 	if !errors.Is(err, ErrUpstream) {
 		t.Fatalf("err = %v, want ErrUpstream", err)
 	}

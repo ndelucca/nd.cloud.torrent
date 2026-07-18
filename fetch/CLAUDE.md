@@ -16,7 +16,8 @@ the host's own network while doing it.
 - `isDisallowedIP` refuses loopback, private (v4 and v6 ULA), link-local, unspecified and multicast. The link-local case is not theoretical: `169.254.169.254` is the cloud metadata service.
 - Bodies are capped at `MaxSize`, the request is bounded by `timeout`, and redirects by `maxRedirects`. All three are needed: this endpoint is reachable by anyone who can reach the UI.
 - Error strings are surfaced to the user verbatim by the server, so they read as UI copy. This is the repo-wide convention that `staticcheck.conf` disables ST1005 for.
-- `dialContext` is a package variable **only** so tests can reach a target. Every listener a test can bind is on loopback, which the guard refuses by design, so without the seam the only testable outcome would be failure. Nothing outside `_test.go` may reassign it, and any test asserting the guard itself must not use `allowLoopback`.
+- **The zero `Client` is guarded.** `Client.Dial` defaults to `guardedDialContext` when nil, so the safe behaviour is the one you get by forgetting to configure anything. Never invert that: a nil `Dial` must not come to mean "unrestricted".
+- `Dial` exists only because every listener a test can bind is on loopback, which the guard refuses by design — without it the only outcome reachable in a unit test would be failure. Production code uses the package-level `Torrent`, which is the zero `Client`. Any test asserting the guard itself must use the zero `Client` too; `TestZeroClientIsGuarded` pins that the default direction is refusal.
 
 ## Work Guidance
 

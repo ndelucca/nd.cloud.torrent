@@ -44,8 +44,24 @@ var (
 	ErrUpstream = errors.New("Failed to fetch remote torrent")
 )
 
-// Torrent downloads the .torrent at raw.
+// Client downloads .torrent files. The zero value is ready to use and refuses
+// non-public addresses; that is the only configuration anything outside tests
+// should want.
+type Client struct {
+	// Dial, when nil, is the guarded dialer. It exists because every listener a
+	// test can bind is on loopback, which the guard refuses by design — so
+	// without it the only outcome reachable in a unit test would be failure.
+	// Production code leaves it nil.
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+// Torrent downloads the .torrent at raw using the default client.
 func Torrent(ctx context.Context, raw string) ([]byte, error) {
+	return (&Client{}).Torrent(ctx, raw)
+}
+
+// Torrent downloads the .torrent at raw.
+func (c *Client) Torrent(ctx context.Context, raw string) ([]byte, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, ErrInvalidURL
@@ -64,7 +80,7 @@ func Torrent(ctx context.Context, raw string) ([]byte, error) {
 		},
 		// Filtering at dial time also covers redirects and closes the
 		// DNS-rebinding gap a hostname pre-check would leave open.
-		Transport: &http.Transport{DialContext: dialContext},
+		Transport: &http.Transport{DialContext: c.dial()},
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -87,12 +103,6 @@ func Torrent(ctx context.Context, raw string) ([]byte, error) {
 	}
 	return body, nil
 }
-
-// dialContext is the dialer Torrent uses. It is a variable solely so tests can
-// reach a target at all: every listener a test can start is on loopback, which
-// the guard refuses by design, so without this seam the only testable outcome
-// in this package would be failure. Nothing outside the tests reassigns it.
-var dialContext = guardedDialContext
 
 // guardedDialContext blocks connections to loopback, link-local and private
 // ranges.
@@ -120,6 +130,16 @@ func guardedDialContext(ctx context.Context, network, addr string) (net.Conn, er
 		}
 	}
 	return nil, fmt.Errorf("%w: %s", ErrBlocked, host)
+}
+
+// dial returns the configured dialer, defaulting to the guarded one. A nil Dial
+// must mean "guarded", never "unrestricted": the safe behaviour has to be the
+// one you get by forgetting to set anything.
+func (c *Client) dial() func(context.Context, string, string) (net.Conn, error) {
+	if c.Dial != nil {
+		return c.Dial
+	}
+	return guardedDialContext
 }
 
 func isDisallowedIP(ip net.IP) bool {
