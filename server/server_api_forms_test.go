@@ -114,8 +114,18 @@ func TestAddURIDispatch(t *testing.T) {
 		{"empty", "", true},
 		{"file scheme", "file:///etc/passwd", true},
 		{"nonsense", "hello world", true},
-		{"loopback url", "http://127.0.0.1:1/x.torrent", true}, // SSRF guard
 	}
+	// A live loopback target, so the guard is what rejects it rather than a
+	// connection-refused from a closed port.
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("SSRF guard failed: /api/add reached a loopback address")
+	}))
+	defer target.Close()
+	cases = append(cases, struct {
+		name, uri string
+		wantErr   bool
+	}{"loopback url", target.URL + "/x.torrent", true})
+
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/api/add",

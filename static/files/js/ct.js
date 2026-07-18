@@ -46,7 +46,7 @@
   // reconnect — and reconnects do happen (laptop sleep, wifi), so without this
   // the tree would silently re-collapse and read as broken.
   //
-  // The key comes from data-path rather than being interpolated into x-data:
+  // The key comes from data-id rather than being interpolated into x-data:
   // Alpine leaves _x_marker set on an initialised element, so changing an
   // x-data expression in place never re-initialises and breaks permanently.
   var TREE_KEY = "ct.tree.";
@@ -221,26 +221,29 @@
   document.body.addEventListener("htmx:sseError", function () { setConn("offline"); });
   document.body.addEventListener("htmx:sseClose", function () { setConn("offline"); });
 
-  // --- background tabs ------------------------------------------------------
+  // --- background tabs: deliberately NOT optimised -------------------------
   //
-  // EventSource is NOT throttled in a hidden tab, so a backgrounded window
-  // streams at full rate indefinitely. Without TLS this is HTTP/1.1, where the
-  // browser allows only ~6 connections per origin — a few pinned tabs plus a
-  // video preview and a zip download is enough to starve the stream.
+  // EventSource is not throttled in a hidden tab, so a backgrounded window
+  // keeps streaming, and without TLS this is HTTP/1.1 with ~6 connections per
+  // origin — several pinned tabs plus a video preview and a zip download can
+  // starve the stream.
   //
-  // htmx owns the EventSource, so the cheapest correct lever is to let it
-  // reconnect: closing on hide frees the socket, and htmx re-establishes it
-  // when the element is processed again on show.
-  var body = document.body;
-  document.addEventListener("visibilitychange", function () {
-    var internal = body["htmx-internal-data"];
-    var src = internal && internal.sseEventSource;
-    if (document.hidden) {
-      if (src && src.readyState !== EventSource.CLOSED) src.close();
-      setConn("paused");
-    } else if (src && src.readyState === EventSource.CLOSED) {
-      htmx.trigger(body, "htmx:abort"); // drop stale state
-      htmx.process(body);               // re-register sse-connect
-    }
-  });
+  // Closing the stream on visibilitychange was tried and removed. htmx owns the
+  // EventSource, so reconnecting means driving htmx's own re-processing through
+  // unexported internals (document.body["htmx-internal-data"].sseEventSource)
+  // and an attribute-hash quirk — and htmx.process alone does NOT reconnect,
+  // because it skips nodes whose attributes have not changed. The first version
+  // shipped exactly that bug: it closed the stream on hide and never reopened
+  // it, leaving the dashboard silently frozen until a manual reload.
+  //
+  // The replacement could not be verified either: Chromium 150 removed
+  // Emulation.setPageVisibilityOverride, so the hide/show path is not reachable
+  // from headless automation here. Shipping an unverifiable optimisation whose
+  // failure mode is a permanently dead UI is the worse trade, so the stream
+  // simply stays open.
+  //
+  // If this becomes a real problem, the sound fix is a SharedWorker or a
+  // BroadcastChannel leader election sharing ONE EventSource across all tabs,
+  // which caps the cost at one connection regardless of tab count and needs no
+  // htmx internals at all.
 })();

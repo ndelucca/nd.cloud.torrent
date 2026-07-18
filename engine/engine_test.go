@@ -114,23 +114,37 @@ func TestTorrentCloneIsDeep(t *testing.T) {
 	}
 }
 
-// TestUpdateLoadedResizesFiles guards against the index panic that happened when
-// the file list grew after the slice was first allocated.
+// TestUpdateLoadedResizesFiles guards against the index panic that happened
+// when a torrent's file list grew after the slice was first allocated.
+//
+// It calls the production path. The previous version re-implemented the resize
+// inside the test body and asserted on its own copy, so it passed whether or
+// not the real code was correct — it would have passed with updateLoaded
+// deleted entirely.
 func TestUpdateLoadedResizesFiles(t *testing.T) {
 	tor := &Torrent{Files: []*File{{Path: "old"}}}
-	// Simulate the resize branch directly: a shorter cached slice must grow to
-	// match, preserving what was already there.
-	tfiles := 3
-	if len(tor.Files) != tfiles {
-		resized := make([]*File, tfiles)
-		copy(resized, tor.Files)
-		tor.Files = resized
-	}
+
+	// Grow: one cached entry, three live files.
+	tor.resizeFiles(3)
 	if len(tor.Files) != 3 {
-		t.Fatalf("len = %d, want 3", len(tor.Files))
+		t.Fatalf("after growing: len = %d, want 3", len(tor.Files))
 	}
 	if tor.Files[0] == nil || tor.Files[0].Path != "old" {
 		t.Error("existing entries must be preserved across a resize")
+	}
+	for i, f := range tor.Files {
+		if f == nil && i > 0 {
+			continue // new slots are filled by the caller
+		}
+	}
+
+	// Shrink: the slice must follow the live count, not keep stale entries.
+	tor.resizeFiles(1)
+	if len(tor.Files) != 1 {
+		t.Fatalf("after shrinking: len = %d, want 1", len(tor.Files))
+	}
+	if tor.Files[0] == nil || tor.Files[0].Path != "old" {
+		t.Error("shrinking must keep the surviving entry")
 	}
 }
 

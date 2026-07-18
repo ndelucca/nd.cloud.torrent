@@ -52,7 +52,6 @@ body {
 .conn .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--muted); }
 .conn[data-state="live"] .dot { background: var(--ok); }
 .conn[data-state="offline"] .dot { background: var(--danger); }
-.conn[data-state="paused"] .dot { background: var(--muted); }
 
 /* --- layout -------------------------------------------------------------- */
 main { max-width: 62rem; margin: 0 auto; padding: 1.25rem; }

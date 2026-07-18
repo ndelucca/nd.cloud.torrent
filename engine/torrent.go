@@ -71,13 +71,7 @@ func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
 	t.Size = tt.Length()
 
 	tfiles := tt.Files()
-	// Resize on every pass: the file list is only trustworthy once info has
-	// arrived, and an under-sized slice used to panic on index.
-	if len(t.Files) != len(tfiles) {
-		resized := make([]*File, len(tfiles))
-		copy(resized, t.Files)
-		t.Files = resized
-	}
+	t.resizeFiles(len(tfiles))
 	for i, f := range tfiles {
 		file := t.Files[i]
 		if file == nil {
@@ -124,4 +118,18 @@ func percent(n, total int64) float32 {
 	const scale = 100 // two decimal places
 	pct := float64(n) / float64(total) * 100
 	return float32(int64(pct*scale)) / scale
+}
+
+// resizeFiles makes the cached file slice match the live file count,
+// preserving the entries that survive.
+//
+// It runs on every pass: the file list is only trustworthy once metadata has
+// arrived, and an under-sized slice used to panic on index.
+func (t *Torrent) resizeFiles(n int) {
+	if len(t.Files) == n {
+		return
+	}
+	resized := make([]*File, n)
+	copy(resized, t.Files)
+	t.Files = resized
 }

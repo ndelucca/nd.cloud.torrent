@@ -17,6 +17,13 @@ import (
 // not one.
 const maxUploadMemory = 8 << 20
 
+// maxUploadBody caps the whole multipart request. ParseMultipartForm bounds only
+// what is buffered in RAM — the remainder spills to temp files with no limit at
+// all, so without this an unauthenticated POST of a multi-gigabyte body fills
+// the temp filesystem. Per-part limits do not help: by the time they apply, the
+// body has already landed on disk.
+const maxUploadBody = 32 << 20
+
 // addURI dispatches a user-supplied string to the right engine call by looking
 // at its scheme.
 func (s *Server) addURI(r *http.Request, uri string) error {
@@ -40,7 +47,8 @@ func (s *Server) addURI(r *http.Request, uri string) error {
 // report progress: htmx emits htmx:xhr:progress only for a real multipart
 // request. The AngularJS UI read each file with FileReader and POSTed the raw
 // bytes, so there was no progress to report at all.
-func (s *Server) addUploadedTorrents(r *http.Request) error {
+func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
 		return badRequest("Malformed upload: %s", err)
 	}

@@ -3,34 +3,65 @@ package server
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
-// collect drains everything the hub broadcast during fn, as (event, body) pairs.
+// collect drains everything the hub broadcast during fn, as event names, with
+// " [EMPTY]" appended for content-free events.
+//
+// The subscriber is drained concurrently rather than after fn returns: the
+// hub's buffer is subBuffer deep and broadcast *disconnects* a subscriber that
+// fills it, so a test with more than a handful of torrents would silently lose
+// events instead of failing.
 func collect(t *testing.T, s *Server, fn func()) []string {
 	t.Helper()
 	sub := s.hub.subscribe()
 	defer s.hub.unsubscribe(sub)
-	fn()
 
+	var mu sync.Mutex
 	var out []string
-	for {
-		select {
-		case frame := <-sub.ch:
-			line, rest, _ := bytes.Cut(frame, []byte("\n"))
-			name := strings.TrimPrefix(string(line), "event: ")
-			body := strings.TrimSpace(strings.ReplaceAll(string(rest), "data:", ""))
-			if body == "" {
-				out = append(out, name+" [EMPTY]")
-			} else {
-				out = append(out, name)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case frame, ok := <-sub.ch:
+				if !ok {
+					return
+				}
+				line, rest, _ := bytes.Cut(frame, []byte("\n"))
+				name := strings.TrimPrefix(string(line), "event: ")
+				body := strings.TrimSpace(strings.ReplaceAll(string(rest), "data:", ""))
+				mu.Lock()
+				if body == "" {
+					out = append(out, name+" [EMPTY]")
+				} else {
+					out = append(out, name)
+				}
+				mu.Unlock()
+			case <-sub.done:
+				return
 			}
-		default:
-			return out
 		}
+	}()
+
+	fn()
+	// Let the drainer catch up; broadcast is synchronous into the channel, so a
+	// short settle is enough.
+	time.Sleep(50 * time.Millisecond)
+	s.hub.unsubscribe(sub)
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(out) == 0 {
+		return nil
 	}
+	return append([]string(nil), out...)
 }
 
 func torrent(hash, name string, pct float32) *engine.Torrent {

@@ -29,8 +29,11 @@ func sameHashes(a, b map[string]bool) bool {
 }
 
 // torrentView is one torrent as the templates want it. It exists so template
-// authors are not coupled to engine.Torrent's field names, and so the file list
-// can be dropped from the streamed row (it is fetched on demand instead).
+// authors are not coupled to engine.Torrent's field names.
+//
+// Files is populated only by newTorrentViewWithFiles, for the on-demand file
+// table. The streamed row never renders it, and copying every file into every
+// row once per second would be pure waste.
 type torrentView struct {
 	InfoHash   string
 	Name       string
@@ -57,8 +60,14 @@ func newTorrentView(t *engine.Torrent) torrentView {
 		Size:         t.Size,
 		Rate:         int64(t.DownloadRate),
 		DownloadRate: t.DownloadRate,
-		Files:        t.Files,
 	}
+}
+
+// newTorrentViewWithFiles is the variant used by the /fragments file table.
+func newTorrentViewWithFiles(t *engine.Torrent) torrentView {
+	v := newTorrentView(t)
+	v.Files = t.Files
+	return v
 }
 
 // displayName falls back to the infohash: a magnet has no name until its
@@ -86,6 +95,9 @@ func displayName(t *engine.Torrent) string {
 // Per torrent also keeps each frame well inside deflate's 32 KiB window, which
 // is what makes a persistent gzip stream act as a cheap delta encoder.
 func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
+	s.renderMu.Lock()
+	defer s.renderMu.Unlock()
+
 	views := make([]torrentView, 0, len(torrents))
 	for _, t := range torrents {
 		views = append(views, newTorrentView(t))
@@ -131,6 +143,12 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	// subscriber receives on connect and a stale skeleton would show them stale
 	// rows until each one next changed.
 	membershipChanged := !sameHashes(current, s.seenTorrents)
+	// seenTorrents is updated even if the skeleton fails to render: bailing out
+	// early would leave it describing a state that no longer exists, so the
+	// next tick would compute the wrong membership delta and never emit the
+	// forget events for torrents that had already gone.
+	defer func() { s.seenTorrents = current }()
+
 	listFrame, err := s.renderer.render(torrentListEvent, "torrent-list", views)
 	if err != nil {
 		log.Printf("render torrent-list: %s", err)
@@ -163,8 +181,6 @@ func (s *Server) renderTorrents(torrents map[string]*engine.Torrent) {
 	for _, name := range removed {
 		s.hub.broadcast(s.renderer.forget(name))
 	}
-
-	s.seenTorrents = current
 }
 
 // newThisTick reports whether this infohash had no region before this render,

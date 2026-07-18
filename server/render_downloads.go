@@ -28,7 +28,6 @@ type fsView struct {
 	Size     int64
 	Modified string
 	IsDir    bool
-	Depth    int
 	Children []fsView
 	// Preview is "", "video", "audio" or "image".
 	Preview string
@@ -43,13 +42,13 @@ func newRootView(root *fsNode) fsView {
 		if c == nil {
 			continue
 		}
-		v.Children = append(v.Children, newFSView(c, "", 1))
+		v.Children = append(v.Children, newFSView(c, ""))
 	}
 	sortChildren(&v)
 	return v
 }
 
-func newFSView(n *fsNode, parent string, depth int) fsView {
+func newFSView(n *fsNode, parent string) fsView {
 	p := n.Name
 	if parent != "" {
 		p = parent + "/" + n.Name
@@ -61,7 +60,6 @@ func newFSView(n *fsNode, parent string, depth int) fsView {
 		Size:     n.Size,
 		Modified: humanAgo(n.Modified),
 		IsDir:    n.IsDir,
-		Depth:    depth,
 		Preview:  previewKind(n.Name),
 	}
 	if n.IsDir {
@@ -72,7 +70,7 @@ func newFSView(n *fsNode, parent string, depth int) fsView {
 		if c == nil {
 			continue
 		}
-		v.Children = append(v.Children, newFSView(c, p, depth+1))
+		v.Children = append(v.Children, newFSView(c, p))
 	}
 	sortChildren(&v)
 	return v
@@ -146,6 +144,9 @@ func treeSignature(n *fsNode) uint64 {
 // renderDownloads emits the ping when the tree changed. It renders no HTML: the
 // browser pulls the fragment.
 func (s *Server) renderDownloads(root *fsNode) {
+	s.renderMu.Lock()
+	defer s.renderMu.Unlock()
+
 	sig := treeSignature(root)
 	// Wrapped in a comment so the payload is still element-shaped; nothing
 	// swaps this event, it only fires an hx-trigger.

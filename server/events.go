@@ -14,6 +14,8 @@ const (
 	// idle server emits no events at all, so without this a proxy may drop the
 	// connection after its read timeout.
 	keepaliveInterval = 25 * time.Second
+	// writeTimeout bounds a single frame write to one subscriber.
+	writeTimeout = 15 * time.Second
 )
 
 // subscriber is one connected browser.
@@ -97,13 +99,34 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	head.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// Without a per-write deadline this goroutine can block forever on a client
+	// whose TCP send buffer is full: request-context cancellation does not
+	// unblock a blocked Write, so the subscriber would never be released and
+	// watchers() would stay above zero, keeping the poll loop walking the
+	// download directory once a second for a browser that is gone.
+	//
+	// There is deliberately no server-wide WriteTimeout (this stream and large
+	// downloads are both long-lived), so the deadline is set per write.
+	rc := http.NewResponseController(w)
+
+	write := func(b []byte) bool {
+		if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			// Not supported by this ResponseWriter; proceed without one.
+			_ = err
+		}
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return true
+	}
+
 	sub := s.hub.subscribe()
 	defer s.hub.unsubscribe(sub)
 
 	// A client connecting mid-tick must see current state immediately rather
 	// than wait for something to change.
 	for _, frame := range s.renderer.snapshot() {
-		if _, err := w.Write(frame); err != nil {
+		if !write(frame) {
 			return
 		}
 	}
@@ -124,13 +147,13 @@ func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 		case <-sub.done:
 			return
 		case frame := <-sub.ch:
-			if _, err := w.Write(frame); err != nil {
+			if !write(frame) {
 				return
 			}
 			flusher.Flush()
 		case <-keepalive.C:
 			// A comment line: valid SSE, ignored by EventSource.
-			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+			if !write([]byte(": keepalive\n\n")) {
 				return
 			}
 			flusher.Flush()

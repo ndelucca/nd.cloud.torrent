@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 // TestFrameSSE pins the framing. Rendered HTML is full of newlines, and every
@@ -94,21 +96,44 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 		t.Errorf("bare text = %v, want errBareText", err)
 	}
 
+	// Every fragment, with data it can actually render. The previous version
+	// executed them all with statsView{} and continue'd on error — which was
+	// almost all of them — so it really only covered the two that happen to
+	// tolerate a wrong type, while claiming to cover every template.
 	tmpl, perr := parseTemplates()
 	if perr != nil {
 		t.Fatal(perr)
 	}
-	for _, defined := range tmpl.Templates() {
-		name := defined.Name()
-		if !strings.HasPrefix(name, "templates/") && name != "cloud-torrent" {
-			var buf bytes.Buffer
-			// Zero data: we are checking the leading byte, not the content.
-			if err := tmpl.ExecuteTemplate(&buf, name, statsView{}); err != nil {
-				continue // template needs different data; covered by its own test
-			}
-			if err := checkFragment(name, buf.Bytes()); err != nil {
-				t.Errorf("%v", err)
-			}
+	fragments := []struct {
+		name string
+		data any
+	}{
+		{"stats", statsView{System: SystemStats{Set: true}}},
+		{"api-ok", "Done."},
+		{"api-error", "Nope."},
+		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},
+		{"torrent-row", torrentView{InfoHash: "abc", Name: "N", Loaded: true, Started: true}},
+		{"torrent-files", torrentView{InfoHash: "abc", Files: []*engine.File{{Path: "a/b.mkv", Size: 1}}}},
+		{"omni", nil},
+		{"config", engine.Config{DownloadDirectory: "/d", IncomingPort: 1}},
+		{"downloads", struct {
+			Root      fsView
+			Truncated bool
+			Limit     int
+		}{Root: newRootView(&fsNode{Name: "d", IsDir: true}), Limit: 10}},
+	}
+	for _, f := range fragments {
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, f.name, f.data); err != nil {
+			t.Errorf("%s: render failed: %v", f.name, err)
+			continue
+		}
+		if err := checkFragment(f.name, buf.Bytes()); err != nil {
+			t.Errorf("%v", err)
+		}
+		if strings.Contains(buf.String(), "ZgotmplZ") {
+			t.Errorf("%s: ZgotmplZ in output — a value reached a URL or CSS "+
+				"context the autoescaper could not prove safe", f.name)
 		}
 	}
 }

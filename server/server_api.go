@@ -60,7 +60,7 @@ func statusFor(err error) int {
 }
 
 func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
-	err := s.api(r)
+	err := s.api(w, r)
 	// A mutation almost always changes what the UI shows; waking the render loop
 	// makes the effect visible immediately rather than up to a tick later.
 	if err == nil {
@@ -98,7 +98,7 @@ func (s *Server) writeAPIFragment(w http.ResponseWriter, err error) {
 	writeFragment(w, http.StatusOK, buf.String())
 }
 
-func (s *Server) api(r *http.Request) error {
+func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 	defer r.Body.Close()
 	if r.Method != http.MethodPost {
 		return apiError{http.StatusMethodNotAllowed, errors.New("Invalid request method (expecting POST)")}
@@ -114,7 +114,7 @@ func (s *Server) api(r *http.Request) error {
 	// Multipart is handled before the body is drained: it is the only encoding
 	// that must be parsed by the stdlib rather than read whole.
 	if action == "torrentfile" && strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		return s.addUploadedTorrents(r)
+		return s.addUploadedTorrents(w, r)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBody))

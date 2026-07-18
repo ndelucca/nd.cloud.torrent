@@ -25,7 +25,7 @@ interpolating server data into it breaks silently and permanently. The path
 arrives via data-path instead and treeNode() reads it from $el.
 */}}
 {{define "fsnode"}}
-<li class="tree-item{{if .IsDir}} is-dir{{end}}" id="n-{{.ID}}" data-path="{{.Path}}" data-id="{{.ID}}"
+<li class="tree-item{{if .IsDir}} is-dir{{end}}" id="n-{{.ID}}" data-id="{{.ID}}"
     {{if .IsDir}}x-data="treeNode()"{{else}}x-data="treeLeaf()"{{end}}>
   <div class="tree-row">
     {{if .IsDir}}
@@ -35,7 +35,7 @@ arrives via data-path instead and treeNode() reads it from $el.
       <span class="tree-name">{{.Name}}</span>
     </button>
     {{else}}
-    <a class="tree-name is-file" href="/download/{{.Path}}">{{.Name}}</a>
+    <a class="tree-name is-file" href="/download/{{urlpath .Path}}">{{.Name}}</a>
     {{end}}
 
     <span class="tree-meta">{{bytes .Size}} &middot; {{.Modified}}</span>
@@ -48,7 +48,7 @@ arrives via data-path instead and treeNode() reads it from $el.
       {{/* Two-step delete, so a stray click cannot remove a download. */}}
       <button type="button" class="icon-btn danger" x-show="!confirm" @click="ask()" title="Delete">&times;</button>
       <button type="button" class="icon-btn danger" x-show="confirm" x-cloak
-              hx-delete="/download/{{.Path}}"
+              hx-delete="/download/{{urlpath .Path}}"
               hx-target="#downloads" hx-swap="innerHTML"
               @click="confirm = false" title="Confirm delete">Delete?</button>
     </span>
@@ -60,11 +60,11 @@ arrives via data-path instead and treeNode() reads it from $el.
   <div class="tree-preview" x-show="preview" x-cloak data-preserve>
     <template x-if="preview">
       {{if eq .Preview "video"}}
-      <video controls preload="none" src="/download/{{.Path}}"></video>
+      <video controls preload="none" src="/download/{{urlpath .Path}}"></video>
       {{else if eq .Preview "audio"}}
-      <audio controls preload="none" src="/download/{{.Path}}"></audio>
+      <audio controls preload="none" src="/download/{{urlpath .Path}}"></audio>
       {{else}}
-      <img loading="lazy" src="/download/{{.Path}}" alt="{{.Name}}">
+      <img loading="lazy" src="/download/{{urlpath .Path}}" alt="{{.Name}}">
       {{end}}
     </template>
   </div>

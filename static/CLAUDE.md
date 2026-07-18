@@ -26,7 +26,7 @@ Embedding:
 Client behaviour:
 
 - **Alpine state must live outside SSE swap targets, on an element with a stable server-rendered `id`.** Verified in Chromium 150: idiomorph preserves `_x_dataStack` when it matches a node by id, but it reverts *what Alpine wrote* — `x-show`'s inline style is stripped and Alpine never repairs it, because its effects only re-run when the reactive data changes. The visible symptom is a collapsed panel popping open once per second.
-- **Never interpolate server data into an `x-data` expression.** Alpine leaves `_x_marker` set on an initialised element, so a changed `x-data` value is silently ignored forever. Pass data via `data-*` attributes and read it from `$el.dataset`.
+- **Never interpolate server data into an `x-data` expression.** Alpine leaves `_x_marker` set on an initialised element, so a changed `x-data` value is silently ignored forever. Pass data via `data-*` attributes (the tree uses `data-id`) and read it from `$el.dataset`.
 - `ct.js` installs the idiomorph guards and must therefore load *before* Alpine. `data-preserve` on an element opts its whole subtree out of morphing — use it for playing media.
 - Fragments arriving over SSE must be wrapped in an element; a bare-text payload swaps as empty. The server enforces this (`checkFragment`), but the same rule applies to anything written here.
 - An event dispatched by Alpine bubbles *up*, so an `hx-trigger` on a sibling never sees it — use `from:closest <ancestor>`.

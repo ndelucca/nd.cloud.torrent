@@ -1,3 +1,6 @@
+// Package engine wraps anacrolix/torrent in a small, server-friendly facade:
+// one client, a mutable Config, and a cache of view models keyed by hex
+// infohash. It knows nothing about HTTP.
 package engine
 
 import (
@@ -34,6 +37,14 @@ var (
 // Every exported method is safe for concurrent use. All access to client, config
 // and ts happens under mu.
 type Engine struct {
+	// configureMu serializes Configure end to end. mu alone is not enough: the
+	// same-port path releases mu between dropping the old client and installing
+	// the replacement, and a second caller entering that window saw
+	// client == nil, took the non-retrying branch, and stole the port — leaving
+	// the first caller to spin the whole rebind budget and fail, or worse, both
+	// to succeed with the persisted config and the running engine disagreeing.
+	configureMu sync.Mutex
+
 	mu     sync.Mutex
 	client *torrent.Client
 	config Config
@@ -68,6 +79,8 @@ func (e *Engine) Configure(c Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	e.configureMu.Lock()
+	defer e.configureMu.Unlock()
 
 	tc := torrent.NewDefaultClientConfig()
 	tc.DataDir = c.DownloadDirectory
@@ -134,6 +147,7 @@ func (e *Engine) Configure(c Config) error {
 			readd = append(readd, t)
 		}
 	}
+	var rewatch []*torrent.Torrent
 	for _, t := range readd {
 		tt, _, err := client.AddTorrentSpec(t.spec)
 		if err != nil {
@@ -141,11 +155,23 @@ func (e *Engine) Configure(c Config) error {
 			continue
 		}
 		t.t = tt
-		if t.Started && tt.Info() != nil {
+		switch {
+		case t.Started && tt.Info() != nil:
 			tt.DownloadAll()
+		case tt.Info() == nil && e.config.AutoStart:
+			// A magnet whose metadata had not arrived yet. Its original watcher
+			// is parked on the OLD handle and will correctly decline to act
+			// once it fires, so without a fresh watcher the torrent would never
+			// auto-start — permanently, for the lifetime of the process.
+			rewatch = append(rewatch, tt)
 		}
 	}
 	e.mu.Unlock()
+
+	// Outside the lock: watchInfo takes mu itself when its metadata lands.
+	for _, tt := range rewatch {
+		e.watchInfo(tt)
+	}
 
 	// Only reached on the port-changed path; the same-port path already closed
 	// and waited on the previous client, leaving old nil. Closing last means a

@@ -40,6 +40,10 @@ Server-rendered / SSE path:
 - API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine sentinels → 404/409/501/503, `apiError` carries its own). Error strings are user-visible.
 - All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`). Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
+- **Any path rendered into a URL attribute must go through the `urlpath` template func.** `html/template` only normalizes attributes it recognises as URLs (`href`, `src`); an htmx attribute like `hx-delete` is plain text to it, so a file named `a#b.mkv` produced a request for `/download/a` and deleted a *different* file with a 200. File names come from torrents, so this is attacker-reachable.
+- Rendering is serialized by `renderMu`: `pollLoop` and `statsLoop` both render, and unsynchronized they can broadcast samples out of order. `seenTorrents` is covered by it.
+- The SSE stream sets a per-write deadline. There is no server-wide `WriteTimeout` (the stream and large downloads are both long-lived), and a blocked `Write` is not unblocked by request-context cancellation — without it a dead client keeps a subscriber slot and the poll loop walking the download directory forever.
+- Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 - `/download/` paths must go through `resolveWithin`, which uses `filepath.Rel` plus symlink resolution — a prefix check has no separator boundary.
 - `/api/url` fetches through `guardedDialContext`, which refuses loopback, private and link-local addresses.
 - All API calls must be `POST`; the action is the path suffix after `/api/`

@@ -100,8 +100,11 @@ func TestEmptyDirectoryIsStillADirectory(t *testing.T) {
 // to re-fetch.
 func TestTreeSignatureDetectsChange(t *testing.T) {
 	a := dir("d", file("a.txt", 10))
-	if treeSignature(a) != treeSignature(a) {
-		t.Error("signature is not stable for identical input")
+	same := dir("d", file("a.txt", 10))
+	same.Modified = a.Modified
+	same.Children[0].Modified = a.Children[0].Modified
+	if treeSignature(a) != treeSignature(same) {
+		t.Error("signature is not stable for equal input")
 	}
 
 	grown := dir("d", file("a.txt", 20)) // same name, new size

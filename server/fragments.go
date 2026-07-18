@@ -59,7 +59,7 @@ func (s *Server) serveTorrentFiles(w http.ResponseWriter, hash string) {
 	var found *torrentView
 	for _, t := range s.engine.GetTorrents() {
 		if t.InfoHash == hash {
-			v := newTorrentView(t)
+			v := newTorrentViewWithFiles(t)
 			found = &v
 			break
 		}

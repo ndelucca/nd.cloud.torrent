@@ -1,3 +1,6 @@
+// Package server owns the process shell and every HTTP surface: the shared
+// state snapshot, server-side rendering of the web UI, the SSE stream that
+// drives it, the /api/* command endpoints, and download file serving.
 package server
 
 import (
@@ -12,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jpillora/cookieauth"
@@ -69,8 +73,11 @@ type Server struct {
 	renderer *renderer
 	hub      *hub
 	kickCh   chan struct{}
-	// seenTorrents is the infohash set as of the last render; only the render
-	// loop touches it.
+	// renderMu serializes rendering. pollLoop and statsLoop both render, and
+	// without it two goroutines can broadcast samples in the opposite order to
+	// the one they were taken in, leaving browsers on the older one.
+	// seenTorrents is covered by it too.
+	renderMu     sync.Mutex
 	seenTorrents map[string]bool
 
 	static http.Handler
@@ -268,9 +275,13 @@ func (s *Server) statsLoop(ctx context.Context) {
 	t := time.NewTicker(statsInterval)
 	defer t.Stop()
 	for {
-		sys := sampleSystemStats(s.engine.Config().DownloadDirectory)
-		s.state.Update(func(st *State) { st.Stats.System = sys })
-		s.renderRegions()
+		// Sampling is cheap but not free, and with nobody watching the result
+		// is discarded — same reasoning as pollLoop.
+		if s.watchers() > 0 {
+			sys := sampleSystemStats(s.engine.Config().DownloadDirectory)
+			s.state.Update(func(st *State) { st.Stats.System = sys })
+			s.renderRegions()
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -285,6 +296,9 @@ func (s *Server) watchers() int { return s.hub.count() }
 // renderRegions renders every SSE region once and fans the same bytes out to
 // every subscriber. Rendering is deliberately not per-client.
 func (s *Server) renderRegions() {
+	s.renderMu.Lock()
+	defer s.renderMu.Unlock()
+
 	var view statsView
 	s.state.Read(func(st *State) {
 		view = statsView{
@@ -409,17 +423,6 @@ func securityHeaders(h http.Handler) http.Handler {
 		head.Set("X-Content-Type-Options", "nosniff")
 		head.Set("X-Frame-Options", "DENY")
 		head.Set("Referrer-Policy", "no-referrer")
-		h.ServeHTTP(w, r)
-	})
-}
-
-// readOnly rejects anything that could mutate the wrapped handler's state.
-func readOnly(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
-			return
-		}
 		h.ServeHTTP(w, r)
 	})
 }

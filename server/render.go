@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"html/template"
 	"math"
+	"net/url"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,8 +44,28 @@ func templateFuncs() template.FuncMap {
 		"percent":  percentOf,
 		"filename": path.Base,
 		"ago":      humanAgo,
-		"sub":      func(a, b int64) int64 { return a - b },
+		"urlpath":  urlPath,
 	}
+}
+
+// urlPath percent-encodes each segment of a slash-separated path for use in a
+// URL.
+//
+// html/template only normalizes attributes it recognises as URLs — href, src
+// and friends. An htmx attribute like hx-delete is just text to it, so a file
+// named "a#b.mkv" produced hx-delete="/download/a#b.mkv"; the browser dropped
+// everything from the "#" and the server deleted a *different* file named "a",
+// answering 200. File names come from torrents, so that was attacker-reachable.
+// "?" truncated the same way and "%" made the request fail outright.
+//
+// Segments are escaped individually so the separators survive. PathEscape
+// leaves "/" alone, which is why splitting first is necessary.
+func urlPath(p string) string {
+	parts := strings.Split(p, "/")
+	for i, seg := range parts {
+		parts[i] = url.PathEscape(seg)
+	}
+	return strings.Join(parts, "/")
 }
 
 // humanBytes renders a byte count with a metric prefix, matching the `bytes`
