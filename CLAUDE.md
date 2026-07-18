@@ -104,6 +104,8 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (reques
 - Keep the binary dependency-free at runtime: `CGO_ENABLED=0` builds must keep working across linux/darwin/windows/openbsd
 - Prefer the standard library. Three direct dependencies remain, each earning its place by encapsulating platform or protocol detail: `anacrolix/torrent` (the engine), `klauspost/compress` (gzip middleware) and `gopsutil/v4` (cross-platform system stats). Authentication, CLI parsing and request logging now live in `internal/` — weigh that precedent before adding a dependency for something small.
 - Run `go mod tidy` after touching `go.mod`
+- **Never hand-edit the `// indirect` block.** It is derived output, not a maintained list: it records the modules needed to resolve versions across *every* valid configuration — any `GOOS`, either `CGO_ENABLED`, and the tests of our dependencies — not the modules linked into our binary. Of the 90 indirect entries, 88 come from `anacrolix/torrent`, and 16 are never linked into any shipped build (the sqlite storage backends and `go-libutp`, which are cgo-only; `plan9stats`/`perfstat`, for platforms we do not publish; and test-only deps of deps). Deleting one gets it restored by the next `go mod tidy` and breaks `go test ./...` for anyone building with cgo. The count is a property of the engine, not something to optimise.
+- `pion/webrtc` and its 13 companion modules are unconditional in `anacrolix/torrent` — `client.go`, `torrent.go` and `config.go` import it with no build tag. There is no way to drop WebTorrent support short of forking the engine.
 
 ## Verification
 
