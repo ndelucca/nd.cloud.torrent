@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/jpillora/cookieauth"
-	"github.com/jpillora/requestlog"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
+	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
 )
 
@@ -379,7 +379,7 @@ func (s *Server) handler() http.Handler {
 	}
 	h = securityHeaders(h)
 	if s.opts.Log {
-		h = requestlog.Wrap(h)
+		h = reqlog.Wrap(h)
 	}
 	return h
 }

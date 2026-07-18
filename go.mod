@@ -6,7 +6,6 @@ require (
 	github.com/anacrolix/torrent v1.59.1
 	github.com/jpillora/cookieauth v1.1.1
 	github.com/jpillora/opts v1.2.3
-	github.com/jpillora/requestlog v1.0.0
 	github.com/klauspost/compress v1.19.0
 	github.com/shirou/gopsutil/v4 v4.26.6
 )
@@ -30,7 +29,6 @@ require (
 	github.com/anacrolix/sync v0.5.4 // indirect
 	github.com/anacrolix/upnp v0.1.4 // indirect
 	github.com/anacrolix/utp v0.2.0 // indirect
-	github.com/andrew-d/go-termutil v0.0.0-20150726205930-009166a695a2 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/benbjohnson/immutable v0.4.3 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
@@ -53,8 +51,6 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
-	github.com/jpillora/ansi v1.0.3 // indirect
-	github.com/jpillora/sizestr v1.0.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20251013123823-9fd1530e3ec3 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -90,7 +86,6 @@ require (
 	github.com/tidwall/btree v1.8.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
-	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
