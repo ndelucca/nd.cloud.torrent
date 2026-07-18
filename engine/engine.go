@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
@@ -76,9 +77,48 @@ func (e *Engine) Configure(c Config) error {
 	tc.HeaderObfuscationPolicy.Preferred = !c.DisableEncryption
 	tc.HeaderObfuscationPolicy.RequirePreferred = false
 
-	client, err := torrent.NewClient(tc)
-	if err != nil {
-		return fmt.Errorf("Failed to start torrent client: %w", err)
+	// Ordering depends on whether the listen port is changing.
+	//
+	// Different port: build the replacement first, so a failure leaves the
+	// running client untouched.
+	//
+	// Same port: the old client is bound to it, so a new one cannot be created
+	// until it lets go — building first fails with "address already in use"
+	// every single time. That is the common case: any settings change that
+	// keeps the port. So the old client is closed first and waited on.
+	e.mu.Lock()
+	samePort := e.client != nil && e.config.IncomingPort == c.IncomingPort
+	var closedFirst *torrent.Client
+	if samePort {
+		closedFirst = e.client
+		e.client = nil
+	}
+	e.mu.Unlock()
+
+	var client *torrent.Client
+	var err error
+	if closedFirst != nil {
+		closedFirst.Close()
+		<-closedFirst.Closed()
+		// Closed() only reports that the client finished shutting down; the
+		// kernel can still hold the listening socket for a moment afterwards,
+		// so a bind right after it intermittently fails with EADDRINUSE. This
+		// is what the original code's fixed time.Sleep(1s) was papering over —
+		// retrying until it binds is both faster in the common case and
+		// actually reliable, where a fixed sleep is neither.
+		client, err = newClientWithRetry(tc)
+		if err != nil {
+			// The old client is already gone, so there is nothing to fall back
+			// to. Leaving e.client nil is honest: every operation now reports
+			// ErrNotConfigured rather than acting on a dead client.
+			return fmt.Errorf("Failed to restart torrent client on port %d (the previous "+
+				"client has been stopped): %w", c.IncomingPort, err)
+		}
+	} else {
+		client, err = torrent.NewClient(tc)
+		if err != nil {
+			return fmt.Errorf("Failed to start torrent client: %w", err)
+		}
 	}
 
 	e.mu.Lock()
@@ -107,8 +147,9 @@ func (e *Engine) Configure(c Config) error {
 	}
 	e.mu.Unlock()
 
-	// Close the old client last: it releases the listen port asynchronously, and
-	// the new client is already bound, so there is nothing left to race with.
+	// Only reached on the port-changed path; the same-port path already closed
+	// and waited on the previous client, leaving old nil. Closing last means a
+	// failed NewClient above never took the running client down with it.
 	if old != nil {
 		for _, err := range old.Close() {
 			log.Printf("engine: error closing previous client: %s", err)
@@ -372,4 +413,35 @@ func str2ih(str string) (metainfo.Hash, error) {
 		return ih, fmt.Errorf("Invalid infohash: not a hex string")
 	}
 	return ih, nil
+}
+
+// rebindTimeout bounds how long Configure waits for a just-closed listen port
+// to become bindable again.
+const rebindTimeout = 5 * time.Second
+
+// newClientWithRetry retries until the client starts or the budget runs out.
+//
+// Only used when replacing a client on the same port, where the one transient
+// failure worth waiting out is the kernel not having released the listening
+// socket yet. It retries on any error rather than matching EADDRINUSE, because
+// that errno differs across the platforms this builds for (Windows reports
+// WSAEADDRINUSE); the cost of being wrong is a few seconds before a genuinely
+// bad config is reported, which is the better trade than a retry that silently
+// does nothing on one platform.
+func newClientWithRetry(tc *torrent.ClientConfig) (*torrent.Client, error) {
+	deadline := time.Now().Add(rebindTimeout)
+	delay := 20 * time.Millisecond
+	for {
+		client, err := torrent.NewClient(tc)
+		if err == nil {
+			return client, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(delay)
+		if delay < 200*time.Millisecond {
+			delay *= 2
+		}
+	}
 }

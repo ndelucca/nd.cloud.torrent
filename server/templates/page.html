@@ -24,6 +24,11 @@
 
   <main>
     <section class="panel">
+      <h2>Add</h2>
+      {{template "omni"}}
+    </section>
+
+    <section class="panel">
       <h2>Torrents</h2>
       {{/* Populated by the torrent-list SSE event. */}}
       <div id="torrents" sse-swap="torrent-list" hx-swap="morph:innerHTML">
@@ -41,6 +46,13 @@
            hx-swap="innerHTML">
         <p class="muted">Loading…</p>
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>Settings</h2>
+      {{/* Rendered inline, outside every swap target: a morph would revert a
+           field the user typed into and then clicked away from. */}}
+      {{template "config" .Config}}
     </section>
   </main>
 

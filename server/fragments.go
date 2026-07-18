@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 // serveFragment answers the hx-get requests for content that is deliberately
@@ -90,8 +92,14 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var view struct{ Title string }
-	s.state.Read(func(st *State) { view.Title = st.Stats.Title })
+	var view struct {
+		Title  string
+		Config engine.Config
+	}
+	s.state.Read(func(st *State) {
+		view.Title = st.Stats.Title
+		view.Config = st.Config
+	})
 
 	var buf bytes.Buffer
 	if err := s.renderer.tmpl.ExecuteTemplate(&buf, "page", view); err != nil {

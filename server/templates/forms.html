@@ -1,0 +1,102 @@
+{{/*
+The omni bar: one field for a magnet URI or a .torrent URL, plus upload.
+
+The AngularJS version regex-dispatched on every keystroke to decide which
+endpoint to call. The server can just look at the scheme, so /api/add takes the
+string and decides — one round trip, no duplicated parsing rules in the client.
+*/}}
+{{define "omni"}}
+<div class="omni">
+  <form class="omni-form"
+        hx-post="/api/add" hx-target="#omni-status" hx-swap="innerHTML"
+        hx-on::after-request="if(event.detail.successful) this.reset()">
+    <input class="omni-input" type="text" name="uri" required
+           placeholder="magnet:?xt=… or https://…/file.torrent"
+           aria-label="Magnet URI or torrent URL"
+           autocomplete="off" spellcheck="false">
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+
+  {{/* hx-encoding is what makes htmx use multipart and emit xhr progress
+       events; the AngularJS version read the file with FileReader and POSTed
+       raw bytes with no progress reporting at all. */}}
+  <form class="upload-form" id="upload-form"
+        hx-post="/api/torrentfile" hx-encoding="multipart/form-data"
+        hx-target="#omni-status" hx-swap="innerHTML">
+    <label class="btn" for="torrent-file">Upload .torrent</label>
+    <input id="torrent-file" type="file" name="torrent" accept=".torrent" multiple
+           hidden onchange="this.form.requestSubmit()">
+    <progress id="upload-progress" value="0" max="100" hidden aria-label="Upload progress"></progress>
+  </form>
+
+  <div id="omni-status" class="omni-status" role="status" aria-live="polite"></div>
+</div>
+{{end}}
+
+{{define "api-ok"}}
+<p class="ok-msg">{{.}}</p>
+{{end}}
+
+{{define "api-error"}}
+<p class="err-msg">{{.}}</p>
+{{end}}
+
+{{/*
+The settings form is rendered from engine.Config's actual fields. The AngularJS
+version iterated the JSON object and guessed each widget from `typeof`, because
+the browser had no schema; the server does, so every field gets a real label,
+a real input type, and real bounds.
+
+It lives outside every swap target. idiomorph's ignoreActiveValue only protects
+the element that currently has focus — a field the user typed into and then
+clicked away from would be reverted by the next morph.
+*/}}
+{{define "config"}}
+<form class="config-form" id="config-form"
+      hx-post="/api/configure" hx-target="#config-status" hx-swap="innerHTML">
+  <div class="field">
+    <label for="cfg-dir">Download directory</label>
+    <input id="cfg-dir" name="DownloadDirectory" type="text" required
+           value="{{.DownloadDirectory}}" spellcheck="false">
+  </div>
+
+  <div class="field">
+    <label for="cfg-port">Incoming port</label>
+    <input id="cfg-port" name="IncomingPort" type="number" min="1" max="65535" required
+           value="{{.IncomingPort}}">
+  </div>
+
+  <fieldset class="field-group">
+    <legend>Options</legend>
+    {{/* A hidden field per checkbox: an unchecked box sends nothing at all, so
+         without it "off" would be indistinguishable from "field absent" and the
+         setting could never be turned off. */}}
+    <label class="check">
+      <input type="hidden" name="AutoStart" value="false">
+      <input type="checkbox" name="AutoStart" value="true" {{if .AutoStart}}checked{{end}}>
+      Start torrents automatically
+    </label>
+    <label class="check">
+      <input type="hidden" name="EnableUpload" value="false">
+      <input type="checkbox" name="EnableUpload" value="true" {{if .EnableUpload}}checked{{end}}>
+      Upload to peers
+    </label>
+    <label class="check">
+      <input type="hidden" name="EnableSeeding" value="false">
+      <input type="checkbox" name="EnableSeeding" value="true" {{if .EnableSeeding}}checked{{end}}>
+      Seed after completing
+    </label>
+    <label class="check">
+      <input type="hidden" name="DisableEncryption" value="false">
+      <input type="checkbox" name="DisableEncryption" value="true" {{if .DisableEncryption}}checked{{end}}>
+      Disable encryption
+    </label>
+  </fieldset>
+
+  <div class="field-actions">
+    <button class="btn primary" type="submit">Save</button>
+    <span id="config-status" class="config-status" role="status" aria-live="polite"></span>
+  </div>
+  <p class="muted hint">Saving restarts the torrent client. Active downloads are re-added.</p>
+</form>
+{{end}}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 )
@@ -183,4 +184,83 @@ func TestStopTorrentClearsHandle(t *testing.T) {
 	if err := e.StopTorrent(valid); !errors.Is(err, ErrAlreadyStopped) {
 		t.Errorf("double stop = %v, want ErrAlreadyStopped", err)
 	}
+}
+
+// TestReconfigureSamePort covers a bug that made the most common settings
+// change impossible.
+//
+// Configure originally built the replacement client before closing the old one,
+// so that a validation or bind failure left the running client untouched. But
+// the old client holds the listen port, so creating a new one on the SAME port
+// always failed with "address already in use" — and keeping the port is what
+// happens whenever you change any *other* setting.
+func TestReconfigureSamePort(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	dir := t.TempDir()
+	port := freeUDPPort(t)
+	base := Config{DownloadDirectory: dir, IncomingPort: port, EnableUpload: true}
+
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+
+	// Same port, different settings — the case that used to always fail.
+	changed := base
+	changed.EnableUpload = false
+	if err := e.Configure(changed); err != nil {
+		t.Fatalf("reconfigure on the same port must succeed, got: %v", err)
+	}
+	if got := e.Config(); got.EnableUpload {
+		t.Error("the new setting was not applied")
+	}
+
+	// And again, to prove it is repeatable rather than working once.
+	changed.EnableSeeding = true
+	if err := e.Configure(changed); err != nil {
+		t.Fatalf("second reconfigure on the same port: %v", err)
+	}
+
+	// A port change must still work.
+	moved := changed
+	moved.IncomingPort = freeUDPPort(t)
+	if err := e.Configure(moved); err != nil {
+		t.Fatalf("reconfigure onto a new port: %v", err)
+	}
+}
+
+// TestReconfigureRejectsBadConfigWithoutStopping covers the other half: an
+// invalid config must be refused before anything is torn down.
+func TestReconfigureRejectsBadConfigWithoutStopping(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeUDPPort(t)}
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+
+	bad := base
+	bad.IncomingPort = 0 // invalid
+	if err := e.Configure(bad); err == nil {
+		t.Fatal("expected an error for port 0")
+	}
+	if got := e.Config(); got.IncomingPort != base.IncomingPort {
+		t.Errorf("a rejected config changed the live config: %+v", got)
+	}
+	// The engine must still be usable.
+	if err := e.Configure(base); err != nil {
+		t.Errorf("engine unusable after a rejected config: %v", err)
+	}
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }

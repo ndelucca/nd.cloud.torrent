@@ -100,6 +100,27 @@
     };
   };
 
+  // --- upload progress ------------------------------------------------------
+  //
+  // htmx emits htmx:xhr:progress only for a real multipart request, which is
+  // why the upload form uses hx-encoding rather than the FileReader + raw body
+  // approach the AngularJS UI used (which could not report progress at all).
+  document.body.addEventListener("htmx:xhr:progress", function (e) {
+    var bar = document.getElementById("upload-progress");
+    if (!bar || !e.detail.lengthComputable) return;
+    bar.hidden = false;
+    bar.value = (e.detail.loaded / e.detail.total) * 100;
+  });
+
+  document.body.addEventListener("htmx:afterRequest", function (e) {
+    if (!e.target || e.target.id !== "upload-form") return;
+    var bar = document.getElementById("upload-progress");
+    if (bar) { bar.hidden = true; bar.value = 0; }
+    var input = document.getElementById("torrent-file");
+    // Reset so re-picking the same file fires change again.
+    if (input) input.value = "";
+  });
+
   // --- connection indicator -------------------------------------------------
   function setConn(state) {
     var el = document.getElementById("connection");

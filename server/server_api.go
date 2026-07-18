@@ -1,11 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -59,13 +60,42 @@ func statusFor(err error) int {
 }
 
 func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
+	err := s.api(r)
+	// A mutation almost always changes what the UI shows; waking the render loop
+	// makes the effect visible immediately rather than up to a tick later.
+	if err == nil {
+		s.kick()
+	}
+
+	// htmx wants HTML to swap. It also does not swap non-2xx responses by
+	// default, so the outcome is reported as a 200 fragment; the status codes
+	// stay intact for every other client (curl, the CLI, the AngularJS UI).
+	if r.Header.Get("HX-Request") == "true" {
+		s.writeAPIFragment(w, err)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if err := s.api(r); err != nil {
+	if err != nil {
 		http.Error(w, err.Error(), statusFor(err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
+}
+
+func (s *Server) writeAPIFragment(w http.ResponseWriter, err error) {
+	name, msg := "api-ok", "Done."
+	if err != nil {
+		name, msg = "api-error", err.Error()
+	}
+	var buf bytes.Buffer
+	if rerr := s.renderer.tmpl.ExecuteTemplate(&buf, name, msg); rerr != nil {
+		log.Printf("render %s: %s", name, rerr)
+		writeFragment(w, http.StatusOK, `<p class="err-msg">Unexpected error.</p>`)
+		return
+	}
+	writeFragment(w, http.StatusOK, buf.String())
 }
 
 func (s *Server) api(r *http.Request) error {
@@ -80,12 +110,27 @@ func (s *Server) api(r *http.Request) error {
 	}
 
 	action := strings.TrimPrefix(r.URL.Path, "/api/")
+
+	// Multipart is handled before the body is drained: it is the only encoding
+	// that must be parsed by the stdlib rather than read whole.
+	if action == "torrentfile" && strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return s.addUploadedTorrents(r)
+	}
+
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBody))
 	if err != nil {
 		return badRequest("Failed to read request body")
 	}
 
 	switch action {
+	case "add":
+		// One field, server-side dispatch. The AngularJS UI re-implemented this
+		// as a regex over every keystroke; the scheme is the server's to judge.
+		uri := strings.TrimSpace(string(data))
+		if v := formValues(r, data); v != nil {
+			uri = strings.TrimSpace(v.Get("uri"))
+		}
+		return s.addURI(r, uri)
 	case "url":
 		body, err := fetchRemoteTorrent(r.Context(), string(data))
 		if err != nil {
@@ -97,9 +142,9 @@ func (s *Server) api(r *http.Request) error {
 	case "magnet":
 		return s.engine.NewMagnet(string(data))
 	case "configure":
-		c := engine.Config{}
-		if err := json.Unmarshal(data, &c); err != nil {
-			return badRequest("Malformed configuration: %s", err)
+		c, err := parseConfig(r, data, s.engine.Config())
+		if err != nil {
+			return err
 		}
 		return s.reconfigure(c)
 	case "torrent":
