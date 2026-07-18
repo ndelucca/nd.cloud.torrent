@@ -40,7 +40,7 @@ func statusFor(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, engine.ErrAlreadyStarted), errors.Is(err, engine.ErrAlreadyStopped):
 		return http.StatusConflict
-	case errors.Is(err, engine.ErrNotConfigured):
+	case errors.Is(err, engine.ErrNotConfigured), errors.Is(err, engine.ErrClosed):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, fetch.ErrInvalidURL):
 		return http.StatusBadRequest

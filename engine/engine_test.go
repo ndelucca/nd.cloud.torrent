@@ -372,3 +372,73 @@ func freeTCPPort(t *testing.T) int {
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
 }
+
+// TestConfigureAfterCloseDoesNotLeak covers an engine that had no closed state.
+//
+// Close released the client and set it to nil, but nothing recorded that the
+// engine was done, so a later Configure happily built a replacement: a live
+// torrent client with its listening socket, goroutines and DHT, held by an
+// engine everyone believed was shut down, that nothing would ever close.
+func TestConfigureAfterCloseDoesNotLeak(t *testing.T) {
+	e := New()
+	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := e.Configure(base); !errors.Is(err, ErrClosed) {
+		t.Errorf("Configure after Close = %v, want ErrClosed", err)
+	}
+	e.mu.Lock()
+	live := e.client != nil
+	e.mu.Unlock()
+	if live {
+		t.Error("a live client was installed into a closed engine; nothing will release it")
+	}
+
+	// Close stays idempotent.
+	if err := e.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestCloseDuringConfigure covers the same defect in the form that is actually
+// reachable in normal operation: Ctrl-C while /api/configure is rebinding.
+//
+// The same-port path releases mu between evicting the old client and installing
+// the replacement, and Close did not take configureMu — so it observed
+// client == nil, reported a clean shutdown, and the rebind installed its client
+// afterwards. Whatever the interleaving, once Close returns no client may
+// remain.
+func TestCloseDuringConfigure(t *testing.T) {
+	e := New()
+	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+
+	// Same port, so this takes the evict-then-rebind path.
+	changed := base
+	changed.EnableSeeding = true
+
+	done := make(chan error, 1)
+	go func() { done <- e.Configure(changed) }()
+
+	if err := e.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	// Either it completed before Close, or it gave up — both are fine.
+	if err := <-done; err != nil && !errors.Is(err, ErrClosed) {
+		t.Errorf("concurrent Configure = %v, want nil or ErrClosed", err)
+	}
+
+	e.mu.Lock()
+	live := e.client != nil
+	e.mu.Unlock()
+	if live {
+		t.Error("a client survived Close; it holds a listening socket nothing will release")
+	}
+}

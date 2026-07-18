@@ -27,6 +27,7 @@ var (
 	ErrMissingTorrent = errors.New("Missing torrent")
 	ErrAlreadyStarted = errors.New("Already started")
 	ErrAlreadyStopped = errors.New("Already stopped")
+	ErrClosed         = errors.New("Engine is closed")
 )
 
 // Engine wraps anacrolix/torrent in a server-friendly facade: one client, a
@@ -80,12 +81,22 @@ func (e *Engine) Configure(c Config) error {
 	e.configureMu.Lock()
 	defer e.configureMu.Unlock()
 
+	// Checked under configureMu, which Close holds for its whole duration, so a
+	// Close that has begun cannot be overtaken by a Configure that has not.
+	if e.ctx.Err() != nil {
+		return ErrClosed
+	}
+
 	tc := clientConfig(c)
 
 	// Teardown order depends on whether the listen port is changing, so the
 	// old client is detached first and the decision is made once.
 	evicted := e.evictForRebind(c.IncomingPort)
-	client, err := buildClient(tc, evicted, c.IncomingPort)
+	// e.ctx is cancelled only by Close. A rebind must never be cancellable by
+	// the request that triggered it: aborting between evicting the old client
+	// and installing the new one leaves the engine with none, so a user
+	// navigating away mid-save would take their own torrent client down.
+	client, err := buildClient(e.ctx, tc, evicted, c.IncomingPort)
 	if err != nil {
 		return err
 	}
@@ -141,7 +152,11 @@ func (e *Engine) evictForRebind(newPort int) *torrent.Client {
 
 // buildClient creates the replacement. If evicted is non-nil it is closed and
 // waited on first, and the bind is retried.
-func buildClient(tc *torrent.ClientConfig, evicted *torrent.Client, port int) (*torrent.Client, error) {
+//
+// ctx is the engine's own, cancelled only by Close, so shutdown does not have
+// to wait out a rebind that is retrying against a port the kernel has not
+// released yet.
+func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent.Client, port int) (*torrent.Client, error) {
 	if evicted == nil {
 		client, err := torrent.NewClient(tc)
 		if err != nil {
@@ -151,15 +166,22 @@ func buildClient(tc *torrent.ClientConfig, evicted *torrent.Client, port int) (*
 	}
 
 	evicted.Close()
-	<-evicted.Closed()
+	select {
+	case <-evicted.Closed():
+	case <-ctx.Done():
+		return nil, ErrClosed
+	}
 	// Closed() only reports that the client finished shutting down; the kernel
 	// can still hold the listening socket for a moment afterwards, so a bind
 	// right after it intermittently fails with EADDRINUSE. This is what the
 	// original code's fixed time.Sleep(1s) was papering over — retrying until
 	// it binds is both faster in the common case and actually reliable, where a
 	// fixed sleep is neither.
-	client, err := newClientWithRetry(tc)
+	client, err := newClientWithRetry(ctx, tc)
 	if err != nil {
+		if errors.Is(err, ErrClosed) {
+			return nil, err // shutting down; not a configuration failure
+		}
 		// The old client is already gone, so there is nothing to fall back to.
 		// Leaving e.client nil is honest: every operation now reports
 		// ErrNotConfigured rather than acting on a dead client.
@@ -219,9 +241,23 @@ func closeClient(client *torrent.Client) {
 	}
 }
 
-// Close shuts the engine down and releases the underlying client.
+// Close shuts the engine down and releases the underlying client. It is
+// idempotent, and once it has run the engine stays closed: Configure reports
+// ErrClosed rather than building a client nothing would ever release.
 func (e *Engine) Close() error {
+	// Signal first. An in-flight Configure may be seconds into a rebind, and
+	// this is what lets it give up rather than making shutdown wait it out.
 	e.cancel()
+
+	// Then serialize against it. Without this lock, Close saw client == nil —
+	// the rebind having already evicted it — returned clean, and Configure went
+	// on to install a live torrent client, with its listening socket, goroutines
+	// and DHT, into an engine everyone believed was shut down.
+	e.configureMu.Lock()
+	defer e.configureMu.Unlock()
+
+	// Safe under configureMu: no Configure can be past its ErrClosed check, so
+	// nothing will Add to the group after this returns.
 	e.wg.Wait()
 
 	e.mu.Lock()
@@ -444,7 +480,7 @@ const rebindTimeout = 5 * time.Second
 // WSAEADDRINUSE); the cost of being wrong is a few seconds before a genuinely
 // bad config is reported, which is the better trade than a retry that silently
 // does nothing on one platform.
-func newClientWithRetry(tc *torrent.ClientConfig) (*torrent.Client, error) {
+func newClientWithRetry(ctx context.Context, tc *torrent.ClientConfig) (*torrent.Client, error) {
 	deadline := time.Now().Add(rebindTimeout)
 	delay := 20 * time.Millisecond
 	for {
@@ -455,7 +491,11 @@ func newClientWithRetry(tc *torrent.ClientConfig) (*torrent.Client, error) {
 		if time.Now().After(deadline) {
 			return nil, err
 		}
-		time.Sleep(delay)
+		select {
+		case <-ctx.Done():
+			return nil, ErrClosed
+		case <-time.After(delay):
+		}
 		if delay < 200*time.Millisecond {
 			delay *= 2
 		}
