@@ -14,10 +14,12 @@ func file(name string, size int64) *files.Node {
 	return &files.Node{Name: name, Size: size, Modified: time.Now()}
 }
 
-// TestTreePathsAreServerComputed covers the replacement for the AngularJS
-// $parent.$parent scope walk, which derived each node's path from the exact
-// nesting the directives produced rather than from the data — so changing a
-// directive silently broke every path.
+// TestTreePathsAreServerComputed pins that each node's path comes from the data
+// and is relative to the download root.
+//
+// Deriving it in the browser instead means deriving it from how deeply the
+// markup is nested, which breaks silently the moment the markup changes — and
+// these paths are what /download/ URLs are built from.
 func TestTreePathsAreServerComputed(t *testing.T) {
 	root := dir("downloads",
 		dir("Show", dir("S01", file("ep01.mkv", 100), file("ep02.mkv", 200))),

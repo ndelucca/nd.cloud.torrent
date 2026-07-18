@@ -62,7 +62,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 	// htmx wants HTML to swap. It also does not swap non-2xx responses by
 	// default, so the outcome is reported as a 200 fragment; the status codes
-	// stay intact for every other client (curl, the CLI, the AngularJS UI).
+	// stay intact for every other client.
 	if r.Header.Get("HX-Request") == "true" {
 		s.ui.WriteAPIResult(w, err)
 		return
@@ -103,8 +103,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 
 	switch action {
 	case "add":
-		// One field, server-side dispatch. The AngularJS UI re-implemented this
-		// as a regex over every keystroke; the scheme is the server's to judge.
+		// One field; the server dispatches on the scheme. Keeping that judgement
+		// here means the client needs no parsing rules of its own.
 		uri := strings.TrimSpace(string(data))
 		if v := formValues(r, data); v != nil {
 			uri = strings.TrimSpace(v.Get("uri"))

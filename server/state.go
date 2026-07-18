@@ -59,10 +59,9 @@ type statsDocument struct {
 
 // serveState publishes the server's state as JSON.
 //
-// The velox /sync endpoint used to be a machine-readable feed of exactly this
-// document, so scripts and monitoring could consume it. Replacing the UI with
-// HTML fragments would have removed that with no replacement; this keeps it,
-// and is what makes the server debuggable when a fragment renders wrong.
+// This is the only machine-readable view of the server, and the thing that
+// makes a mis-rendering fragment debuggable: the UI is HTML all the way down,
+// so without it there is no way to see what the server actually believes.
 //
 // Every field is gathered at request time. That costs a directory walk per
 // request — bounded by fileNumberLimit, the same walk the poll loop does every

@@ -32,9 +32,8 @@ func TestFrameSSE(t *testing.T) {
 	}
 }
 
-// TestRendererChangeDetection covers the suppression that replaces velox's
-// merge-patch diffing. Without it an idle server streams to every browser
-// forever.
+// TestRendererChangeDetection covers the per-region suppression. Without it an
+// idle server streams to every browser forever.
 func TestRendererChangeDetection(t *testing.T) {
 	tmpl, err := parseTemplates()
 	if err != nil {

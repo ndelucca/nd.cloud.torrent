@@ -19,10 +19,9 @@ const downloadsChangedEvent = "downloads-changed"
 
 // fsView is one node of the download tree, prepared for rendering.
 //
-// Path and Depth are computed here. The AngularJS version derived them in the
-// browser by walking Angular's scope chain ($parent.$parent), which depended on
-// the exact nesting the directives produced rather than on the data — change
-// either directive and every path silently broke.
+// Path is computed here, from the data, rather than derived in the browser from
+// how deeply the markup happens to be nested. A path that depends on DOM
+// structure breaks silently the moment the structure changes.
 type fsView struct {
 	Name     string
 	Path     string // slash-separated, relative to the download root

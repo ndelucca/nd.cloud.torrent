@@ -30,7 +30,7 @@ Templates:
 - Templates are addressed **only** by their `{{define}}` name. `template.ParseFS` names by base filename, so two files named `row.html` in different directories silently collide, and requesting a name no file provides yields an empty template that renders nothing without erroring.
 - `parseTemplates` returns its error rather than using `template.Must`: the recursive tree template can fail the contextual autoescaper with `ErrOutputContext` at *parse* time, and a package-level `Must` would turn a template edit into a startup panic. `web.New` propagates it.
 - **Any path rendered into a URL attribute must go through the `urlpath` template func.** `html/template` only normalizes attributes it recognises as URLs (`href`, `src`); an htmx attribute like `hx-delete` is plain text to it, so a file named `a#b.mkv` produced a request for `/download/a` and deleted a *different* file with a 200. File names come from torrents, so this is attacker-reachable.
-- Arithmetic happens in the view model, never the template. `html/template` has none, and the AngularJS version doing `100*used/total` inline was a source of divide-by-zero producing `+Inf`.
+- Arithmetic happens in the view model, never the template. `html/template` has none, and doing it inline invites `100*used/total`, whose divide-by-zero produces `+Inf` before the first disk sample lands.
 
 Rendering and the SSE stream:
 

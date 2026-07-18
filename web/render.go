@@ -68,8 +68,7 @@ func urlPath(p string) string {
 	return strings.Join(parts, "/")
 }
 
-// humanBytes renders a byte count with a metric prefix, matching the `bytes`
-// filter the AngularJS UI used.
+// humanBytes renders a byte count with a metric prefix.
 func humanBytes(n int64) string {
 	if n <= 0 {
 		return "0 B"

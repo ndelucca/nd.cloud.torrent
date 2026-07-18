@@ -167,10 +167,9 @@ func TestRunShutsDownPromptlyWithSSEClients(t *testing.T) {
 
 // TestStateIsServedAsJSON keeps the machine-readable feed alive.
 //
-// The velox /sync endpoint used to publish exactly this document, so scripts
-// and monitoring could consume it. Replacing the UI with HTML fragments would
-// have dropped that with no replacement; /api/state is the replacement, and it
-// is also what makes a mis-rendering fragment debuggable.
+// The UI is HTML all the way down, so /api/state is the only way to see what
+// the server actually believes — for scripts, for monitoring, and for debugging
+// a fragment that renders wrong.
 func TestStateIsServedAsJSON(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()

@@ -86,9 +86,8 @@ func TestParseConfigRejectsBadInput(t *testing.T) {
 }
 
 // TestParseConfigRejectsNonForm: the configuration form is the only supported
-// encoding. A JSON body used to be accepted for the AngularJS UI; that UI is
-// gone, and silently accepting a second encoding meant two parsers to keep in
-// step with engine.Config.
+// encoding. Accepting a second one silently meant two parsers to keep in step
+// with the same struct.
 func TestParseConfigRejectsNonForm(t *testing.T) {
 	current := engine.Config{DownloadDirectory: "/old", IncomingPort: 1}
 	body := `{"DownloadDirectory":"/new","IncomingPort":4242}`
@@ -103,8 +102,8 @@ func TestParseConfigRejectsNonForm(t *testing.T) {
 	}
 }
 
-// TestAddURIDispatch covers the server-side scheme dispatch that replaces the
-// AngularJS regex-on-every-keystroke.
+// TestAddURIDispatch covers the server-side scheme dispatch: one endpoint, and
+// the client needs no parsing rules of its own.
 func TestAddURIDispatch(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()

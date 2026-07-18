@@ -73,9 +73,9 @@ func TestEventsArriveImmediately(t *testing.T) {
 	}
 }
 
-// TestIdleServerIsQuiet covers the change detection end to end. velox suppressed
-// pushes whose JSON merge patch was empty; that suppression is now ours to
-// maintain, and losing it means streaming to every connected browser forever.
+// TestIdleServerIsQuiet covers the change detection end to end. Suppressing
+// unchanged regions is what keeps an idle server quiet; losing it means
+// streaming to every connected browser forever, once per poll tick.
 //
 // The bound is not zero: the stats sample legitimately changes every
 // statsInterval because heap size and goroutine count move. What must not

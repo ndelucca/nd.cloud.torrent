@@ -27,10 +27,10 @@ type StatsData struct {
 	GoRoutines  int
 }
 
-// statsView is what the template sees. The percentages are computed here rather
-// than in the template: html/template has no arithmetic, and the AngularJS
-// version doing `100*used/total` inline was a source of divide-by-zero
-// producing +Inf.
+// statsView is what the template sees. The percentages are computed here
+// because html/template has no arithmetic — and because doing it inline invites
+// `100*used/total`, whose divide-by-zero produces +Inf on a server that has not
+// sampled the disk yet.
 type statsView struct {
 	StatsData
 	Title       string

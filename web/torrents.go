@@ -187,8 +187,7 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 // i.e. its row was created by the skeleton we just sent.
 func (u *UI) newThisTick(hash string) bool { return !u.seen[hash] }
 
-// sortFilesByPath orders a torrent's files for display. The AngularJS UI did
-// this client-side with orderBy:'Path' on every digest.
+// sortFilesByPath orders a torrent's files for display.
 func sortFilesByPath(files []*engine.File) {
 	sort.Slice(files, func(i, j int) bool {
 		if files[i] == nil || files[j] == nil {

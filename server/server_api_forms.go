@@ -45,8 +45,8 @@ func (s *Server) addURI(r *http.Request, uri string) error {
 
 // addUploadedTorrents handles a multipart upload, which is what lets the client
 // report progress: htmx emits htmx:xhr:progress only for a real multipart
-// request. The AngularJS UI read each file with FileReader and POSTed the raw
-// bytes, so there was no progress to report at all.
+// request. Reading the file in JavaScript and POSTing the raw bytes cannot
+// report progress at all.
 func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {

@@ -103,8 +103,8 @@
   // --- upload progress ------------------------------------------------------
   //
   // htmx emits htmx:xhr:progress only for a real multipart request, which is
-  // why the upload form uses hx-encoding rather than the FileReader + raw body
-  // approach the AngularJS UI used (which could not report progress at all).
+  // why the upload form uses hx-encoding rather than reading the file in JS and
+  // POSTing raw bytes — that path cannot report progress at all.
   document.body.addEventListener("htmx:xhr:progress", function (e) {
     var bar = document.getElementById("upload-progress");
     if (!bar || !e.detail.lengthComputable) return;
@@ -123,10 +123,9 @@
 
   // --- drag and drop .torrent files ----------------------------------------
   //
-  // Ported from the AngularJS ondropfile directive. Files are handed to the
-  // upload form's file input and submitted through htmx, so dropping and
-  // clicking take exactly the same path — including progress reporting, which
-  // the original drop handler did not have.
+  // Files are handed to the upload form's file input and submitted through
+  // htmx, so dropping and clicking take exactly the same path — including
+  // progress reporting.
   var dragDepth = 0;
 
   function setDropVisible(on) {

@@ -72,8 +72,8 @@ func (u *UI) serveTorrentFiles(w http.ResponseWriter, hash string) {
 		return
 	}
 
-	// Sorted by path, as the AngularJS `orderBy:'Path'` did — but here it costs
-	// nothing on the client.
+	// Sorted here rather than in the browser: it costs nothing on this side and
+	// the client never has to re-sort on every update.
 	sortFilesByPath(found.Files)
 
 	var buf bytes.Buffer

@@ -1,9 +1,8 @@
 {{/*
 The omni bar: one field for a magnet URI or a .torrent URL, plus upload.
 
-The AngularJS version regex-dispatched on every keystroke to decide which
-endpoint to call. The server can just look at the scheme, so /api/add takes the
-string and decides — one round trip, no duplicated parsing rules in the client.
+/api/add takes the string and decides from the scheme — one round trip, and no
+parsing rules duplicated in the client.
 */}}
 {{define "omni"}}
 <div class="omni">
@@ -18,8 +17,7 @@ string and decides — one round trip, no duplicated parsing rules in the client
   </form>
 
   {{/* hx-encoding is what makes htmx use multipart and emit xhr progress
-       events; the AngularJS version read the file with FileReader and POSTed
-       raw bytes with no progress reporting at all. */}}
+       events. Reading the file in JS and POSTing raw bytes reports nothing. */}}
   <form class="upload-form" id="upload-form"
         hx-post="/api/torrentfile" hx-encoding="multipart/form-data"
         hx-target="#omni-status" hx-swap="innerHTML">
@@ -42,10 +40,10 @@ string and decides — one round trip, no duplicated parsing rules in the client
 {{end}}
 
 {{/*
-The settings form is rendered from engine.Config's actual fields. The AngularJS
-version iterated the JSON object and guessed each widget from `typeof`, because
-the browser had no schema; the server does, so every field gets a real label,
-a real input type, and real bounds.
+The settings form is rendered from engine.Config's actual fields. Rendering it
+in the browser would mean iterating a JSON object and guessing each widget from
+`typeof`, because the client has no schema; the server does, so every field gets
+a real label, a real input type, and real bounds.
 
 It lives outside every swap target. idiomorph's ignoreActiveValue only protects
 the element that currently has focus — a field the user typed into and then
