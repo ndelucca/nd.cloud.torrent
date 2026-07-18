@@ -9,32 +9,46 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
-// State is the server's shared snapshot: what the page renderer reads, and what
-// GET /api/state serves as JSON.
+// sampledStats holds the one thing the server genuinely has to remember between
+// ticks: the most recent host sample.
 //
-// It no longer publishes anything itself. Under velox, State.Update both
-// mutated and pushed, and the single worst bug in this codebase's history was a
-// Push() that silently did nothing — so rather than keep a method whose name
-// implies delivery it cannot perform, publishing is now unambiguously the
-// render loop's job (see renderRegions, renderTorrents, renderDownloads) and
-// this type only guards the data.
-//
-// Callers that mutate outside the render loop should call Server.kick so the
-// change is rendered promptly instead of on the next tick.
-type State struct {
-	mu sync.Mutex
-
-	Config    engine.Config
-	Downloads *fsNode
-	Torrents  map[string]*engine.Torrent
-	// ConnectedUsers is a count, not a roster: the previous map exposed every
-	// client's IP:port to every other client.
-	ConnectedUsers int
-	Stats          Stats
+// Everything else the UI and /api/state show is derived — torrents from the
+// engine, the tree from the filesystem, the config from the engine, the viewer
+// count from the hub — so it is read from its owner at the moment it is needed
+// rather than copied into a shared snapshot. The snapshot this replaces was
+// written by the poll loop and read by nothing but the JSON encoder, which is
+// how /api/state came to serve nulls whenever no browser was connected.
+type sampledStats struct {
+	mu     sync.Mutex
+	system SystemStats
 }
 
-// Stats is the static-plus-sampled telemetry block.
-type Stats struct {
+func (s *sampledStats) set(v SystemStats) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.system = v
+}
+
+func (s *sampledStats) get() SystemStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.system
+}
+
+// stateDocument is the JSON contract of GET /api/state.
+//
+// It is declared here rather than marshalled from an internal struct so that
+// rearranging the server's own fields cannot silently change the wire format.
+// Exported field names are the contract; renaming one breaks any script
+// consuming it.
+type stateDocument struct {
+	Torrents       map[string]*engine.Torrent
+	Downloads      *fsNode
+	ConnectedUsers int
+	Stats          statsDocument
+}
+
+type statsDocument struct {
 	Title   string
 	Version string
 	Runtime string
@@ -42,39 +56,35 @@ type Stats struct {
 	System  SystemStats
 }
 
-// Update mutates the state under lock. Every mutation must go through here.
-func (s *State) Update(fn func(*State)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fn(s)
-}
-
-// Read runs fn against the state under lock, for callers that only observe.
-func (s *State) Read(fn func(*State)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fn(s)
-}
-
-// serveState publishes the state as JSON.
+// serveState publishes the server's state as JSON.
 //
 // The velox /sync endpoint used to be a machine-readable feed of exactly this
 // document, so scripts and monitoring could consume it. Replacing the UI with
 // HTML fragments would have removed that with no replacement; this keeps it,
-// costs almost nothing, and is what makes the server debuggable when a fragment
-// renders wrong.
+// and is what makes the server debuggable when a fragment renders wrong.
+//
+// Every field is gathered at request time. That costs a directory walk per
+// request — bounded by fileNumberLimit, the same walk the poll loop does every
+// second while anyone is watching — and buys a document that is correct for a
+// caller who is not a browser.
 func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var body []byte
-	var err error
-	s.state.Read(func(st *State) {
-		// Marshalled under the lock: Torrents and Downloads are pointers the
-		// render loop replaces wholesale.
-		body, err = json.Marshal(st)
-	})
+	doc := stateDocument{
+		Torrents:       s.engine.GetTorrents(),
+		Downloads:      s.listFiles(),
+		ConnectedUsers: s.watchers(),
+		Stats: statsDocument{
+			Title:   s.opts.Title,
+			Version: s.version,
+			Runtime: s.goRuntime,
+			Uptime:  s.startedAt,
+			System:  s.stats.get(),
+		},
+	}
+	body, err := json.Marshal(doc)
 	if err != nil {
 		http.Error(w, "Failed to encode state", http.StatusInternalServerError)
 		return

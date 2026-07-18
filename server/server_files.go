@@ -29,10 +29,10 @@ type fsNode struct {
 	Truncated bool `json:",omitempty"`
 }
 
+// downloadDir reads the live directory from the engine, which owns the config.
+// /api/configure can move it at any time.
 func (s *Server) downloadDir() string {
-	var dir string
-	s.state.Read(func(st *State) { dir = st.Config.DownloadDirectory })
-	return dir
+	return s.engine.Config().DownloadDirectory
 }
 
 func (s *Server) listFiles() *fsNode {

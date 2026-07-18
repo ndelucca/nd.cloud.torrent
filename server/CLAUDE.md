@@ -7,7 +7,7 @@ The process shell and every HTTP surface: flag/config handling, the shared state
 ## Ownership
 
 - `server.go` — `Options` (CLI flags), `Server` runtime, `New`, `Run`, `reconfigure`, the `route` dispatcher and the middleware chain
-- `state.go` — the `State` snapshot, its `Update`/`Read` accessors, the `Stats` block, and `GET /api/state`
+- `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
 - `render_torrents.go` / `render_downloads.go` — the per-region view models and emission rules
 - `fragments.go` — `servePage` and the `hx-get` fragments (`/fragments/downloads`, per-torrent file tables)
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
@@ -37,8 +37,10 @@ Server-rendered / SSE path:
 - When a region disappears, emit one final empty event for its name before dropping it (`renderer.forget`). htmx's SSE extension unregisters per-element listeners lazily from inside the listener, so a name that simply stops being emitted leaks the listener and its detached DOM subtree.
 - Do not emit an item's first event in the same instant as the membership event that creates its element; leave a tick. Observed in-browser: at 300 ms the item event was missed, at 600 ms it landed.
 - The poll loop is gated on `watchers() > 0` — `listFiles` costs up to `fileNumberLimit` stat calls per second and is pure waste with nobody connected.
-- `s.state` is the shared snapshot: the render loop reads it and `GET /api/state` serves it as JSON. Mutate it only through `State.Update`; it no longer publishes anything itself.
-- Exported field names in `State` are the JSON contract of `/api/state`; renaming one breaks any script consuming it.
+- **The server stores one thing: the latest host sample (`sampledStats`).** Everything else the UI and `/api/state` show is derived and read from its owner at the moment it is needed — torrents from `engine.GetTorrents`, the tree from `listFiles`, the config from `engine.Config`, the viewer count from `hub.count`. Do not reintroduce a shared snapshot: the previous one was written by the poll loop and read by nothing but the JSON encoder, so because polling is gated on `watchers() > 0`, `/api/state` served `null` torrents whenever no browser was connected. `TestStateIsLiveWithoutWatchers` pins this.
+- The config lives in the engine and nowhere else. The server persists it to `ConfigPath` but keeps no copy — two copies can disagree, and the one the settings form renders would be the stale one.
+- `stateDocument`/`statsDocument` are the JSON contract of `/api/state`, declared explicitly so that rearranging the server's own fields cannot silently change the wire format. Exported field names are the contract; renaming one breaks any script consuming it. `Config` is deliberately absent — it is the engine's, and republishing it here is what created the second copy.
+- `/api/state` costs one bounded directory walk per request (`fileNumberLimit`), the same one the poll loop does each second while anyone is watching. That is the price of a document that is correct for a caller who is not a browser.
 - API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine sentinels → 404/409/501/503, `apiError` carries its own). Error strings are user-visible.
 - All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`). Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight, which is what makes the check necessary.
 - Each action accepts exactly one encoding, and adding a second to any of them means a second parser to keep in step with the same struct. `add` takes a bare string, `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.

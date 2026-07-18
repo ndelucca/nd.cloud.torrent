@@ -92,14 +92,13 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var view struct {
+	view := struct {
 		Title  string
 		Config engine.Config
+	}{
+		Title:  s.opts.Title,
+		Config: s.engine.Config(),
 	}
-	s.state.Read(func(st *State) {
-		view.Title = st.Stats.Title
-		view.Config = st.Config
-	})
 
 	var buf bytes.Buffer
 	if err := s.renderer.tmpl.ExecuteTemplate(&buf, "page", view); err != nil {

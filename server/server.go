@@ -65,14 +65,17 @@ func DefaultOptions() Options {
 	}
 }
 
-// Server is the runtime: handlers, engine, and the synced state object.
+// Server is the runtime: handlers, engine, and the sampled host stats.
 type Server struct {
 	opts    Options
 	version string
 	isTLS   bool
+	// Fixed for the process lifetime, so they need no synchronization.
+	goRuntime string
+	startedAt time.Time
 
 	engine *engine.Engine
-	state  State
+	stats  sampledStats
 
 	renderer *renderer
 	hub      *hub
@@ -96,10 +99,12 @@ func New(o Options, version string) (*Server, error) {
 	}
 
 	s := &Server{
-		opts:    o,
-		version: version,
-		isTLS:   isTLS,
-		hub:     newHub(),
+		opts:      o,
+		version:   version,
+		isTLS:     isTLS,
+		goRuntime: strings.TrimPrefix(runtime.Version(), "go"),
+		startedAt: time.Now(),
+		hub:       newHub(),
 		// Buffered and coalesced: a burst of API calls between two ticks costs
 		// one extra render, not one per call.
 		kickCh: make(chan struct{}, 1),
@@ -110,14 +115,6 @@ func New(o Options, version string) (*Server, error) {
 		return nil, err
 	}
 	s.renderer = newRenderer(tmpl)
-
-	s.state.Stats = Stats{
-		Title:   o.Title,
-		Version: version,
-		Runtime: strings.TrimPrefix(runtime.Version(), "go"),
-		Uptime:  time.Now(),
-	}
-
 	s.static = ctstatic.FileSystemHandler()
 
 	s.engine = engine.New()
@@ -279,12 +276,6 @@ func (s *Server) pollLoop(ctx context.Context) {
 		if s.watchers() > 0 {
 			torrents := s.engine.GetTorrents()
 			downloads := s.listFiles()
-			conns := s.watchers()
-			s.state.Update(func(st *State) {
-				st.Torrents = torrents
-				st.Downloads = downloads
-				st.ConnectedUsers = conns
-			})
 			s.renderRegions()
 			s.renderTorrents(torrents)
 			s.renderDownloads(downloads)
@@ -311,8 +302,7 @@ func (s *Server) statsLoop(ctx context.Context) {
 		// Sampling is cheap but not free, and with nobody watching the result
 		// is discarded — same reasoning as pollLoop.
 		if s.watchers() > 0 {
-			sys := sampleSystemStats(s.engine.Config().DownloadDirectory)
-			s.state.Update(func(st *State) { st.Stats.System = sys })
+			s.stats.set(sampleSystemStats(s.engine.Config().DownloadDirectory))
 			s.renderRegions()
 		}
 		select {
@@ -332,20 +322,18 @@ func (s *Server) renderRegions() {
 	s.renderMu.Lock()
 	defer s.renderMu.Unlock()
 
-	var view statsView
-	s.state.Read(func(st *State) {
-		view = statsView{
-			Title:          st.Stats.Title,
-			Version:        st.Stats.Version,
-			Runtime:        st.Stats.Runtime,
-			Uptime:         st.Stats.Uptime,
-			ConnectedUsers: st.ConnectedUsers,
-			System:         st.Stats.System,
-			MemPercent:     percentOf(st.Stats.System.MemoryUsed, st.Stats.System.MemoryTotal),
-			DiskPercent:    percentOf(st.Stats.System.DiskUsed, st.Stats.System.DiskTotal),
-			DiskFree:       st.Stats.System.DiskTotal - st.Stats.System.DiskUsed,
-		}
-	})
+	sys := s.stats.get()
+	view := statsView{
+		Title:          s.opts.Title,
+		Version:        s.version,
+		Runtime:        s.goRuntime,
+		Uptime:         s.startedAt,
+		ConnectedUsers: s.watchers(),
+		System:         sys,
+		MemPercent:     percentOf(sys.MemoryUsed, sys.MemoryTotal),
+		DiskPercent:    percentOf(sys.DiskUsed, sys.DiskTotal),
+		DiskFree:       sys.DiskTotal - sys.DiskUsed,
+	}
 	frame, err := s.renderer.render("stats", "stats", view)
 	if err != nil {
 		log.Printf("render stats: %s", err)
@@ -390,7 +378,6 @@ func (s *Server) reconfigure(c engine.Config) error {
 	if err := os.WriteFile(s.opts.ConfigPath, b, 0600); err != nil {
 		return fmt.Errorf("Failed to save configuration: %w", err)
 	}
-	s.state.Update(func(st *State) { st.Config = c })
 	return nil
 }
 

@@ -95,7 +95,7 @@ in memory, so restarting the server ends them.
 |---|---|
 | `/` | the web UI |
 | `/events` | Server-Sent Events: named events carrying HTML fragments |
-| `/api/state` | the full server state as JSON — for scripts and monitoring |
+| `/api/state` | torrents, the download tree, viewer count and host stats as JSON — for scripts and monitoring. Read live, so it is correct with no browser open. The engine configuration is not included; it is not the server's to publish. |
 | `/api/*` | commands: `add`, `torrentfile`, `configure`, `torrent` |
 | `/download/<path>` | file download (range requests supported); a directory streams as a zip |
 
