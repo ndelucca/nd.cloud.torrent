@@ -6,7 +6,7 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 
 ## Ownership
 
-- `engine.go` — `Engine` type: client lifecycle (`Configure`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents and files
+- `engine.go` — `Engine` type: client lifecycle (`Configure`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents
 - `torrent.go` — `Torrent` and `File` view models, `update` (copies live state out of the underlying torrent) and `clone` (deep copy for callers)
 - `config.go` — the `Config` struct persisted by the server as JSON, plus `Validate`
 
@@ -21,7 +21,7 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 - Stopping is destructive: `StopTorrent` drops the underlying torrent rather than pausing it, and clears `t.t`. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
 - `GetTorrents` returns a deep copy; the internal `ts` map and its `*Torrent` values never escape the engine
 - Errors are sentinels (`ErrMissingTorrent`, `ErrAlreadyStarted`, …) wrapped with `%w`; the server maps them to HTTP status codes
-- `StopFile` is deliberately unimplemented and returns `ErrUnsupported`; there is no per-file pause that composes with `DownloadAll`
+- Start/stop is per torrent, never per file. `anacrolix/torrent` has no per-file pause that composes with `DownloadAll`, and the engine tracks no per-file priorities, so a per-file API could only ever be a lie. `File` is a read-only progress view.
 - Torrent parsing lives here, not in `server`: `anacrolix/torrent` types must not appear in exported signatures
 
 ## Work Guidance

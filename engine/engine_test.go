@@ -177,7 +177,7 @@ func TestStartAfterStopReAdds(t *testing.T) {
 // TestStopTorrentClearsHandle pins the invariant startLocked relies on.
 func TestStopTorrentClearsHandle(t *testing.T) {
 	e := New()
-	tor := &Torrent{InfoHash: "ih", Started: true, Files: []*File{{Started: true}, nil}}
+	tor := &Torrent{InfoHash: "ih", Started: true, Files: []*File{{Path: "a"}, nil}}
 	e.ts["ih"] = tor
 
 	// t.t is nil here, so Drop is skipped, but the bookkeeping must still run.
@@ -187,13 +187,13 @@ func TestStopTorrentClearsHandle(t *testing.T) {
 
 	// Via the real path, with a valid hash.
 	valid := "abababababababababababababababababababab"
-	tor2 := &Torrent{InfoHash: valid, Started: true, Files: []*File{{Started: true}, nil}}
+	tor2 := &Torrent{InfoHash: valid, Started: true, Files: []*File{{Path: "a"}, nil}}
 	e.ts[valid] = tor2
 	if err := e.StopTorrent(valid); err != nil {
 		t.Fatalf("StopTorrent: %v", err)
 	}
-	if tor2.Started || tor2.t != nil || tor2.Files[0].Started {
-		t.Error("stop must clear Started, the handle, and per-file flags")
+	if tor2.Started || tor2.t != nil {
+		t.Error("stop must clear Started and the handle")
 	}
 	if err := e.StopTorrent(valid); !errors.Is(err, ErrAlreadyStopped) {
 		t.Errorf("double stop = %v, want ErrAlreadyStopped", err)

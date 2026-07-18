@@ -226,9 +226,10 @@ func TestConcurrentEventStreams(t *testing.T) {
 	wg.Wait()
 }
 
-// TestAPIRejectsCrossOrigin covers the CSRF fix. /api/* takes text/plain bodies,
-// which browsers send cross-origin with no preflight, so any page could have
-// POSTed /api/configure to repoint the download root at "/".
+// TestAPIRejectsCrossOrigin covers the CSRF fix. /api/* takes text/plain and
+// form-encoded bodies, both of which browsers send cross-origin with no
+// preflight, so any page could have POSTed /api/configure to repoint the
+// download root at "/".
 func TestAPIRejectsCrossOrigin(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()
@@ -245,8 +246,9 @@ func TestAPIRejectsCrossOrigin(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			body := strings.NewReader("start:" + strings.Repeat("ab", 20))
+			body := strings.NewReader("action=start&infohash=" + strings.Repeat("ab", 20))
 			r := httptest.NewRequest(http.MethodPost, "/api/torrent", body)
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			for k, v := range c.headers {
 				r.Header.Set(k, v)
 			}
@@ -275,20 +277,24 @@ func TestAPIStatusCodes(t *testing.T) {
 
 	cases := []struct {
 		name, method, path, body string
+		form                     bool
 		want                     int
 	}{
-		{"missing torrent", http.MethodPost, "/api/torrent", "start:" + strings.Repeat("ab", 20), http.StatusNotFound},
-		{"unknown action", http.MethodPost, "/api/nope", "", http.StatusNotFound},
-		{"wrong method", http.MethodGet, "/api/torrent", "", http.StatusMethodNotAllowed},
-		{"bad infohash", http.MethodPost, "/api/torrent", "start:zzz", http.StatusBadRequest},
-		{"malformed body", http.MethodPost, "/api/torrent", "no-colon", http.StatusBadRequest},
-		{"stop file unsupported", http.MethodPost, "/api/file", "stop:" + strings.Repeat("ab", 20) + ":x", http.StatusNotImplemented},
-		{"bad config", http.MethodPost, "/api/configure", "{not json", http.StatusBadRequest},
-		{"non-http url", http.MethodPost, "/api/url", "file:///etc/passwd", http.StatusBadRequest},
+		{"missing torrent", http.MethodPost, "/api/torrent", "action=start&infohash=" + strings.Repeat("ab", 20), true, http.StatusNotFound},
+		{"unknown action", http.MethodPost, "/api/nope", "", false, http.StatusNotFound},
+		{"wrong method", http.MethodGet, "/api/torrent", "", false, http.StatusMethodNotAllowed},
+		{"bad infohash", http.MethodPost, "/api/torrent", "action=start&infohash=zzz", true, http.StatusBadRequest},
+		{"malformed body", http.MethodPost, "/api/torrent", "action=start", true, http.StatusBadRequest},
+		{"non-form torrent body", http.MethodPost, "/api/torrent", "start:whatever", false, http.StatusBadRequest},
+		{"non-form config body", http.MethodPost, "/api/configure", "{not json", false, http.StatusBadRequest},
+		{"non-http url", http.MethodPost, "/api/add", "file:///etc/passwd", false, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+			if c.form {
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
 			if w.Code != c.want {
@@ -301,9 +307,12 @@ func TestAPIStatusCodes(t *testing.T) {
 	}
 }
 
-// TestSSRFGuard checks that /api/url refuses to reach into the host's own
-// network. Previously it was an unauthenticated fetch of any URL with no
-// timeout, no size limit, and a leaked response body.
+// TestSSRFGuard checks that the remote-torrent fetch refuses to reach into the
+// host's own network. Previously it was an unauthenticated fetch of any URL
+// with no timeout, no size limit, and a leaked response body.
+//
+// It goes through /api/add, which dispatches an http(s) URL to the same fetch
+// the deleted /api/url endpoint used.
 func TestSSRFGuard(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()
@@ -316,7 +325,7 @@ func TestSSRFGuard(t *testing.T) {
 	defer target.Close()
 
 	for _, body := range []string{target.URL, "http://169.254.169.254/latest/meta-data/"} {
-		r := httptest.NewRequest(http.MethodPost, "/api/url", strings.NewReader(body))
+		r := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader(body))
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code == http.StatusOK {

@@ -96,10 +96,21 @@ in memory, so restarting the server ends them.
 | `/` | the web UI |
 | `/events` | Server-Sent Events: named events carrying HTML fragments |
 | `/api/state` | the full server state as JSON — for scripts and monitoring |
-| `/api/*` | commands: `add`, `magnet`, `url`, `torrentfile`, `configure`, `torrent`, `file` |
+| `/api/*` | commands: `add`, `torrentfile`, `configure`, `torrent` |
 | `/download/<path>` | file download (range requests supported); a directory streams as a zip |
 
 `/api/*` requires `POST` and rejects cross-origin requests.
+
+| Action | Body |
+|---|---|
+| `add` | a magnet URI or an `http(s)` URL to a `.torrent` — either as the raw body, or as a `uri` form field. The server dispatches on the scheme. |
+| `torrentfile` | raw `.torrent` bytes, or a multipart upload under `torrent` |
+| `configure` | form-encoded; omitted fields keep their current value |
+| `torrent` | form-encoded `action` (`start`, `stop`, `delete`) and `infohash` |
+
+Note that `curl -d` defaults to `Content-Type: application/x-www-form-urlencoded`,
+so `add` will look for a `uri` field; use `--data-urlencode "uri=…"`, or send the
+bare URI with `-H 'Content-Type: text/plain'`.
 
 ## Development
 

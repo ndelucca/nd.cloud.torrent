@@ -85,18 +85,21 @@ func TestParseConfigRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestParseConfigStillAcceptsJSON: the AngularJS UI and any script post JSON.
-func TestParseConfigStillAcceptsJSON(t *testing.T) {
+// TestParseConfigRejectsNonForm: the configuration form is the only supported
+// encoding. A JSON body used to be accepted for the AngularJS UI; that UI is
+// gone, and silently accepting a second encoding meant two parsers to keep in
+// step with engine.Config.
+func TestParseConfigRejectsNonForm(t *testing.T) {
 	current := engine.Config{DownloadDirectory: "/old", IncomingPort: 1}
 	body := `{"DownloadDirectory":"/new","IncomingPort":4242}`
 	r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
 
 	got, err := parseConfig(r, []byte(body), current)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("a JSON body must be rejected")
 	}
-	if got.DownloadDirectory != "/new" || got.IncomingPort != 4242 {
-		t.Errorf("got %+v", got)
+	if got != current {
+		t.Errorf("a rejected body must leave the config alone, got %+v", got)
 	}
 }
 

@@ -25,10 +25,8 @@ const infoHashHexLen = 2 * metainfo.HashSize
 var (
 	ErrNotConfigured  = errors.New("Engine is not configured")
 	ErrMissingTorrent = errors.New("Missing torrent")
-	ErrMissingFile    = errors.New("Missing file")
 	ErrAlreadyStarted = errors.New("Already started")
 	ErrAlreadyStopped = errors.New("Already stopped")
-	ErrUnsupported    = errors.New("Unsupported")
 )
 
 // Engine wraps anacrolix/torrent in a server-friendly facade: one client, a
@@ -342,11 +340,6 @@ func (e *Engine) startLocked(t *Torrent) error {
 		t.t = tt
 	}
 	t.Started = true
-	for _, f := range t.Files {
-		if f != nil {
-			f.Started = true
-		}
-	}
 	if t.t.Info() != nil {
 		t.t.DownloadAll()
 	}
@@ -370,11 +363,6 @@ func (e *Engine) StopTorrent(infohash string) error {
 		t.t = nil
 	}
 	t.Started = false
-	for _, f := range t.Files {
-		if f != nil {
-			f.Started = false
-		}
-	}
 	return nil
 }
 
@@ -390,41 +378,6 @@ func (e *Engine) DeleteTorrent(infohash string) error {
 	}
 	delete(e.ts, t.InfoHash)
 	return nil
-}
-
-func (e *Engine) StartFile(infohash, path string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	t, err := e.getLocked(infohash)
-	if err != nil {
-		return err
-	}
-	var f *File
-	for _, file := range t.Files {
-		if file != nil && file.Path == path {
-			f = file
-			break
-		}
-	}
-	if f == nil {
-		return fmt.Errorf("%w %s", ErrMissingFile, path)
-	}
-	if f.Started {
-		return ErrAlreadyStarted
-	}
-	if !t.Started {
-		if err := e.startLocked(t); err != nil {
-			return err
-		}
-	}
-	f.Started = true
-	return nil
-}
-
-// StopFile is not implemented: anacrolix/torrent has no per-file pause that
-// composes with DownloadAll, and the engine does not track per-file priorities.
-func (e *Engine) StopFile(infohash, path string) error {
-	return fmt.Errorf("%w: stopping individual files", ErrUnsupported)
 }
 
 // str2ih parses a hex infohash. The length is checked before decoding: hex.Decode

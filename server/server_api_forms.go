@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -95,19 +94,14 @@ func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) err
 	return nil
 }
 
-// parseConfig builds a Config from either a form-encoded body (the htmx UI) or
-// a JSON one (the AngularJS UI and any script).
+// parseConfig builds a Config from a form-encoded body.
 //
 // current is the starting point so a form that omits a field leaves it alone
 // rather than zeroing it.
 func parseConfig(r *http.Request, data []byte, current engine.Config) (engine.Config, error) {
 	v := formValues(r, data)
 	if v == nil {
-		c := current
-		if err := json.Unmarshal(data, &c); err != nil {
-			return c, badRequest("Malformed configuration: %s", err)
-		}
-		return c, nil
+		return current, badRequest("Expected a form-encoded configuration")
 	}
 
 	c := current

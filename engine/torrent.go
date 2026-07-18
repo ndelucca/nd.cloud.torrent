@@ -34,7 +34,6 @@ type File struct {
 	Chunks    int
 	Completed int
 	//cloud torrent
-	Started bool
 	Percent float32
 }
 
@@ -75,7 +74,7 @@ func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
 	for i, f := range tfiles {
 		file := t.Files[i]
 		if file == nil {
-			file = &File{Path: f.Path(), Started: t.Started}
+			file = &File{Path: f.Path()}
 			t.Files[i] = file
 		}
 		chunks := f.State()

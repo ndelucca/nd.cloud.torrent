@@ -46,12 +46,10 @@ func statusFor(err error) int {
 		return ae.status
 	}
 	switch {
-	case errors.Is(err, engine.ErrMissingTorrent), errors.Is(err, engine.ErrMissingFile):
+	case errors.Is(err, engine.ErrMissingTorrent):
 		return http.StatusNotFound
 	case errors.Is(err, engine.ErrAlreadyStarted), errors.Is(err, engine.ErrAlreadyStopped):
 		return http.StatusConflict
-	case errors.Is(err, engine.ErrUnsupported):
-		return http.StatusNotImplemented
 	case errors.Is(err, engine.ErrNotConfigured):
 		return http.StatusServiceUnavailable
 	default:
@@ -131,16 +129,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 			uri = strings.TrimSpace(v.Get("uri"))
 		}
 		return s.addURI(r, uri)
-	case "url":
-		body, err := fetchRemoteTorrent(r.Context(), string(data))
-		if err != nil {
-			return err
-		}
-		return s.engine.NewTorrentFile(body)
 	case "torrentfile":
 		return s.engine.NewTorrentFile(data)
-	case "magnet":
-		return s.engine.NewMagnet(string(data))
 	case "configure":
 		c, err := parseConfig(r, data, s.engine.Config())
 		if err != nil {
@@ -148,18 +138,13 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 		}
 		return s.reconfigure(c)
 	case "torrent":
-		var state, infohash string
-		if v := formValues(r, data); v != nil {
-			state, infohash = v.Get("action"), v.Get("infohash")
-			if state == "" || infohash == "" {
-				return badRequest("Invalid request")
-			}
-		} else {
-			var ok bool
-			state, infohash, ok = strings.Cut(string(data), ":")
-			if !ok {
-				return badRequest("Invalid request")
-			}
+		v := formValues(r, data)
+		if v == nil {
+			return badRequest("Expected a form-encoded body with action and infohash")
+		}
+		state, infohash := v.Get("action"), v.Get("infohash")
+		if state == "" || infohash == "" {
+			return badRequest("Invalid request")
 		}
 		switch state {
 		case "start":
@@ -171,20 +156,6 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 		default:
 			return badRequest("Invalid state: %s", state)
 		}
-	case "file":
-		parts := strings.SplitN(string(data), ":", 3)
-		if len(parts) != 3 {
-			return badRequest("Invalid request")
-		}
-		state, infohash, path := parts[0], parts[1], parts[2]
-		switch state {
-		case "start":
-			return s.engine.StartFile(infohash, path)
-		case "stop":
-			return s.engine.StopFile(infohash, path)
-		default:
-			return badRequest("Invalid state: %s", state)
-		}
 	default:
 		return apiError{http.StatusNotFound, fmt.Errorf("Invalid action: %s", action)}
 	}
@@ -192,11 +163,6 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 
 // formValues parses a form-encoded body, or returns nil if the request is not
 // form-encoded.
-//
-// htmx posts application/x-www-form-urlencoded; the AngularJS UI posts a
-// colon-delimited text/plain body (`start:<infohash>`), which cannot represent
-// a path containing a colon. Both are accepted while the two UIs coexist; the
-// colon scheme goes away with Angular.
 //
 // The body is parsed from the bytes already read rather than via r.ParseForm,
 // which would find the body drained.

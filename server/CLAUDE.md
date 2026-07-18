@@ -16,7 +16,7 @@ The process shell and every HTTP surface: flag/config handling, the shared state
 - `events.go` — `hub` (fan-out with backpressure) and `serveEvents`, the `/events` SSE endpoint
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
 - Authentication and request logging are not owned here: `handler` wires in `internal/auth` and `internal/reqlog`
-- `server_api.go` — `/api/*` actions: `add`, `url`, `magnet`, `torrentfile`, `configure`, `torrent`, `file`
+- `server_api.go` — `/api/*` actions: `add`, `torrentfile`, `configure`, `torrent`
 - `server_files.go` — `fsNode` tree of the download directory, static/download file serving, archive downloads
 - `server_stats.go` — `SystemStats` and `sampleSystemStats`, a pure sampler over `gopsutil/v4`
 
@@ -40,7 +40,8 @@ Server-rendered / SSE path:
 - `s.state` is the shared snapshot: the render loop reads it and `GET /api/state` serves it as JSON. Mutate it only through `State.Update`; it no longer publishes anything itself.
 - Exported field names in `State` are the JSON contract of `/api/state`; renaming one breaks any script consuming it.
 - API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine sentinels → 404/409/501/503, `apiError` carries its own). Error strings are user-visible.
-- All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`). Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight.
+- All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`). Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight, which is what makes the check necessary.
+- Each action accepts exactly one encoding, and adding a second to any of them means a second parser to keep in step with the same struct. `add` takes a bare string, `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
 - **Any path rendered into a URL attribute must go through the `urlpath` template func.** `html/template` only normalizes attributes it recognises as URLs (`href`, `src`); an htmx attribute like `hx-delete` is plain text to it, so a file named `a#b.mkv` produced a request for `/download/a` and deleted a *different* file with a 200. File names come from torrents, so this is attacker-reachable.
 - Rendering is serialized by `renderMu`: `pollLoop` and `statsLoop` both render, and unsynchronized they can broadcast samples out of order. `seenTorrents` is covered by it.
@@ -49,7 +50,7 @@ Server-rendered / SSE path:
 - The handler chain is, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` → `route`. Authentication sits inside the security headers and outside gzip so a 401 is never compressed and never misses its headers.
 - Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 - `/download/` paths must go through `resolveWithin`, which uses `filepath.Rel` plus symlink resolution — a prefix check has no separator boundary.
-- `/api/url` fetches through `guardedDialContext`, which refuses loopback, private and link-local addresses.
+- `/api/add` fetches an `http(s)` URL through `guardedDialContext`, which refuses loopback, private and link-local addresses. Filtering happens at dial time, so it also covers redirects and DNS rebinding.
 - All API calls must be `POST`; the action is the path suffix after `/api/`
 - `reconfigure` absolutizes the download directory, applies it to the engine, then writes `ConfigPath` (0600) — the engine restart happens before the file is persisted, so a failed restart persists nothing
 - Two background goroutines run until the `Run` context is cancelled: torrent/file polling (1s) and stats sampling (5s). Polling is gated on `watchers() > 0`. `Run` joins both before returning, so no engine call is in flight when `Close` releases the engine.
