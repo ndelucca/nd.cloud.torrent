@@ -36,8 +36,8 @@ go build ./...
 go test -race ./... # the race detector is not optional here
 ```
 
-CI additionally runs `staticcheck` and `govulncheck` on linux, macOS and
-Windows.
+`go vet`, the build and the tests run on linux, macOS and Windows. `gofmt`,
+`staticcheck` and `govulncheck` run on linux only.
 
 The race detector matters specifically: the bugs this codebase actually shipped
 were unsynchronised map access, twice.

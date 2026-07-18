@@ -112,7 +112,7 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (reques
 - `go build -v -o /dev/null .`
 - `go vet ./...` and `gofmt -l .` (both must be clean; CI enforces them)
 - `go test -race ./...` — the race detector is not optional here: the bugs this codebase actually shipped were unsynchronized map access
-- CI runs these plus `staticcheck` and `govulncheck` on every push and pull request, across linux/macos/windows
+- CI runs `go vet`, the build and `go test -race` across linux/macos/windows, and `gofmt`, `staticcheck` and `govulncheck` on linux only. It triggers on every pull request, but on push only for `master` and `refactor/**`.
 
 ## Child DOX Index
 
