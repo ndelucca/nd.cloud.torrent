@@ -213,7 +213,7 @@ func TestReconfigureSamePort(t *testing.T) {
 	defer e.Close()
 
 	dir := t.TempDir()
-	port := freeUDPPort(t)
+	port := freeTCPPort(t)
 	base := Config{DownloadDirectory: dir, IncomingPort: port, EnableUpload: true}
 
 	if err := e.Configure(base); err != nil {
@@ -238,7 +238,7 @@ func TestReconfigureSamePort(t *testing.T) {
 
 	// A port change must still work.
 	moved := changed
-	moved.IncomingPort = freeUDPPort(t)
+	moved.IncomingPort = freeTCPPort(t)
 	if err := e.Configure(moved); err != nil {
 		t.Fatalf("reconfigure onto a new port: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestReconfigureRejectsBadConfigWithoutStopping(t *testing.T) {
 	e := New()
 	defer e.Close()
 
-	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeUDPPort(t)}
+	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
 	if err := e.Configure(base); err != nil {
 		t.Fatalf("initial configure: %v", err)
 	}
@@ -269,7 +269,101 @@ func TestReconfigureRejectsBadConfigWithoutStopping(t *testing.T) {
 	}
 }
 
-func freeUDPPort(t *testing.T) int {
+// TestEvictForRebindPicksTheTeardownOrder pins the decision Configure makes
+// before it touches anything, without needing a real rebind to observe it.
+//
+// A nil return means "the running client keeps its port, so build the
+// replacement first and only swap if that succeeds". A non-nil return means
+// the caller now owns the old client and must close it before binding.
+func TestEvictForRebindPicksTheTeardownOrder(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	// Nothing configured yet: there is nothing to evict.
+	if got := e.evictForRebind(4242); got != nil {
+		t.Error("evicted a client that does not exist")
+	}
+
+	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+
+	// A different port: the running client keeps serving while the replacement
+	// is built, so it must NOT be detached here.
+	if got := e.evictForRebind(base.IncomingPort + 1); got != nil {
+		t.Error("a port change must leave the running client in place")
+	}
+	if e.client == nil {
+		t.Fatal("the running client was detached anyway")
+	}
+
+	// The same port: the old client owns it, so it has to go first.
+	evicted := e.evictForRebind(base.IncomingPort)
+	if evicted == nil {
+		t.Fatal("keeping the port must detach the client that holds it")
+	}
+	if e.client != nil {
+		t.Error("an evicted client must be cleared, so operations report ErrNotConfigured")
+	}
+	closeClient(evicted)
+}
+
+// TestConcurrentConfigure covers what configureMu is for.
+//
+// mu alone was not enough: the same-port path releases mu between dropping the
+// old client and installing the replacement, and a second caller entering that
+// window saw client == nil, took the non-retrying branch, and stole the port —
+// leaving the first caller to spin the whole rebind budget and fail.
+//
+// It asserts only what serialization actually guarantees. Which of the two
+// callers wins is a race by design, and asserting a winner would encode that
+// race as a requirement.
+func TestConcurrentConfigure(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	dir := t.TempDir()
+	port := freeTCPPort(t)
+	base := Config{DownloadDirectory: dir, IncomingPort: port}
+	if err := e.Configure(base); err != nil {
+		t.Fatalf("initial configure: %v", err)
+	}
+
+	// Same port, so both callers take the evict-then-rebind path and contend
+	// for exactly the window configureMu exists to close.
+	seeding, uploading := base, base
+	seeding.EnableSeeding = true
+	uploading.EnableUpload = true
+
+	errs := make(chan error, 2)
+	for _, c := range []Config{seeding, uploading} {
+		go func() { errs <- e.Configure(c) }()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Configure: %v", err)
+		}
+	}
+
+	// One of the two must have won outright — not a mixture of both.
+	got := e.Config()
+	if got != seeding && got != uploading {
+		t.Errorf("live config is neither input, so the two interleaved: %+v", got)
+	}
+	// And the engine must still be usable afterwards.
+	if err := e.Configure(base); err != nil {
+		t.Errorf("engine unusable after concurrent configures: %v", err)
+	}
+}
+
+// freeTCPPort returns a port that is currently unbound. It was called
+// freeUDPPort, which it never was.
+//
+// There is an unavoidable TOCTOU here: the listener is closed before the port
+// is returned. If something else takes it in between, Configure fails loudly
+// rather than hanging, which is the acceptable outcome.
+func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

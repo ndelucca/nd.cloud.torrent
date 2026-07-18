@@ -6,7 +6,7 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 
 ## Ownership
 
-- `engine.go` — `Engine` type: client lifecycle (`Configure`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents
+- `engine.go` — `Engine` type: client lifecycle (`Configure` and its steps `clientConfig`/`evictForRebind`/`buildClient`/`installClient`/`closeClient`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents
 - `torrent.go` — `Torrent` and `File` view models, `update` (copies live state out of the underlying torrent) and `clone` (deep copy for callers)
 - `config.go` — the `Config` struct persisted by the server as JSON, plus `Validate`
 
@@ -14,7 +14,8 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 
 - `Engine` must not import `server` or `static`; it is the bottom of the dependency chain
 - Public methods take a hex infohash string; `str2ih` checks the length *before* decoding — `hex.Decode` is bounded by `len(src)`, not `len(dst)`, so an over-long input writes past the array and panics
-- `Configure` is serialized end to end by `configureMu`. `mu` alone is not enough: the same-port path releases `mu` between dropping the old client and installing the replacement, and a second caller in that window saw `client == nil`, took the non-retrying branch and stole the port.
+- `Configure` is serialized end to end by `configureMu`. `mu` alone is not enough: the same-port path releases `mu` between dropping the old client and installing the replacement, and a second caller in that window saw `client == nil`, took the non-retrying branch and stole the port. `TestConcurrentConfigure` pins it, and fails five times out of five when `configureMu` is removed — burning the full `rebindTimeout` each time, which is exactly the failure this describes.
+- `Configure` is a sequence of four named steps — `clientConfig`, `evictForRebind`, `buildClient`, `installClient` — and the order between them is the contract, not an implementation detail. Keep them separate: the ordering is the part that was historically wrong, and it is only reviewable when each step is small enough to read on its own.
 - `Configure` picks its teardown order by whether the listen port changes. Different port: build the replacement first, so a failure leaves the running client untouched. Same port: the old client holds the port, so it must be closed and waited on first — building first fails with "address already in use" every time, which is the common case since any other settings change keeps the port. Waiting on `Closed()` is necessary but not sufficient (the kernel releases the socket slightly later), hence the bounded rebind retry.
 - Re-added magnets whose metadata has not arrived get a fresh `watchInfo`. Their original watcher is parked on the old handle and correctly declines to act, so without this they would never auto-start.
 - `Torrent`/`File` fields are read by the server and marshalled straight to the browser; treat exported field names as part of the UI contract
