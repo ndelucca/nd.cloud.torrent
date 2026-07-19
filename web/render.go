@@ -215,14 +215,6 @@ func (r *renderer) store(event string, body []byte) []byte {
 	return framed
 }
 
-// framed returns the cached framing for a region. Only tests read it; the
-// render path gets the frame back from store.
-func (r *renderer) framed(event string) []byte {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.framedBody[event]
-}
-
 // snapshot returns every region's current framed body as one buffer, for a
 // newly connected subscriber.
 //

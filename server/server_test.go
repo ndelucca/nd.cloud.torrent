@@ -238,13 +238,17 @@ func TestAPIRejectsCrossOrigin(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()
 
+	// The allowed cases expect 404, not 200: the request gets past the origin
+	// check and then fails on the torrent being absent. Asserting the exact
+	// status matters — "not 403" is satisfied by a 500, so a request that blew
+	// up somewhere else entirely would read as "allowed through".
 	cases := []struct {
 		name       string
 		headers    map[string]string
 		wantStatus int
 	}{
-		{"no origin (curl)", nil, http.StatusOK},
-		{"same-origin fetch", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"no origin (curl)", nil, http.StatusNotFound},
+		{"same-origin fetch", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusNotFound},
 		{"cross-site fetch", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
 		{"foreign origin", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
 	}
@@ -258,16 +262,8 @@ func TestAPIRejectsCrossOrigin(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
 
-			if c.wantStatus == http.StatusForbidden {
-				if w.Code != http.StatusForbidden {
-					t.Fatalf("status = %d, want 403", w.Code)
-				}
-				return
-			}
-			// Allowed through origin checking: it should fail on the torrent
-			// being absent (404), not on the origin (403).
-			if w.Code == http.StatusForbidden {
-				t.Fatalf("same-origin request was rejected as cross-origin")
+			if w.Code != c.wantStatus {
+				t.Fatalf("status = %d (%q), want %d", w.Code, w.Body.String(), c.wantStatus)
 			}
 		})
 	}

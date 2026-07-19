@@ -3,6 +3,9 @@ package web
 import (
 	"bytes"
 	"errors"
+	"html/template"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -198,5 +201,114 @@ func TestSnapshotIsOneBuffer(t *testing.T) {
 	// Self-delimiting frames concatenated into one write, not one write each.
 	if n := bytes.Count(snap, []byte("event: ")); n != 2 {
 		t.Errorf("snapshot carries %d frames, want 2", n)
+	}
+}
+
+// TestFragmentFallbacksWhenTheTemplateSetFails covers writeMessage, the last
+// resort when rendering itself is what broke.
+//
+// It is only reachable when a template is missing or errors, which never
+// happens with the real set — so it sat at zero coverage while being the path
+// that decides what a browser sees when the UI is broken. htmx swaps whatever
+// comes back, so returning nothing, or an error page, would put a blank panel
+// or a stack trace into the document.
+func TestFragmentFallbacksWhenTheTemplateSetFails(t *testing.T) {
+	// Rendering a fragment whose template is absent must fall back to
+	// fragment-message rather than to an empty body.
+	// ServeDownloads reads Deps.Tree, so it has to be supplied; the default test
+	// UI carries only a Title.
+	withTree := func(t *testing.T) *UI {
+		t.Helper()
+		u, err := New(Deps{Tree: func() *files.Node {
+			return &files.Node{Name: "root", IsDir: true}
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+
+	t.Run("falls back to the message template", func(t *testing.T) {
+		u := withTree(t)
+		// Only fragment-message survives, so "downloads" cannot render.
+		u.renderer.tmpl = template.Must(template.New("t").
+			Parse(`{{define "fragment-message"}}<p class="muted">{{.}}</p>{{end}}`))
+
+		w := httptest.NewRecorder()
+		u.ServeDownloads(w, httptest.NewRequest(http.MethodGet, "/fragments/downloads", nil))
+
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("Content-Type = %q, want text/html — htmx swaps this into the page", ct)
+		}
+		if body := w.Body.String(); !strings.Contains(body, "Could not render downloads.") {
+			t.Errorf("body = %q, want the caller's fallback message", body)
+		}
+	})
+
+	// And when even that template is gone there is nothing left to render with,
+	// so the one HTML literal in the package takes over. It must still be an
+	// element: a bare-text payload swapped by idiomorph lands as an EMPTY
+	// target, which is the failure checkFragment exists to prevent.
+	t.Run("falls back to the literal when nothing can render", func(t *testing.T) {
+		u := withTree(t)
+		u.renderer.tmpl = template.Must(template.New("t").Parse(``))
+
+		w := httptest.NewRecorder()
+		u.ServeDownloads(w, httptest.NewRequest(http.MethodGet, "/fragments/downloads", nil))
+
+		body := strings.TrimSpace(w.Body.String())
+		if body == "" {
+			t.Fatal("an empty body leaves the panel blank with no explanation")
+		}
+		if body[0] != '<' {
+			t.Errorf("body = %q, want an element — bare text swaps as empty", body)
+		}
+	})
+}
+
+// framed returns the cached framing for a region.
+//
+// It lives in a _test.go file because only tests read it — the render path gets
+// the frame back from store. Same package, so the call sites are unchanged, and
+// it stays out of the shipped binary.
+func (r *renderer) framed(event string) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.framedBody[event]
+}
+
+// TestHumanBytesUsesBase1000 pins the half of the byte formatting that must
+// agree with internal/reqlog.byteSize.
+//
+// The two render differently on purpose — "1.5 GB" here, "1.5GB" in a log line —
+// and neither can call the other: both are unexported, in packages with no edge
+// between them. What must not diverge is the base. When they disagreed, the same
+// download was logged as 954MB and displayed as 1.0 GB, and a log that does not
+// match the screen is worse than either convention.
+//
+// The boundary cases are what pin it: 1024 bytes is "1.0 KB" in base 1000 and
+// would be "1.0 KB" at 1024 too, so the discriminating values are 1000 and 999.
+// internal/reqlog.TestByteSize covers the same boundaries for the other side.
+func TestHumanBytesUsesBase1000(t *testing.T) {
+	for n, want := range map[int64]string{
+		0:       "0 B",
+		-1:      "0 B",
+		999:     "999 B",
+		1000:    "1.0 KB", // base 1024 would still say "1000 B" here
+		1024:    "1.0 KB",
+		1500:    "1.5 KB",
+		1000000: "1.0 MB",
+		// Clamps to the last unit rather than indexing past it. Note the two
+		// formatters diverge here: reqlog.byteSize's "KMGTPE" runs one unit
+		// further and would say EB. Harmless — a torrent is not an exabyte — but
+		// it is a real difference, recorded rather than pretended away.
+		1 << 60: "1152.9 PB",
+	} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

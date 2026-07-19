@@ -6,35 +6,47 @@ import (
 )
 
 // TestSampleReadsTheHost pins the happy path: every source succeeded, so Set is
-// true and the fields consumers branch on are populated. The Go-runtime fields
-// cannot fail, so they are asserted unconditionally.
+// true and the fields consumers branch on are populated.
+//
+// The host-dependent half lives in a subtest so that a sandbox which cannot
+// provide a source skips *that* and reports it. Skipping from the top level
+// instead made the whole test report PASS while having asserted nothing beyond
+// the two Go-runtime fields — indistinguishable, in CI output, from a run that
+// checked everything.
 func TestSampleReadsTheHost(t *testing.T) {
 	s := Sample(t.TempDir())
 
+	// The Go-runtime fields cannot fail, so they are asserted unconditionally.
 	if s.GoRoutines <= 0 {
 		t.Errorf("GoRoutines = %d, want > 0", s.GoRoutines)
 	}
 	if s.GoMemory <= 0 {
 		t.Errorf("GoMemory = %d, want > 0", s.GoMemory)
 	}
-	if !s.Set {
-		// Not fatal: a CI sandbox can legitimately refuse one of the sources.
-		// The point of Set is that consumers can tell, and the partial-sample
-		// test below covers that half.
-		t.Skipf("a host source was unavailable; Set=false, sample=%+v", s)
-	}
-	if s.MemoryTotal <= 0 {
-		t.Errorf("MemoryTotal = %d, want > 0 when Set is true", s.MemoryTotal)
-	}
-	if s.DiskTotal <= 0 {
-		t.Errorf("DiskTotal = %d, want > 0 when Set is true", s.DiskTotal)
-	}
-	if s.MemoryUsed > s.MemoryTotal {
-		t.Errorf("MemoryUsed %d exceeds MemoryTotal %d", s.MemoryUsed, s.MemoryTotal)
-	}
-	if s.CPU < 0 || s.CPU > 100*float64(runtime.NumCPU()) {
-		t.Errorf("CPU = %v, outside any plausible range", s.CPU)
-	}
+
+	t.Run("host sources", func(t *testing.T) {
+		if !s.Set {
+			// A CI sandbox can legitimately refuse one of the sources. The
+			// point of Set is that consumers can tell, and the partial-sample
+			// test covers that half.
+			t.Skipf("a host source was unavailable; Set=false, sample=%+v", s)
+		}
+		if s.MemoryTotal <= 0 {
+			t.Errorf("MemoryTotal = %d, want > 0 when Set is true", s.MemoryTotal)
+		}
+		if s.DiskTotal <= 0 {
+			t.Errorf("DiskTotal = %d, want > 0 when Set is true", s.DiskTotal)
+		}
+		if s.MemoryUsed > s.MemoryTotal {
+			t.Errorf("MemoryUsed %d exceeds MemoryTotal %d", s.MemoryUsed, s.MemoryTotal)
+		}
+		if s.DiskUsed > s.DiskTotal {
+			t.Errorf("DiskUsed %d exceeds DiskTotal %d", s.DiskUsed, s.DiskTotal)
+		}
+		if s.CPU < 0 || s.CPU > 100*float64(runtime.NumCPU()) {
+			t.Errorf("CPU = %v, outside any plausible range", s.CPU)
+		}
+	})
 }
 
 // TestSampleReportsPartialFailure pins the contract consumers actually branch

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,6 +31,10 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	// Counted, because a bare sleep is not a workload. On a loaded runner the
+	// goroutines below can be descheduled for most of the window and the test
+	// passes having raced almost nothing — green, and covering nothing.
+	var reads, mutations atomic.Int64
 
 	// Readers. GetTorrents refreshes and clones, so these are writers to the
 	// engine's internal state even though they read from the caller's view.
@@ -43,6 +48,7 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 					return
 				default:
 				}
+				reads.Add(1)
 				for ih, tor := range e.GetTorrents() {
 					_ = tor.Name
 					_ = tor.Percent
@@ -70,6 +76,7 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 				return
 			default:
 			}
+			mutations.Add(1)
 			_ = e.NewTorrentFile(testTorrentFile(t))
 			_ = e.NewMagnet(testMagnet)
 			_ = e.StartTorrent(hash)
@@ -81,11 +88,29 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+
+	// The thresholds are deliberately low — this asserts that the race was
+	// exercised at all, not how fast the machine is.
+	if r, m := reads.Load(), mutations.Load(); r < 50 || m < 5 {
+		t.Fatalf("the race barely ran: %d reads, %d mutation rounds. Whatever "+
+			"-race reported, it did not report on much", r, m)
+	}
 }
 
-// TestConcurrentStateReadsAreConsistent pins that the deep copy actually is one.
-// The internal ts map and its *Torrent values must never escape, because callers
-// marshal what they get back while the engine keeps mutating the originals.
+// TestConcurrentStateReadsAreConsistent pins that a snapshot handed to a caller
+// does not change underneath them while the engine keeps mutating, and exercises
+// that path under -race.
+//
+// What it does NOT do, despite the obvious reading, is prove the copy is deep.
+// Nothing observational can, because updateLoaded rebuilds Files with make() on
+// every pass rather than patching in place — so even an aliased slice points at
+// an array the engine has stopped touching. Verified: replacing slices.Clone
+// with a plain alias leaves this test green.
+//
+// TestViewWithFilesIsDeep is what actually covers that, by mutating the copy and
+// checking the original. The deep copy here defends against updateLoaded ever
+// patching in place, which engine/CLAUDE.md forbids for a separate reason: index
+// i stops being the same file once a torrent is re-added.
 func TestConcurrentStateReadsAreConsistent(t *testing.T) {
 	e := New()
 	defer e.Close()
@@ -93,33 +118,39 @@ func TestConcurrentStateReadsAreConsistent(t *testing.T) {
 	if err := e.NewTorrentFile(testTorrentFile(t)); err != nil {
 		t.Fatalf("NewTorrentFile: %v", err)
 	}
+	// Files are populated from the live torrent by a sample.
+	e.refresh(time.Now())
 
-	// A snapshot held across further engine activity must not change underneath
-	// its holder.
-	snapshot := e.GetTorrents()
-	before := map[string]int64{}
-	for ih, tor := range snapshot {
-		before[ih] = tor.Downloaded
+	hash := onlyTorrent(t, e).InfoHash
+	held, err := e.TorrentWithFiles(hash)
+	if err != nil {
+		t.Fatalf("TorrentWithFiles: %v", err)
 	}
+	if len(held.Files) == 0 {
+		t.Fatal("setup: the torrent has no files, so a shared backing array " +
+			"would be undetectable here")
+	}
+	before := append([]File(nil), held.Files...)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			e.refresh(time.Now())
 			e.GetTorrents()
+			_, _ = e.TorrentWithFiles(hash)
 		}()
 	}
 	wg.Wait()
 
-	for ih, tor := range snapshot {
-		if tor.Downloaded != before[ih] {
-			t.Fatalf("torrent %s: a held snapshot changed under the caller "+
-				"(%d -> %d); GetTorrents is not returning a deep copy",
-				ih, before[ih], tor.Downloaded)
+	for i := range before {
+		if held.Files[i] != before[i] {
+			t.Fatalf("a held snapshot's file %d changed under the caller "+
+				"(%+v -> %+v); the copy shares its backing array",
+				i, before[i], held.Files[i])
 		}
-		// No check that the internal handles did not escape: Torrent has no
-		// field that could carry them, so it is unrepresentable rather than
-		// asserted.
 	}
+	// No check that the internal handles did not escape: Torrent has no field
+	// that could carry them, so it is unrepresentable rather than asserted.
 }

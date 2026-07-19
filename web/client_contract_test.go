@@ -318,3 +318,31 @@ func TestStatusRegionIsOutsideSwapTargets(t *testing.T) {
 			"swap target, every action erases its own result")
 	}
 }
+
+// TestAPIErrorCarriesTheSharedClass ties the template's class to the one ct.js
+// writes.
+//
+// ct.js builds the "could not reach the server" status as DOM nodes rather than
+// as an HTML string, and its own comment explains that assembling markup in JS
+// "put a copy of the template set's class contract in a file no template test
+// can see" — then hard-codes p.className = "err-msg" anyway. The class now lives
+// in three languages: here, static/files/js/ct.js (showError) and
+// static/files/css/ct.css. A real cross-language link would mean web importing
+// static, or a server test fetching /js/ct.js and string-matching it; neither is
+// worth it. This at least fails loudly on the Go side of the split.
+func TestAPIErrorCarriesTheSharedClass(t *testing.T) {
+	u := newTestUI(t)
+	for name, want := range map[string]string{
+		"api-error": "err-msg",
+		"api-ok":    "ok-msg",
+	} {
+		body, err := u.renderer.execute(name, "message")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(string(body), `class="`+want+`"`) {
+			t.Errorf("%s renders %q, want class=%q — ct.js:showError and ct.css "+
+				"both hard-code it", name, body, want)
+		}
+	}
+}

@@ -211,30 +211,66 @@ func TestZipOfHiddenDirectoryStillWorks(t *testing.T) {
 
 // TestZipStopsWhenTheClientLeaves pins that an abandoned download does not keep
 // walking the tree with nowhere to write.
+//
+// Asserted against an uncancelled control rather than against a fixed number.
+// Returning early on any zip parse error — "a truncated archive is the expected
+// outcome" — makes this pass when the archive is malformed for a completely
+// unrelated reason, and makes the only meaningful branch conditional on the
+// bytes happening to parse.
 func TestZipStopsWhenTheClientLeaves(t *testing.T) {
-	h, root := newTestHandler(t)
-	dir := filepath.Join(root, "dir")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 50; i++ {
-		p := filepath.Join(dir, "f"+string(rune('a'+i%26))+string(rune('a'+i/26))+".txt")
-		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+	const files = 50
+
+	build := func(t *testing.T) (http.Handler, string) {
+		t.Helper()
+		h, root := newTestHandler(t)
+		dir := filepath.Join(root, "dir")
+		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
+		for i := 0; i < files; i++ {
+			p := filepath.Join(dir, "f"+string(rune('a'+i%26))+string(rune('a'+i/26))+".txt")
+			if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return h, root
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the client is already gone
-	req := httptest.NewRequest(http.MethodGet, "/download/dir", nil).WithContext(ctx)
+	// Control: the same request with a live context must produce every entry.
+	// Without this the cancelled case below could pass because the walk never
+	// worked at all.
+	h, _ := build(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/download/dir", nil))
 	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
 	if err != nil {
-		return // a truncated archive is the expected outcome
+		t.Fatalf("control archive does not parse: %v", err)
 	}
-	if len(zr.File) >= 50 {
-		t.Fatalf("walk produced %d entries for a cancelled request; it should have stopped", len(zr.File))
+	if len(zr.File) != files {
+		t.Fatalf("control produced %d entries, want %d — the fixture is wrong, "+
+			"so the cancelled case below would prove nothing", len(zr.File), files)
+	}
+	full := rec.Body.Len()
+
+	// Cancelled: the walk must stop, so the response must be materially smaller
+	// than a complete archive. Size rather than entry count, because a body that
+	// no longer parses as a zip is a legitimate outcome here and must not be
+	// read as success.
+	h2, _ := build(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is already gone
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/download/dir", nil).WithContext(ctx))
+
+	if got := rec2.Body.Len(); got >= full {
+		t.Fatalf("a cancelled request produced %d bytes against a complete %d; "+
+			"the walk did not stop", got, full)
+	}
+	// And if it does parse, it must be short.
+	if zr2, err := zip.NewReader(bytes.NewReader(rec2.Body.Bytes()), int64(rec2.Body.Len())); err == nil {
+		if len(zr2.File) >= files {
+			t.Fatalf("cancelled walk produced %d entries, want fewer than %d",
+				len(zr2.File), files)
+		}
 	}
 }
