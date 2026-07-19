@@ -109,8 +109,8 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	s.downloads.ServeHTTP(w, r)
 }
 
-// New builds a server from options. It performs no I/O beyond reading the config
-// file, so it is safe to call in tests.
+// New builds a server from options, reads the config file and applies it to the
+// engine — which binds the incoming torrent port. It writes nothing.
 func New(o Options, version string) (*Server, error) {
 	isTLS := o.CertPath != "" || o.KeyPath != ""
 	if isTLS && (o.CertPath == "" || o.KeyPath == "") {
@@ -153,7 +153,10 @@ func New(o Options, version string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.reconfigure(c); err != nil {
+	// applyConfig, not reconfigure: startup must not write. Rewriting the config
+	// on every boot is a chance to corrupt it that buys nothing, and it made
+	// New's "no I/O beyond reading the config file" claim false.
+	if _, err := s.applyConfig(c); err != nil {
 		return nil, fmt.Errorf("initial configure failed: %w", err)
 	}
 	return s, nil
@@ -179,9 +182,12 @@ func (s *Server) loadConfig() (engine.Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("Malformed configuration: %w", err)
 	}
-	if c.IncomingPort <= 0 || c.IncomingPort > 65535 {
-		c.IncomingPort = defaultIncomingPort
-	}
+	// The port is deliberately not clamped here. c starts from the defaults
+	// above, so an absent IncomingPort already keeps defaultIncomingPort — the
+	// clamp could only ever fire on a value someone explicitly wrote, and
+	// silently rewriting that to 50007 is the worst of the options. Validation
+	// belongs to engine.Config.Validate, which reports it instead. Two policies
+	// for one rule is how they end up disagreeing.
 	return c, nil
 }
 
@@ -356,21 +362,72 @@ func (s *Server) renderStats() {
 // reconfigure applies a config to the engine and persists it. The engine restart
 // happens first: if it fails, nothing is written and the old config stands.
 func (s *Server) reconfigure(c engine.Config) error {
-	dldir, err := filepath.Abs(c.DownloadDirectory)
+	c, err := s.applyConfig(c)
 	if err != nil {
-		return fmt.Errorf("Invalid path: %w", err)
-	}
-	c.DownloadDirectory = dldir
-
-	if err := s.engine.Configure(c); err != nil {
 		return err
 	}
+	return s.saveConfig(c)
+}
+
+// applyConfig absolutizes the download directory and hands the config to the
+// engine, returning what was actually applied. It writes nothing: startup uses
+// it alone, so a run that changes no settings leaves the config file untouched.
+func (s *Server) applyConfig(c engine.Config) (engine.Config, error) {
+	dldir, err := filepath.Abs(c.DownloadDirectory)
+	if err != nil {
+		return c, fmt.Errorf("Invalid path: %w", err)
+	}
+	c.DownloadDirectory = dldir
+	if err := s.engine.Configure(c); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// saveConfig persists a config, atomically.
+//
+// Write-in-place could be interrupted — by a crash, a full disk, a container
+// stop — leaving a truncated file that loadConfig then rejects as "Malformed
+// configuration", so the server refused to start until someone deleted it by
+// hand. Writing a sibling and renaming means the config file is either the old
+// one or the new one, never a fragment.
+func (s *Server) saveConfig(c engine.Config) error {
 	b, err := json.MarshalIndent(&c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("Failed to encode configuration: %w", err)
 	}
+	path := s.opts.ConfigPath
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("Failed to save configuration: %w", err)
+		}
+	}
+	// Same directory as the target: rename is only atomic within a filesystem.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cloud-torrent-*.json")
+	if err != nil {
+		return fmt.Errorf("Failed to save configuration: %w", err)
+	}
+	defer os.Remove(tmp.Name()) // no-op once the rename succeeds
 	// 0600: the file lives next to the binary and holds operational settings.
-	if err := os.WriteFile(s.opts.ConfigPath, b, 0600); err != nil {
+	// CreateTemp already makes it 0600, but say so rather than rely on it.
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("Failed to save configuration: %w", err)
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return fmt.Errorf("Failed to save configuration: %w", err)
+	}
+	// Sync before rename: without it the rename can land before the bytes do,
+	// which is the same truncated file this function exists to prevent.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("Failed to save configuration: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("Failed to save configuration: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("Failed to save configuration: %w", err)
 	}
 	return nil
