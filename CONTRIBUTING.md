@@ -10,11 +10,13 @@ web/                 rendering, view models, the SSE stream
 web/templates/       html/template fragments — the UI's HTML
 files/               download tree, path containment, file serving
 fetch/               SSRF-guarded remote .torrent download
+sysstat/             host CPU/memory/disk sampling
 static/files/        embedded CSS and JavaScript
 ```
 
 Dependencies flow one way: `main` → `server` → {`engine`, `web`, `files`,
-`fetch`, `static`}, and `web` → `files`. Nothing below the server imports it.
+`fetch`, `sysstat`, `static`}, and `web` → {`files`, `sysstat`}. Nothing below
+the server imports it.
 
 ## Building
 

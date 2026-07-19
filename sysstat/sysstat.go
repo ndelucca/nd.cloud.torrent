@@ -1,4 +1,10 @@
-package server
+// Package sysstat samples host resource usage.
+//
+// It is a pure reader of the machine: it holds no state, decides nothing about
+// when to sample, and is the only place gopsutil is imported. Both the server
+// (which publishes it in /api/state) and the renderer (which displays it) use
+// this one type, so there is no mapping between a "wire" and a "view" shape.
+package sysstat
 
 import (
 	"log"
@@ -9,8 +15,12 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
-// SystemStats is a point-in-time sample of host resource usage.
-type SystemStats struct {
+// Stats is a point-in-time sample of host resource usage.
+//
+// The json tags are the /api/state wire contract. They live with the type
+// rather than on a server-side copy so that the sampler, the feed and the UI
+// cannot drift apart.
+type Stats struct {
 	Set         bool    `json:"set"`
 	CPU         float64 `json:"cpu"`
 	DiskUsed    int64   `json:"diskUsed"`
@@ -21,13 +31,13 @@ type SystemStats struct {
 	GoRoutines  int     `json:"goRoutines"`
 }
 
-// sampleSystemStats collects a fresh sample. It is a pure function of the host:
-// it neither mutates shared state nor pushes, so the caller decides both.
+// Sample collects a fresh reading. It is a pure function of the host: it
+// neither mutates shared state nor pushes, so the caller decides both.
 //
 // cpu.Percent(0, false) reports usage since the previous call in this process,
 // so the caller's sampling period defines the measurement window.
-func sampleSystemStats(diskDir string) SystemStats {
-	var s SystemStats
+func Sample(diskDir string) Stats {
+	var s Stats
 	// Set reports whether *every* source succeeded; a partial sample would
 	// otherwise show stale numbers as though they were current.
 	ok := true

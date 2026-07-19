@@ -8,6 +8,7 @@ import (
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/files"
+	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 )
 
 // TestFrameSSE pins the framing. Rendered HTML is full of newlines, and every
@@ -41,7 +42,7 @@ func TestRendererChangeDetection(t *testing.T) {
 	}
 	r := newRenderer(tmpl)
 
-	view := statsView{Version: "1.0", StatsData: StatsData{Set: true, GoRoutines: 7}}
+	view := statsView{Version: "1.0", Stats: sysstat.Stats{Set: true, GoRoutines: 7}}
 
 	first, err := r.render("stats", "stats", view)
 	if err != nil {
@@ -103,7 +104,7 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 		name string
 		data any
 	}{
-		{"stats", statsView{StatsData: StatsData{Set: true}}},
+		{"stats", statsView{Stats: sysstat.Stats{Set: true}}},
 		{"api-ok", "Done."},
 		{"api-error", "Nope."},
 		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},

@@ -95,16 +95,17 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 
 ## Repo-Wide Contracts
 
-- The server owns the HTTP surface and process lifecycle; the engine owns torrent state. Below the server sit three leaf packages with one job each: `web` renders, `files` walks and serves the download directory, `fetch` pulls a remote `.torrent`. None of them imports `server` or each other, except `web` → `files` for the tree type.
+- The server owns the HTTP surface and process lifecycle; the engine owns torrent state. Below the server sit four leaf packages with one job each: `web` renders, `files` walks and serves the download directory, `fetch` pulls a remote `.torrent`, `sysstat` reads the host. None of them imports `server` or each other, except `web` → {`files`, `sysstat`} for the types it renders.
 - Frontend assets and HTML templates are compiled into the binary via `go:embed`; any change to either requires a rebuild to take effect
 - Dependency direction is one-way and enforced by the compiler:
 
   ```
   main   → { server, internal/cli }
-  server → { engine, web, files, fetch, static, internal/auth, internal/reqlog }
-  web    → { engine, files }
+  server → { engine, web, files, fetch, sysstat, static, internal/auth, internal/reqlog }
+  web    → { engine, files, sysstat }
   files  → stdlib only
   fetch  → stdlib only
+  sysstat→ gopsutil
   engine → anacrolix/torrent
   ```
 
@@ -133,6 +134,7 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 - `web/CLAUDE.md` — templates, view models, the SSE hub, and every handler that produces HTML (owns `web/templates/`)
 - `files/CLAUDE.md` — the download tree walk, path containment, file and zip serving
 - `fetch/CLAUDE.md` — the SSRF-guarded remote `.torrent` download
+- `sysstat/CLAUDE.md` — host resource sampling; owns the `Stats` type shared by `/api/state` and the stats region
 - `static/CLAUDE.md` — embedded CSS/JS assets (covers `static/files/` too; no doc may live under it, it would be embedded and served). The HTML lives in `web/templates/`.
 - `.github/CLAUDE.md` — CI, release, and Docker packaging
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/files"
+	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 )
 
 // sampledStats holds the one thing the server genuinely has to remember between
@@ -21,16 +22,16 @@ import (
 // how /api/state came to serve nulls whenever no browser was connected.
 type sampledStats struct {
 	mu     sync.Mutex
-	system SystemStats
+	system sysstat.Stats
 }
 
-func (s *sampledStats) set(v SystemStats) {
+func (s *sampledStats) set(v sysstat.Stats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.system = v
 }
 
-func (s *sampledStats) get() SystemStats {
+func (s *sampledStats) get() sysstat.Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.system
@@ -54,7 +55,7 @@ type statsDocument struct {
 	Version string
 	Runtime string
 	Uptime  time.Time
-	System  SystemStats
+	System  sysstat.Stats
 }
 
 // serveState publishes the server's state as JSON.

@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 )
 
 // freePort returns a port that is currently unbound.
@@ -273,7 +275,7 @@ func TestConcurrentEventStreams(t *testing.T) {
 		// And the render loop's side of it, running concurrently.
 		go func() {
 			defer wg.Done()
-			s.stats.set(SystemStats{Set: true, GoRoutines: s.watchers()})
+			s.stats.set(sysstat.Stats{Set: true, GoRoutines: s.watchers()})
 			s.renderStats()
 		}()
 	}

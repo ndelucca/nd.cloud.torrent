@@ -10,7 +10,7 @@ models, the SSE hub, and every handler that produces HTML.
 - `ui.go` — `UI`, `Deps`, `New`, `Watchers`, `Close`
 - `render.go` — `parseTemplates`, the template funcs, `urlPath`, the byte formatters, and `renderer`: per-region change detection and SSE framing
 - `events.go` — `hub` (fan-out with backpressure, `close`) and `ServeEvents`, the `/events` endpoint
-- `stats.go` — `StatsData`, `statsView`, `RenderStats`
+- `stats.go` — `StatsData`, `statsView` (which embeds `sysstat.Stats`), `RenderStats`
 - `torrents.go` — `torrentView`, `RenderTorrents`, and the two-tier event scheme
 - `downloads.go` — `fsView`, `treeSignature`, `RenderDownloads`
 - `fragments.go` — `ServePage`, `ServeFragment` (`/fragments/downloads`, per-torrent file tables) and `WriteAPIResult`
@@ -22,7 +22,7 @@ Boundary:
 
 - **`web` must never import `server`.** The standing temptation is to reach for server state; the moment that edge exists the split is undone. Everything this package needs from the outside arrives through the closures in `Deps`, over value types (`engine.Torrent`, `engine.Config`, `files.Node`). That is what lets the render tests construct a `UI` with three literals instead of a torrent client, a config file and two bound ports.
 - `WriteAPIResult` is the whole of the API layer's dependency on the template set. It takes an `error` and calls `Error()` — it never inspects the type, so status policy (`apiError`, `statusFor`) stays in `server`.
-- `StatsData` is deliberately not the server's `SystemStats`. That type carries the JSON tags that are the `/api/state` wire contract, which is the server's; this one is a view model. The dozen field copies at the single mapping site (`server.renderStats`) are the price of neither format being hostage to the other.
+- `StatsData` carries `sysstat.Stats` through untouched rather than copying it into a view shape. An earlier version copied it field by field to keep the JSON tags out of this package, which meant a dozen assignments kept in lockstep with a struct elsewhere — failing silently, as a stat rendered zero. The tags living in `sysstat` costs this package nothing.
 - `templates/` lives here because `//go:embed` only reaches inside its own package directory. Moving the HTML means moving the embed with it.
 
 Templates:

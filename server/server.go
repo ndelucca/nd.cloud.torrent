@@ -25,6 +25,7 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/internal/auth"
 	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
 	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
+	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 	"github.com/ndelucca/nd.cloud.torrent/web"
 )
 
@@ -330,7 +331,7 @@ func (s *Server) statsLoop(ctx context.Context) {
 		// Sampling is cheap but not free, and with nobody watching the result
 		// is discarded — same reasoning as pollLoop.
 		if s.watchers() > 0 {
-			s.stats.set(sampleSystemStats(s.downloadDir()))
+			s.stats.set(sysstat.Sample(s.downloadDir()))
 			s.renderStats()
 		}
 		select {
@@ -345,24 +346,10 @@ func (s *Server) statsLoop(ctx context.Context) {
 func (s *Server) watchers() int { return s.ui.Watchers() }
 
 // renderStats hands the latest sample to the UI.
-//
-// This is the one place SystemStats is mapped onto web.StatsData. The two types
-// exist separately because SystemStats carries the JSON tags that are the
-// /api/state wire contract — the server's to keep — while StatsData is the
-// renderer's view model. A dozen field copies is the price of neither format
-// being hostage to the other.
 func (s *Server) renderStats() {
-	sys := s.stats.get()
 	s.ui.RenderStats(web.StatsData{
+		System:         s.stats.get(),
 		ConnectedUsers: s.watchers(),
-		Set:            sys.Set,
-		CPU:            sys.CPU,
-		DiskUsed:       sys.DiskUsed,
-		DiskTotal:      sys.DiskTotal,
-		MemoryUsed:     sys.MemoryUsed,
-		MemoryTotal:    sys.MemoryTotal,
-		GoMemory:       sys.GoMemory,
-		GoRoutines:     sys.GoRoutines,
 	})
 }
 

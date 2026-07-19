@@ -3,28 +3,21 @@ package web
 import (
 	"log"
 	"time"
+
+	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 )
 
-// StatsData is the host sample as the stats region wants it.
+// StatsData is what the stats region is rendered from: the host sample, plus
+// the one number that is not a property of the host.
 //
-// It is flat and tag-free, and deliberately not the server's SystemStats: that
-// type carries the JSON tags that are the /api/state wire contract, which
-// belongs to the server. Mapping between the two costs a handful of field
-// copies at the one call site, and buys a boundary where neither side's format
-// is hostage to the other's.
+// The sample is passed through as sysstat.Stats rather than copied into a view
+// shape of its own. An earlier version did copy it, to keep the JSON tags on
+// the server's side of the boundary — but that meant a dozen field assignments
+// that had to be updated in lockstep with a struct in another package, whose
+// failure mode is a stat that silently renders as zero.
 type StatsData struct {
+	System         sysstat.Stats
 	ConnectedUsers int
-
-	// Set reports whether every source of the sample succeeded. A partial
-	// sample must not be shown as though it were current.
-	Set         bool
-	CPU         float64
-	DiskUsed    int64
-	DiskTotal   int64
-	MemoryUsed  int64
-	MemoryTotal int64
-	GoMemory    int64
-	GoRoutines  int
 }
 
 // statsView is what the template sees. The percentages are computed here
@@ -32,14 +25,15 @@ type StatsData struct {
 // `100*used/total`, whose divide-by-zero produces +Inf on a server that has not
 // sampled the disk yet.
 type statsView struct {
-	StatsData
-	Title       string
-	Version     string
-	Runtime     string
-	Uptime      time.Time
-	MemPercent  float64
-	DiskPercent float64
-	DiskFree    int64
+	sysstat.Stats
+	ConnectedUsers int
+	Title          string
+	Version        string
+	Runtime        string
+	Uptime         time.Time
+	MemPercent     float64
+	DiskPercent    float64
+	DiskFree       int64
 }
 
 // RenderStats renders the stats region and broadcasts it if it changed.
@@ -48,14 +42,15 @@ func (u *UI) RenderStats(d StatsData) {
 	defer u.mu.Unlock()
 
 	view := statsView{
-		StatsData:   d,
-		Title:       u.deps.Title,
-		Version:     u.deps.Version,
-		Runtime:     u.deps.Runtime,
-		Uptime:      u.deps.Uptime,
-		MemPercent:  percentOf(d.MemoryUsed, d.MemoryTotal),
-		DiskPercent: percentOf(d.DiskUsed, d.DiskTotal),
-		DiskFree:    d.DiskTotal - d.DiskUsed,
+		Stats:          d.System,
+		ConnectedUsers: d.ConnectedUsers,
+		Title:          u.deps.Title,
+		Version:        u.deps.Version,
+		Runtime:        u.deps.Runtime,
+		Uptime:         u.deps.Uptime,
+		MemPercent:     percentOf(d.System.MemoryUsed, d.System.MemoryTotal),
+		DiskPercent:    percentOf(d.System.DiskUsed, d.System.DiskTotal),
+		DiskFree:       d.System.DiskTotal - d.System.DiskUsed,
 	}
 	frame, err := u.renderer.render("stats", "stats", view)
 	if err != nil {

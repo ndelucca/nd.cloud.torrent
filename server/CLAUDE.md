@@ -5,7 +5,7 @@
 The process shell and the HTTP surface: flags, config, the middleware chain, the
 route dispatcher, the `/api/*` command endpoints, `/api/state`, host stats, and
 the two background loops. Rendering, file serving and the remote fetch are
-delegated to `web`, `files` and `fetch`.
+delegated to `web`, `files`, `fetch` and `sysstat`.
 
 ## Ownership
 
@@ -13,9 +13,8 @@ delegated to `web`, `files` and `fetch`.
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
 - `server_api.go` — `/api/*` actions (`add`, `torrentfile`, `configure`, `torrent`), `apiError`/`statusFor`, `checkSameOrigin`
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
-- `server_stats.go` — `SystemStats` and `sampleSystemStats`, a pure sampler over `gopsutil/v4`
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
-- Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), authentication and request logging (`internal/auth`, `internal/reqlog`)
+- Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), host sampling (`sysstat`), authentication and request logging (`internal/auth`, `internal/reqlog`)
 
 ## Local Contracts
 
@@ -45,7 +44,7 @@ State:
 - The config lives in the engine and nowhere else. The server persists it to `ConfigPath` but keeps no copy — two copies can disagree, and the one the settings form renders would be the stale one.
 - `stateDocument`/`statsDocument` are the JSON contract of `/api/state`, declared explicitly so that rearranging the server's own fields cannot silently change the wire format. Exported field names are the contract; renaming one breaks any script consuming it. `Config` is deliberately absent — it is the engine's, and republishing it here is what created the second copy.
 - `/api/state` costs one bounded directory walk per request (`files.Limit`), the same one the poll loop does each second while anyone is watching. That is the price of a document that is correct for a caller who is not a browser.
-- `renderStats` is the single site mapping `SystemStats` onto `web.StatsData`. `SystemStats` keeps the JSON tags because the wire contract is this package's; see `web/CLAUDE.md` for the other half.
+- The server owns *when* the host is sampled, not the sample's shape: it stores the latest `sysstat.Stats` and passes it through to both `/api/state` and the UI unchanged. It keeps no copy of its own — that copy existed once and had to be updated in lockstep by hand.
 
 Lifecycle:
 
@@ -60,6 +59,7 @@ Lifecycle:
 
 - A new CLI option is a field on `Options` plus a registration line in `main`, using `internal/cli`. Defaults live in `DefaultOptions`, not in `main`. `Options` carries no struct tags — the flag names, shorthands and env vars are declared at the registration site.
 - Anything that produces HTML belongs in `web`, not here. `grep -rn "html/template" server/*.go` returning nothing is the check.
+- `statsInterval` must stay fixed: `cpu.Percent(0, …)` measures since the previous call, so the interval *is* the measurement window.
 
 ## Verification
 
