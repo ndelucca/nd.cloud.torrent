@@ -334,10 +334,16 @@ func (s *Server) statsLoop(ctx context.Context) {
 	t := time.NewTicker(statsInterval)
 	defer t.Stop()
 	for {
-		// Sampling is cheap but not free, and with nobody watching the result
-		// is discarded — same reasoning as pollLoop.
+		// Sample unconditionally, render only for an audience.
+		//
+		// cpu.Percent measures since the previous call anywhere in the process,
+		// so the sampling interval *is* the measurement window. Gating the
+		// sample on watchers meant the first one after an idle spell reported
+		// the average since the last browser disconnected — possibly hours —
+		// while Set claimed it was trustworthy. Rendering is what is worth
+		// skipping; the sample is one syscall and a ReadMemStats.
+		s.stats.set(sysstat.Sample(s.downloadDir()))
 		if s.watchers() > 0 {
-			s.stats.set(sysstat.Sample(s.downloadDir()))
 			s.renderStats()
 		}
 		select {

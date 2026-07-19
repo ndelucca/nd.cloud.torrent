@@ -25,7 +25,11 @@ goroutine count.
   memory or disk.
 - `cpu.Percent(0, false)` reports usage since the previous call *in this
   process*, so the caller's interval defines the measurement window. That is why
-  `server.statsInterval` must stay fixed rather than adaptive.
+  `server.statsInterval` must stay fixed rather than adaptive, and why the
+  server samples on every tick instead of only when a browser is connected:
+  skipping samples silently widens the window, so the first reading after an
+  idle spell was an average over however long nobody was watching — reported
+  with `Set` true.
 - This is the only package that imports `gopsutil`, and it must stay that way:
   it is the one dependency here that earns its place purely by encapsulating
   per-platform detail.
@@ -42,6 +46,9 @@ goroutine count.
 ## Verification
 
 - `go build ./...`
+- `go test -race ./sysstat/` — `TestSampleReportsPartialFailure` is the one that
+  matters: it pins that a failed source clears `Set` while the Go-runtime fields
+  are still filled, so `Set` rather than a zero value is the signal.
 - `curl -s localhost:3000/api/state | jq .Stats.System` must show every field
   with its lower-camel name — those names are the wire contract.
 
