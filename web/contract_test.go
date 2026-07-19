@@ -108,11 +108,10 @@ func TestSSESwapNamesAreEmitted(t *testing.T) {
 	}
 
 	// hx-trigger carries the ping regions rather than sse-swap.
-	for name, src := range templateSources(t) {
+	for _, src := range templateSources(t) {
 		for region := range emitted {
 			if strings.Contains(src, "sse:"+region) {
 				listened[region] = true
-				_ = name
 			}
 		}
 	}

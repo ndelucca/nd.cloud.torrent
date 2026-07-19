@@ -583,13 +583,11 @@ func TestKnownRoutesResolve(t *testing.T) {
 			// becomes a requestable path.
 			path := strings.ReplaceAll(pattern, "{hash}", strings.Repeat("ab", 20))
 			r := httptest.NewRequest(http.MethodGet, path, nil)
+			// An empty pattern means the mux's own 404 handler, i.e. the path
+			// falls through to no route of ours.
 			h, matched := mux.Handler(r)
 			if matched == "" || h == nil {
 				t.Fatalf("%s resolves to no route", path)
-			}
-			// A matched-but-empty pattern is the mux's own 404 handler.
-			if matched == "" {
-				t.Fatalf("%s falls through to the default handler", path)
 			}
 		})
 	}

@@ -44,10 +44,8 @@ var (
 type Engine struct {
 	// configureMu serializes Configure end to end. mu alone is not enough: the
 	// same-port path releases mu between dropping the old client and installing
-	// the replacement, and a second caller entering that window saw
-	// client == nil, took the non-retrying branch, and stole the port — leaving
-	// the first caller to spin the whole rebind budget and fail, or worse, both
-	// to succeed with the persisted config and the running engine disagreeing.
+	// the replacement, and a second caller entering that window sees
+	// client == nil, takes the non-retrying branch and steals the port.
 	configureMu sync.Mutex
 
 	mu     sync.Mutex
@@ -173,11 +171,9 @@ func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent
 		return nil, ErrClosed
 	}
 	// Closed() only reports that the client finished shutting down; the kernel
-	// can still hold the listening socket for a moment afterwards, so a bind
-	// right after it intermittently fails with EADDRINUSE. This is what the
-	// original code's fixed time.Sleep(1s) was papering over — retrying until
-	// it binds is both faster in the common case and actually reliable, where a
-	// fixed sleep is neither.
+	// can hold the listening socket a moment longer, so a bind right after it
+	// intermittently fails with EADDRINUSE. Retrying until it binds is both
+	// faster in the common case and reliable, which a fixed sleep is not.
 	client, err := newClientWithRetry(ctx, tc)
 	if err != nil {
 		if errors.Is(err, ErrClosed) {
@@ -212,9 +208,9 @@ func (e *Engine) installClient(client *torrent.Client, c Config) *torrent.Client
 		}
 		tt, _, err := client.AddTorrentSpec(t.spec)
 		if err != nil {
-			// Clearing Started matters: leaving it set showed the torrent as
-			// running against a client that never accepted it, with t.t nil, so
-			// nothing would ever move it again.
+			// Clearing Started matters: left set, the torrent shows as running
+			// against a client that never accepted it, with t.t nil, so nothing
+			// would ever move it again.
 			log.Printf("engine: failed to re-add %s: %s", t.InfoHash, err)
 			t.Started = false
 			continue
@@ -254,10 +250,11 @@ func (e *Engine) Close() error {
 	// this is what lets it give up rather than making shutdown wait it out.
 	e.cancel()
 
-	// Then serialize against it. Without this lock, Close saw client == nil —
-	// the rebind having already evicted it — returned clean, and Configure went
-	// on to install a live torrent client, with its listening socket, goroutines
-	// and DHT, into an engine everyone believed was shut down.
+	// Then serialize against it. Without this lock, Close observes client == nil
+	// mid-rebind — the same-port path having already evicted it — reports a clean
+	// shutdown, and the Configure still in flight installs a live client, with
+	// its listening socket, goroutines and DHT, into an engine everyone believes
+	// is down.
 	e.configureMu.Lock()
 	defer e.configureMu.Unlock()
 
@@ -270,11 +267,10 @@ func (e *Engine) Close() error {
 	e.mu.Unlock()
 
 	// Ordering, not luck: every wg.Add happens under mu after an e.ctx.Err()
-	// check, and cancel ran before we took mu above. So a watcher registered
-	// before this point is already counted, and any registration racing us takes
-	// mu after we release it and sees the cancelled context. Waiting without
-	// that guarantee is the documented "Add called concurrently with Wait"
-	// misuse, which panics when the counter happens to be at zero.
+	// check, and cancel ran before mu was taken above. So a watcher is either
+	// already counted, or registers after mu is released and sees the cancelled
+	// context. Waiting without that guarantee is the documented "Add called
+	// concurrently with Wait" misuse, which panics at a zero counter.
 	e.wg.Wait()
 
 	if client == nil {
@@ -370,9 +366,9 @@ func (e *Engine) infoArrived(ih string, tt *torrent.Torrent) {
 	}
 	if t.Started {
 		// Started before the metadata arrived, so startLocked could not call
-		// DownloadAll and left the torrent flagged as running while downloading
-		// nothing — for the lifetime of the process. This is the only place that
-		// can put it right.
+		// DownloadAll. This is the only place that can put it right; without it
+		// the torrent stays flagged as running while downloading nothing, for
+		// the lifetime of the process.
 		tt.DownloadAll()
 		return
 	}

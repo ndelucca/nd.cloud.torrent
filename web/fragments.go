@@ -22,37 +22,27 @@ import (
 
 // ServeDownloads renders the download tree.
 func (u *UI) ServeDownloads(w http.ResponseWriter, r *http.Request) {
-	u.serveDownloadsTree(w)
-}
-
-// ServeTorrentFiles renders one torrent's file table. The infohash comes from
-// the route pattern, so it is a single path segment by construction.
-func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
-	u.serveTorrentFiles(w, r.PathValue("hash"))
-}
-
-func (u *UI) serveDownloadsTree(w http.ResponseWriter) {
 	u.writeTemplate(w, http.StatusOK, "downloads", newDownloadsView(u.deps.Tree()),
 		"Could not render downloads.")
 }
 
-func (u *UI) serveTorrentFiles(w http.ResponseWriter, hash string) {
-	var found *torrentView
-	for _, t := range u.deps.Torrents() {
-		if t.InfoHash == hash {
-			v := newTorrentViewWithFiles(t)
-			found = &v
-			break
-		}
-	}
-	if found == nil {
+// ServeTorrentFiles renders one torrent's file table. The infohash comes from
+// the route pattern, so it is a single path segment by construction.
+//
+// The lookup is by key: Torrents() deep-copies every torrent and every file, so
+// scanning the map for one hash copied the whole world to answer a question
+// about a single row — once per panel expansion, per client.
+func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
+	t, ok := u.deps.Torrents()[r.PathValue("hash")]
+	if !ok || t == nil {
 		// A fragment response is HTML, not an error page: htmx swaps whatever
 		// comes back straight into the document.
-		writeFragment(w, http.StatusNotFound, `<p class="muted">Torrent not found.</p>`)
+		u.writeTemplate(w, http.StatusNotFound, "fragment-message",
+			"Torrent not found.", "Torrent not found.")
 		return
 	}
-
-	u.writeTemplate(w, http.StatusOK, "torrent-files", found, "Could not render files.")
+	v := newTorrentViewWithFiles(t)
+	u.writeTemplate(w, http.StatusOK, "torrent-files", v, "Could not render files.")
 }
 
 // ServePage renders the htmx shell. Unlike the fragments it is a full document,
@@ -80,20 +70,38 @@ type pageView struct {
 // than an error page: htmx swaps whatever comes back straight into the
 // document. It goes through renderer.execute, so checkFragment covers the
 // pulled fragments too.
+//
+// The fallback is itself a template, so the markup and its classes stay in the
+// template set where the template tests can see them. Only the last resort
+// below is a literal.
 func (u *UI) writeTemplate(w http.ResponseWriter, status int, name string, data any, fallback string) {
 	body, err := u.renderer.execute(name, data)
 	if err != nil {
 		log.Printf("render %s: %s", name, err)
-		writeFragment(w, http.StatusInternalServerError, `<p class="muted">`+fallback+`</p>`)
+		u.writeMessage(w, http.StatusInternalServerError, fallback)
 		return
 	}
-	writeFragment(w, status, string(body))
+	writeFragment(w, status, body)
 }
 
-func writeFragment(w http.ResponseWriter, status int, html string) {
+// writeMessage renders a plain message fragment.
+func (u *UI) writeMessage(w http.ResponseWriter, status int, msg string) {
+	body, err := u.renderer.execute("fragment-message", msg)
+	if err != nil {
+		// The last resort, and the only HTML literal in this package: the
+		// template set itself is broken, so there is nothing left to render
+		// with. Kept minimal and classless for that reason.
+		log.Printf("render fragment-message: %s", err)
+		writeFragment(w, status, []byte("<p>Unavailable.</p>"))
+		return
+	}
+	writeFragment(w, status, body)
+}
+
+func writeFragment(w http.ResponseWriter, status int, html []byte) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write(html)
 }
 
 // WriteAPIResult renders the outcome of an /api/* call as an HTML fragment.
@@ -113,8 +121,8 @@ func (u *UI) WriteAPIResult(w http.ResponseWriter, msg string) {
 	body, err := u.renderer.execute(name, msg)
 	if err != nil {
 		log.Printf("render %s: %s", name, err)
-		writeFragment(w, http.StatusOK, `<p class="err-msg">Unexpected error.</p>`)
+		u.writeMessage(w, http.StatusOK, "Unexpected error.")
 		return
 	}
-	writeFragment(w, http.StatusOK, string(body))
+	writeFragment(w, http.StatusOK, body)
 }

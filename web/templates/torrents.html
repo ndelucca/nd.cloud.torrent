@@ -36,7 +36,12 @@ inside the per-torrent swap target.
          Deliberately not `once`: re-fetching on each expand costs one request
          and keeps per-file progress current, where `once` would freeze the
          table at whatever it showed the first time. */}}
-    <div id="tf-{{.InfoHash}}" class="torrent-files" x-show="files" x-cloak
+    {{/* data-preserve: this panel's content is owned by hx-get, and the markup
+         below is only a placeholder. Without the opt-out a morph reverts a
+         loaded file table back to "Loading files…", and re-adds the x-cloak
+         Alpine stripped at init — which hides the panel for good behind
+         [x-cloak]{display:none}. */}}
+    <div id="tf-{{.InfoHash}}" class="torrent-files" x-show="files" x-cloak data-preserve
          hx-get="/fragments/torrent/{{.InfoHash}}/files"
          hx-trigger="load-files from:closest article"
          hx-swap="innerHTML">
@@ -64,19 +69,23 @@ inside the per-torrent swap target.
   </div>
 
   <div class="torrent-side">
+    {{/* The verbs target #omni-status rather than swapping nothing. The server
+         answers every /api/* call with an api-ok or api-error fragment, and
+         hx-swap="none" discarded it — so a failed Stop or Remove reported
+         nothing at all while the error path was fully built. */}}
     <div class="torrent-actions">
       {{if .Started}}
       <button type="button" class="btn danger"
               hx-post="/api/torrents/{{.InfoHash}}/stop"
-              hx-swap="none">Stop</button>
+              hx-target="#omni-status" hx-swap="innerHTML">Stop</button>
       {{else}}
       <button type="button" class="btn primary"
               hx-post="/api/torrents/{{.InfoHash}}/start"
-              hx-swap="none">Start</button>
+              hx-target="#omni-status" hx-swap="innerHTML">Start</button>
       <button type="button" class="btn danger"
               hx-delete="/api/torrents/{{.InfoHash}}"
               hx-confirm="Remove this torrent?"
-              hx-swap="none">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
+              hx-target="#omni-status" hx-swap="innerHTML">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
       {{end}}
     </div>
     {{if .Started}}

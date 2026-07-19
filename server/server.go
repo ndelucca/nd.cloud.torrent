@@ -85,9 +85,9 @@ type Server struct {
 	kickCh chan struct{}
 
 	// configMu serializes read-merge-apply on /api/configure. The engine's own
-	// lock covers the apply but not the read the merge starts from, so two
-	// concurrent saves could each begin from the same config and the second
-	// would silently undo the first.
+	// lock covers the apply but not the read the merge starts from, so without
+	// this two concurrent saves each begin from the same config and the second
+	// silently undoes the first.
 	configMu sync.Mutex
 
 	static http.Handler
@@ -141,9 +141,8 @@ func New(o Options, version string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	// applyConfig, not reconfigure: startup must not write. Rewriting the config
-	// on every boot is a chance to corrupt it that buys nothing, and it made
-	// New's "no I/O beyond reading the config file" claim false.
+	// applyConfig, not reconfigure: startup applies but never writes. Rewriting
+	// the config on every boot is a chance to corrupt it that buys nothing.
 	if _, err := s.applyConfig(c); err != nil {
 		return nil, fmt.Errorf("initial configure failed: %w", err)
 	}
@@ -170,12 +169,11 @@ func (s *Server) loadConfig() (engine.Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("malformed configuration: %w", err)
 	}
-	// The port is deliberately not clamped here. c starts from the defaults
-	// above, so an absent IncomingPort already keeps defaultIncomingPort — the
-	// clamp could only ever fire on a value someone explicitly wrote, and
-	// silently rewriting that to 50007 is the worst of the options. Validation
-	// belongs to engine.Config.Validate, which reports it instead. Two policies
-	// for one rule is how they end up disagreeing.
+	// The port is deliberately not clamped. c starts from the defaults above, so
+	// an absent IncomingPort already keeps defaultIncomingPort — a clamp could
+	// only fire on a value someone explicitly wrote, and silently rewriting that
+	// is worse than reporting it. Port validity is engine.Config.Validate's call
+	// and nowhere else; two policies for one rule end up disagreeing.
 	return c, nil
 }
 
@@ -260,9 +258,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 		// Release the SSE streams BEFORE Shutdown. Shutdown waits for
 		// connections to become idle and does not cancel request contexts, so a
-		// long-lived /events handler is never released by it: with one browser
-		// connected this burned the entire budget and then exited non-zero on a
-		// deadline the server had set for itself.
+		// long-lived /events handler is never released by it — one connected
+		// browser burns the entire drain budget.
 		s.ui.Close()
 
 		shutdownCtx, done := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -322,14 +319,12 @@ func (s *Server) statsLoop(ctx context.Context) {
 	t := time.NewTicker(statsInterval)
 	defer t.Stop()
 	for {
-		// Sample unconditionally, render only for an audience.
-		//
-		// cpu.Percent measures since the previous call anywhere in the process,
-		// so the sampling interval *is* the measurement window. Gating the
-		// sample on watchers meant the first one after an idle spell reported
-		// the average since the last browser disconnected — possibly hours —
-		// while Set claimed it was trustworthy. Rendering is what is worth
-		// skipping; the sample is one syscall and a ReadMemStats.
+		// Sample unconditionally, render only for an audience. cpu.Percent
+		// measures since the previous call anywhere in the process, so the
+		// interval *is* the measurement window — gating the sample on watchers
+		// would make the first reading after an idle spell an average over
+		// however long nobody was watching, reported as trustworthy. The sample
+		// is one syscall and a ReadMemStats; rendering is what is worth skipping.
 		s.stats.set(sysstat.Sample(s.downloadDir()))
 		if s.watchers() > 0 {
 			s.renderStats()
@@ -378,13 +373,10 @@ func (s *Server) applyConfig(c engine.Config) (engine.Config, error) {
 	return c, nil
 }
 
-// saveConfig persists a config, atomically.
-//
-// Write-in-place could be interrupted — by a crash, a full disk, a container
-// stop — leaving a truncated file that loadConfig then rejects as "Malformed
-// configuration", so the server refused to start until someone deleted it by
-// hand. Writing a sibling and renaming means the config file is either the old
-// one or the new one, never a fragment.
+// saveConfig persists a config atomically: the file is either the old one or
+// the new one, never a fragment. An interrupted write-in-place leaves a
+// truncated file that loadConfig rejects as malformed, and the server then
+// refuses to start until someone deletes it by hand.
 func (s *Server) saveConfig(c engine.Config) error {
 	b, err := json.MarshalIndent(&c, "", "  ")
 	if err != nil {
@@ -429,13 +421,10 @@ func (s *Server) saveConfig(c engine.Config) error {
 
 // routes declares the HTTP surface.
 //
-// Hand-rolled prefix dispatch used to live here, with a comment warning that
-// order mattered. ServeMux patterns make the order irrelevant — most specific
-// wins — so that warning is deleted rather than restated. "/{$}" is the exact
-// root, which is precisely what the old switch's `r.URL.Path == "/"` arm faked
-// while sitting above the prefix arms. GET patterns match HEAD, and anything
-// unmatched by method gets a 405 with an Allow header, which replaces three
-// hand-written method guards.
+// Pattern order is irrelevant — ServeMux matches most-specific-wins. "/{$}" is
+// the exact root, GET patterns also match HEAD, and a wrong method on a declared
+// path yields 405 with an Allow header rather than needing a guard in the
+// handler.
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", s.ui.ServeEvents)
@@ -446,10 +435,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/add", s.apiRoute(s.handleAdd))
 	mux.Handle("POST /api/torrentfile", s.apiRoute(s.handleTorrentFile))
 	mux.Handle("POST /api/configure", s.apiRoute(s.handleConfigure))
-	// The torrent verbs are their own routes. They were one "torrent" action
-	// dispatching on an `action` form field inside a nested switch — three
-	// routes wearing a trenchcoat, and the reason api() had to drain the body
-	// before it knew the encoding.
+	// Each torrent verb is its own route, so the hash is a path parameter and
+	// none of them takes a body.
 	mux.Handle("POST /api/torrents/{hash}/start", s.apiRoute(s.handleStart))
 	mux.Handle("POST /api/torrents/{hash}/stop", s.apiRoute(s.handleStop))
 	mux.Handle("DELETE /api/torrents/{hash}", s.apiRoute(s.handleDelete))
@@ -457,12 +444,10 @@ func (s *Server) routes() http.Handler {
 	// the download root.
 	mux.Handle("/download/", http.StripPrefix("/download/",
 		&files.Handler{Root: s.downloadDir}))
-	// The embedded assets are mounted at the three prefixes they actually
-	// occupy rather than behind a catch-all "/". A catch-all matches every
-	// unrouted path, which means ServeMux can never answer 405 — a GET to
-	// /api/add would reach the file server and 404 instead. The cost is a line
-	// here when a new asset directory appears; static/ is deliberately four
-	// files, so that is a trade worth making.
+	// Mounted at the three prefixes the assets occupy, not behind a catch-all
+	// "/": a catch-all matches every unrouted path, so ServeMux could never
+	// answer 405 — a GET to /api/add would reach the file server and 404. The
+	// cost is a line here when a new asset directory appears.
 	mux.Handle("GET /css/", s.static)
 	mux.Handle("GET /js/", s.static)
 	mux.Handle("GET /cloud-favicon.png", s.static)
@@ -472,13 +457,12 @@ func (s *Server) routes() http.Handler {
 // handler assembles the middleware chain, outermost first.
 func (s *Server) handler() http.Handler {
 	h := requireSameOrigin(s.routes())
-	// gzhttp skips already-compressed content types, so /download/ no longer
-	// burns CPU re-compressing media and zip archives.
+	// gzhttp skips already-compressed content types, so /download/ does not burn
+	// CPU re-compressing media and zip archives.
 	//
-	// text/event-stream must be excluded outright. gzhttp buffers until
-	// DefaultMinSize (1 KiB) before deciding whether to compress, and an SSE
-	// frame is usually smaller than that — the first event would sit in the
-	// buffer and never reach the browser. TestEventsArriveImmediately pins this.
+	// text/event-stream must be excluded outright: gzhttp buffers until 1 KiB
+	// before deciding whether to compress, and an SSE frame is usually smaller,
+	// so the first event would sit in the buffer and never reach the browser.
 	h = s.gzip(h)
 	if s.opts.Auth != "" {
 		user, pass, _ := strings.Cut(s.opts.Auth, ":")
@@ -505,18 +489,9 @@ func (s *Server) gzip(h http.Handler) http.Handler {
 	return wrapper(h)
 }
 
-// requireSameOrigin rejects every cross-site write, by method rather than by
-// route.
-//
-// The check used to be called from two places — inside api() and again in
-// serveDownload's DELETE branch — which meant the invariant held by convention,
-// and server/CLAUDE.md had to warn that "adding a mutating route that bypasses
-// this is how that becomes a bug". As middleware over the whole mux it covers a
-// mutating route before that route is written, which is strictly stronger and
-// lets both call sites (and serveDownload itself) go away.
-//
-// GET and HEAD are exempt: they are not writes, and /download/ links must work
-// from anywhere.
+// requireSameOrigin rejects cross-site writes by method, so it covers every
+// mutating route including ones not yet written. GET and HEAD are exempt: they
+// are not writes, and /download/ links must work from anywhere.
 func requireSameOrigin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

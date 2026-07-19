@@ -98,3 +98,11 @@ clicked away from would be reverted by the next morph.
   <p class="muted hint">Saving restarts the torrent client. Active downloads are re-added.</p>
 </form>
 {{end}}
+
+{{/* fragment-message is the shared plain-message fragment: "Torrent not found",
+     a render fallback, anything a pulled fragment needs to say. It lives here
+     rather than as a string literal in Go so the markup and its class stay in
+     the template set, where the template tests can see them. */}}
+{{define "fragment-message"}}
+<p class="muted">{{.}}</p>
+{{end}}

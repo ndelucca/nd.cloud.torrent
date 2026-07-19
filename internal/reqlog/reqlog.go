@@ -101,13 +101,17 @@ func fmtDuration(d time.Duration) string {
 	}
 }
 
-// byteSize renders a size the way sizestr did, or "" for zero so the caller can
-// omit the field entirely.
+// byteSize renders a size, or "" for zero so the caller can omit the field.
+//
+// Base 1000, matching what the UI shows. The two formatters disagreed — this
+// one was binary and the web one decimal — so the same download was logged as
+// 954MB and displayed as 1.0 GB. A log that does not agree with the screen is
+// worse than either convention.
 func byteSize(n int64) string {
 	if n <= 0 {
 		return ""
 	}
-	const unit = 1024
+	const unit = 1000
 	if n < unit {
 		return fmt.Sprintf("%dB", n)
 	}

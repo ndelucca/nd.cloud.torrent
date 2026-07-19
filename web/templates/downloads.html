@@ -26,11 +26,15 @@ arrives via data-path instead and treeNode() reads it from $el.
 */}}
 {{define "fsnode"}}
 <li class="tree-item{{if .IsDir}} is-dir{{end}}" id="n-{{.ID}}" data-id="{{.ID}}"
+    {{if .TopLevel}}data-top="1"{{end}}
     {{if .IsDir}}x-data="treeNode()"{{else}}x-data="treeLeaf()"{{end}}>
   <div class="tree-row">
     {{if .IsDir}}
+    {{/* aria-controls only when the list it names is actually rendered: the
+         <ul> below is behind {{if .Children}}, so an empty directory used to
+         ship a toggle pointing at an element that does not exist. */}}
     <button type="button" class="tree-toggle" @click="open = !open"
-            :aria-expanded="open" aria-controls="c-{{.ID}}">
+            :aria-expanded="open"{{if .Children}} aria-controls="c-{{.ID}}"{{end}}>
       <span class="caret" :class="open && 'is-open'" aria-hidden="true">&rsaquo;</span>
       <span class="tree-name">{{.Name}}</span>
     </button>

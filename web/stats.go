@@ -27,13 +27,18 @@ type StatsData struct {
 type statsView struct {
 	sysstat.Stats
 	ConnectedUsers int
-	Title          string
 	Version        string
 	Runtime        string
-	Uptime         time.Time
-	MemPercent     float64
-	DiskPercent    float64
-	DiskFree       int64
+	// StartedAt is the process start instant. It was named Uptime, which is the
+	// opposite of what it holds, and the template rendered it raw into a
+	// tooltip — producing "Started 2026-07-19 10:00:00.123456789 +0000 UTC
+	// m=+3.14". Started is the formatted form the template shows.
+	StartedAt   time.Time
+	Started     string
+	Uptime      string
+	MemPercent  float64
+	DiskPercent float64
+	DiskFree    int64
 }
 
 // RenderStats renders the stats region and broadcasts it if it changed.
@@ -44,10 +49,11 @@ func (u *UI) RenderStats(d StatsData) {
 	view := statsView{
 		Stats:          d.System,
 		ConnectedUsers: d.ConnectedUsers,
-		Title:          u.deps.Title,
 		Version:        u.deps.Version,
 		Runtime:        u.deps.Runtime,
-		Uptime:         u.deps.Uptime,
+		StartedAt:      u.deps.Uptime,
+		Started:        u.deps.Uptime.Format(time.RFC1123),
+		Uptime:         humanSince(u.deps.Uptime),
 		MemPercent:     percentOf(d.System.MemoryUsed, d.System.MemoryTotal),
 		DiskPercent:    percentOf(d.System.DiskUsed, d.System.DiskTotal),
 		DiskFree:       d.System.DiskTotal - d.System.DiskUsed,

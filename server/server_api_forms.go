@@ -117,14 +117,21 @@ func parseConfig(v url.Values, current engine.Config) (engine.Config, error) {
 	// Checkboxes are paired with a hidden field of the same name, so an
 	// unchecked box still submits "false". url.Values keeps both in order and
 	// the checkbox, when present, comes last.
-	for name, target := range map[string]*bool{
-		"AutoStart":         &c.AutoStart,
-		"EnableUpload":      &c.EnableUpload,
-		"EnableSeeding":     &c.EnableSeeding,
-		"DisableEncryption": &c.DisableEncryption,
+	//
+	// A slice, not a map: the iteration order of a map is randomised, and while
+	// nothing here depends on order today, a nondeterministic loop over
+	// configuration fields is not something to leave for someone to discover.
+	for _, f := range []struct {
+		name   string
+		target *bool
+	}{
+		{"AutoStart", &c.AutoStart},
+		{"EnableUpload", &c.EnableUpload},
+		{"EnableSeeding", &c.EnableSeeding},
+		{"DisableEncryption", &c.DisableEncryption},
 	} {
-		if vals, ok := v[name]; ok && len(vals) > 0 {
-			*target = vals[len(vals)-1] == "true"
+		if vals, ok := v[f.name]; ok && len(vals) > 0 {
+			*f.target = vals[len(vals)-1] == "true"
 		}
 	}
 	return c, nil

@@ -16,9 +16,7 @@ func configuredEngine(t *testing.T) (*Engine, string) {
 	t.Helper()
 	e := New()
 	t.Cleanup(func() { e.Close() })
-	if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	mustConfigure(t, e, Config{DownloadDirectory: t.TempDir(), IncomingPort: 0})
 	if err := e.NewTorrentFile(testTorrentFile(t)); err != nil {
 		t.Fatalf("NewTorrentFile: %v", err)
 	}

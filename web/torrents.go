@@ -121,11 +121,14 @@ func displayName(t *engine.Torrent) string {
 // Tier 2, "torrent-<hash>", carries the volatile row and is emitted only for
 // torrents whose rendered output actually changed.
 //
-// Granularity is per torrent rather than per field on purpose. Per-field naming
-// would mean ~1000 event names for 20 torrents of 50 files, whose SSE framing
-// alone outweighs the payload, and 1000 morphs per second would jank the tab.
-// Per torrent also keeps each frame well inside deflate's 32 KiB window, which
-// is what makes a persistent gzip stream act as a cheap delta encoder.
+// Granularity is per torrent rather than per field: per-field naming would mean
+// ~1000 event names for 20 torrents of 50 files, whose SSE framing alone
+// outweighs the payload, and 1000 morphs per second would jank the tab.
+//
+// It buys nothing in transfer size. The stream is excluded from gzip outright
+// (an SSE frame is below gzhttp's 1 KiB threshold, so compressing would buffer
+// the first event forever), so there is no persistent deflate window for small
+// frames to fit inside.
 func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -185,14 +188,11 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	// A tick is one write. SSE frames are self-delimiting, so everything this
 	// pass produces is concatenated and broadcast once.
 	//
-	// This is what makes subBuffer meaningful. Broadcasting per torrent meant a
-	// subscriber's buffer measured *changed rows*, not lag: eight rows moving in
-	// one tick could stall a perfectly healthy client — each frame is its own
-	// Write and Flush, so a reader descheduled for a few milliseconds fell
-	// behind — and broadcast disconnects a subscriber it cannot deliver to. It
-	// reconnected, got the snapshot, kicked the render loop, and produced
-	// another burst. With one frame per tick the buffer measures ticks of lag,
-	// which is a real stall.
+	// That is what gives subBuffer a meaning. Broadcasting per torrent makes the
+	// buffer measure *changed rows* rather than lag: eight rows moving in one
+	// tick can stall a healthy client, since each frame is its own Write and
+	// Flush and broadcast disconnects a subscriber it cannot deliver to — which
+	// reconnects, takes the snapshot, kicks the loop and produces another burst.
 	var out []byte
 	if membershipChanged {
 		if listFrame == nil {
@@ -227,13 +227,11 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	}
 
 	// Last, and deliberately not deferred. seen is "what the browsers have been
-	// told", so it may only advance once they have been told. Advancing it from
-	// a defer meant an early return on a render failure — when nothing was sent
-	// at all — still marked the tick as delivered: the forget events computed
-	// above were skipped, the next tick saw an empty removal set, and the
-	// regions of deleted torrents were never forgotten. They grew without bound
-	// in the renderer and were replayed to every new subscriber, resurrecting
-	// rows for torrents that no longer exist.
+	// told", so it may only advance once they have been told. From a defer it
+	// would also fire on the early return above — a tick where nothing was sent
+	// — marking it delivered, skipping its forget events, and leaving the next
+	// tick with an empty removal set. Deleted torrents' regions then stay cached
+	// forever and are replayed to every new subscriber.
 	u.seen = current
 }
 

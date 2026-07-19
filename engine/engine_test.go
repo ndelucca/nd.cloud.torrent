@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -335,14 +336,62 @@ func TestConcurrentConfigure(t *testing.T) {
 // There is an unavoidable TOCTOU here: the listener is closed before the port
 // is returned. If something else takes it in between, Configure fails loudly
 // rather than hanging, which is the acceptable outcome.
+// mustConfigure configures e on a free port, retrying if the bind loses a race.
+//
+// freeTCPPort closes its probe listeners before the caller binds, so between the
+// two another process can claim the port — and `go test ./...` runs packages in
+// parallel, so the server package's fixtures are doing exactly that at the same
+// time. The retry is the only way to close that window without serialising the
+// suite; the alternative is an intermittent failure that blames whichever test
+// happened to draw the port.
+//
+// c.IncomingPort is overwritten on each attempt.
+func mustConfigure(t *testing.T, e *Engine, c Config) {
+	t.Helper()
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		c.IncomingPort = freeTCPPort(t)
+		if err = e.Configure(c); err == nil {
+			return
+		}
+		if !strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("configure: %v", err)
+		}
+	}
+	t.Fatalf("configure kept losing the port race: %v", err)
+}
+
+// freeTCPPort returns a port free on both TCP and UDP.
+//
+// Both, because anacrolix binds TCP *and* UDP on the listen port: a
+// TCP-only check handed out ports whose UDP half was taken, and Configure then
+// failed with "subsequent listen: bind: address already in use". That surfaced
+// as an intermittent failure in whichever test happened to draw the port,
+// blaming the code under test for a collision in the fixture.
+//
+// Still a TOCTOU — the listeners are closed before the caller binds — but
+// checking both halves removes the systematic collisions, which were the
+// common case. The retry loop covers a genuine race with another process.
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 20; attempt++ {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		// Probe the UDP half of the same port before releasing the TCP one, so
+		// nothing else can claim the pair in between.
+		pc, uerr := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		l.Close()
+		if uerr != nil {
+			continue // UDP half taken; draw another
+		}
+		pc.Close()
+		return port
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("no port free on both TCP and UDP after 20 attempts")
+	return 0
 }
 
 // TestConfigureAfterCloseDoesNotLeak covers an engine that had no closed state.
@@ -424,9 +473,7 @@ const testMagnet = "magnet:?xt=urn:btih:aabbccddeeff00112233445566778899aabbccdd
 // handing out torrents that existed nowhere.
 func TestCloseClearsTheCache(t *testing.T) {
 	e := New()
-	if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	mustConfigure(t, e, Config{DownloadDirectory: t.TempDir(), IncomingPort: 0})
 	if err := e.NewMagnet(testMagnet); err != nil {
 		t.Fatalf("NewMagnet: %v", err)
 	}
@@ -699,9 +746,7 @@ func TestSampleHandlesBytesGoingBackwards(t *testing.T) {
 func TestAddRejectsSpecWithoutInfohash(t *testing.T) {
 	e := New()
 	defer e.Close()
-	if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	mustConfigure(t, e, Config{DownloadDirectory: t.TempDir(), IncomingPort: 0})
 
 	for _, uri := range []string{"magnet:?nonsense", "magnet:?dn=name-only", "magnet:?xt=urn:btih:"} {
 		t.Run(uri, func(t *testing.T) {

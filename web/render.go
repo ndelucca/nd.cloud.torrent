@@ -91,20 +91,34 @@ func percentOf(n, total int64) float64 {
 	return float64(n) / float64(total) * 100
 }
 
+// humanAgo renders a past instant as elapsed time ("3 hours ago").
 func humanAgo(t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}
+	if time.Since(t) < time.Minute {
+		return "just now"
+	}
+	return humanSince(t) + " ago"
+}
+
+// humanSince renders the elapsed time itself, without the "ago". The stats
+// footer wants a duration ("up 3 hours"), not a past tense — reusing humanAgo
+// there produced "up 3 hours ago".
+func humanSince(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
-		return "just now"
+		return "moments"
 	case d < time.Hour:
-		return fmt.Sprintf("%d minutes ago", int(d.Minutes()))
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%d hours ago", int(d.Hours()))
+		return fmt.Sprintf("%d hours", int(d.Hours()))
 	default:
-		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
 	}
 }
 
@@ -137,13 +151,9 @@ func newRenderer(t *template.Template) *renderer {
 	}
 }
 
-// execute runs a template and returns its body, trimmed and checked.
-//
-// It is the only place a template is executed. ServePage and the pulled
-// fragments used to reach through to r.tmpl.ExecuteTemplate directly, which
-// meant checkFragment did not run for them: a bare-text downloads or
-// torrent-files fragment would have shipped with no error anywhere, and only
-// went unnoticed because those two use innerHTML rather than a morph swap.
+// execute runs a template and returns its body, trimmed and checked. It is the
+// only place a template is executed, which is what makes checkFragment cover
+// the pulled fragments and the page as well as the streamed regions.
 func (r *renderer) execute(tmplName string, data any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := r.tmpl.ExecuteTemplate(&buf, tmplName, data); err != nil {
@@ -174,12 +184,10 @@ var errBareText = errors.New("fragment must be wrapped in an element")
 
 // checkFragment enforces the one rule idiomorph does not enforce for us.
 //
-// Verified against Chromium 150 with htmx 2.0.10 + idiomorph 0.7.4: a payload
-// of bare text swapped with hx-swap="morph:…" produces an EMPTY target. No
-// console error, no htmx event, the data: line arrives intact — the DOM is just
-// blank. (A plain innerHTML swap of the same payload works, which is what makes
-// it so easy to miss.) Failing loudly at render time is much cheaper than
-// finding it in a browser.
+// Verified in Chromium 150 (htmx 2.0.10 + idiomorph 0.7.4): a bare-text payload
+// swapped with hx-swap="morph:…" produces an EMPTY target. No console error, no
+// htmx event, the data: line arrives intact — the DOM is just blank. A plain
+// innerHTML swap of the same payload works, which is what makes it easy to miss.
 func checkFragment(name string, body []byte) error {
 	if t := bytes.TrimSpace(body); len(t) > 0 && t[0] != '<' {
 		return fmt.Errorf("template %q: %w (starts with %q)", name, errBareText,
@@ -227,16 +235,14 @@ func (r *renderer) framed(event string) []byte {
 // snapshot returns every region's current framed body as one buffer, for a
 // newly connected subscriber, with first's region ahead of the rest.
 //
-// The ordering is explicit because it is load-bearing and used to be accidental.
-// A membership region has to arrive before the item regions it creates
-// elements for — an element cannot listen for torrent-<hash> before it exists,
-// so those frames are silently discarded. It happened to work only because
-// infohashes are lowercase hex and 'l' sorts after 'f', which inverts the day
-// anything changes how hashes are encoded.
+// The ordering is a parameter because it is load-bearing: a membership region
+// must arrive before the item regions whose elements it creates, since an
+// element cannot listen for torrent-<hash> before it exists and earlier frames
+// are silently discarded. Alphabetical order satisfies that only by accident of
+// infohashes being lowercase hex.
 //
 // One buffer rather than a slice of frames: SSE frames are self-delimiting, so
-// the caller can make a single Write and a single Flush instead of one syscall
-// pair per region.
+// the caller makes a single Write and Flush instead of one pair per region.
 func (r *renderer) snapshot(first string) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()

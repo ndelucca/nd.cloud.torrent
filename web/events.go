@@ -35,8 +35,7 @@ type hub struct {
 	subs map[*subscriber]struct{}
 	// closed latches on shutdown. Without it a request arriving between
 	// hub.close and srv.Shutdown subscribes to a hub nobody will ever release,
-	// and pins Shutdown open for its whole budget — the original bug, in a
-	// narrower window.
+	// pinning Shutdown open for its whole budget.
 	closed bool
 }
 
@@ -55,22 +54,18 @@ func (h *hub) subscribe() *subscriber {
 	return s
 }
 
-// close releases every subscriber and latches the hub shut. It is idempotent
-// and one-way: a Server is not restartable.
+// close releases every subscriber and latches the hub shut. Idempotent and
+// one-way: a Server is not restartable.
 //
-// This reuses the stall mechanism but does not mean the same thing. A stalled
-// subscriber is expected back — EventSource reconnects and replays the
-// snapshot, which is what makes dropping one self-correcting. Here the server
-// is going away, so nothing self-corrects; the stream is simply closed cleanly
-// and the browser's own reconnect covers the case that actually matters, a
-// restart. Unlike a stall, this also evicts: the reader may already be gone, so
-// nobody is left to call unsubscribe.
+// It reuses the stall mechanism but means something different. A stall expects
+// the subscriber back — EventSource reconnects and replays the snapshot, which
+// is what makes dropping one self-correcting. Here the server is going away, so
+// nothing self-corrects, and this also *evicts*: the reader may already be gone,
+// leaving nobody to call unsubscribe.
 //
-// Deliberately no farewell event telling the page to stop retrying. htmx owns
-// the EventSource, so closing it from page code means driving unexported
-// internals (see the note at the foot of static/files/js/ct.js), whose failure
-// mode is a permanently dead UI. Retrying a closed port is a SYN/RST every few
-// seconds against a process that no longer exists.
+// No farewell event telling the page to stop retrying: htmx owns the
+// EventSource, so closing it from page code means driving unexported internals
+// (see static/CLAUDE.md), whose failure mode is a permanently dead UI.
 func (h *hub) close() {
 	h.mu.Lock()
 	h.closed = true
@@ -142,14 +137,14 @@ func (u *UI) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	head.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	// Without a per-write deadline this goroutine can block forever on a client
-	// whose TCP send buffer is full: request-context cancellation does not
-	// unblock a blocked Write, so the subscriber would never be released and
-	// watchers() would stay above zero, keeping the poll loop walking the
-	// download directory once a second for a browser that is gone.
+	// A per-write deadline, because request-context cancellation does not unblock
+	// a blocked Write: without it this goroutine can park forever on a client
+	// whose TCP send buffer is full, leaving the subscriber unreleased and
+	// watchers() above zero — so the poll loop keeps walking the download
+	// directory once a second for a browser that is gone.
 	//
-	// There is deliberately no server-wide WriteTimeout (this stream and large
-	// downloads are both long-lived), so the deadline is set per write.
+	// Set per write rather than server-wide: this stream and large downloads are
+	// both legitimately long-lived.
 	rc := http.NewResponseController(w)
 
 	write := func(b []byte) bool {

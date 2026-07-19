@@ -32,20 +32,18 @@ func badRequest(format string, a ...any) error {
 
 // classify maps an error onto the HTTP status and the message the user sees.
 //
-// The axis is not "engine error versus server error", it is: **did what the
-// caller sent cause this?**
+// The axis is not "engine error versus server error", it is: did what the
+// caller sent cause this?
 //
-//   - Input errors — the magnet URI, the remote URL, the .torrent bytes, a
-//     config value. Here the wrapped detail is the only useful information
-//     ("no info hash in magnet link") and it is bounded prose from a parser, so
-//     it is shown.
-//   - Operational errors — disk, bind, upstream, closed. Here the wrapped
-//     detail is a syscall string and a filesystem-layout oracle, so a fixed
-//     message is shown and the chain goes to the log.
+//   - Input — the magnet URI, the remote URL, the .torrent bytes, a config
+//     value. The wrapped detail is the only useful information ("no info hash
+//     in magnet link") and it is bounded parser prose, so it is shown.
+//   - Operational — disk, bind, upstream, closed. The wrapped detail is a
+//     syscall string and a filesystem-layout oracle, so a fixed message is
+//     shown and the chain goes to the log.
 //
-// The default is 500. It used to be 400, which meant a disk-full or permission
-// failure was reported to the user as their own mistake — exactly what the
-// function existed to prevent.
+// The default is 500, so an unclassified failure is never reported to the user
+// as their own mistake.
 func classify(err error) (int, string) {
 	var ae apiError
 	if errors.As(err, &ae) {
@@ -93,15 +91,11 @@ func sentence(s string) string {
 // finishAPI turns a handler's error into a response: it wakes the render loop,
 // maps the error and picks the representation.
 func (s *Server) finishAPI(w http.ResponseWriter, r *http.Request, err error) {
-	// A mutation almost always changes what the UI shows; waking the render loop
-	// makes the effect visible immediately rather than up to a tick later.
-	//
 	// Unconditional, including on failure: an action can apply partially and
 	// still report an error. Uploading five torrents where two are malformed
-	// returns 400, but the three that were added are already in the engine — and
-	// gating the kick on success left them invisible until the next tick. kick
-	// is coalesced and floored, so the cost of being wrong here is at most one
-	// extra render.
+	// returns 400 while three are already in the engine, and gating the kick on
+	// success leaves those invisible until the next tick. kick is coalesced and
+	// floored, so an unnecessary one costs at most a single extra render.
 	s.kick()
 
 	status, msg := http.StatusOK, ""
@@ -203,10 +197,8 @@ func isForm(r *http.Request) bool {
 	return strings.TrimSpace(ct) == "application/x-www-form-urlencoded"
 }
 
-// apiHandler is what an /api/* route does. The signature takes the
-// ResponseWriter because the multipart path genuinely needs it, for
-// http.MaxBytesReader — the doc used to claim handlers took only the request,
-// which had already drifted from the code.
+// apiHandler is what an /api/* route does. It takes the ResponseWriter because
+// the multipart path needs it, for http.MaxBytesReader.
 type apiHandler func(http.ResponseWriter, *http.Request) error
 
 // apiRoute adapts an apiHandler into an http.Handler, applying the kick, the

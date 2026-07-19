@@ -16,10 +16,9 @@ import (
 )
 
 // Deps is everything the UI needs from the rest of the program, as functions
-// over value types. Passing closures rather than the objects behind them is
-// deliberate: it is what stops this package acquiring a dependency on the
-// server, and it means a test can supply three literals instead of a running
-// engine.
+// over value types. Closures rather than the objects behind them: it is what
+// stops this package acquiring a dependency on the server, and it lets a test
+// supply three literals instead of a running engine.
 type Deps struct {
 	Title   string
 	Version string
@@ -42,10 +41,10 @@ type UI struct {
 	hub      *hub
 	deps     Deps
 
-	// mu serializes rendering. RenderStats, RenderTorrents and RenderDownloads
-	// are called from two different loops, and without it two goroutines can
-	// broadcast samples in the opposite order to the one they were taken in,
-	// leaving browsers on the older one. seen is covered by it too.
+	// mu serializes rendering. The server's poll and stats loops both call in,
+	// and unsynchronized they can broadcast samples in the opposite order to the
+	// one they were taken in, leaving browsers on the older one. It also covers
+	// seen, which is a plain map two RenderTorrents calls would race on.
 	mu   sync.Mutex
 	seen map[string]bool
 }

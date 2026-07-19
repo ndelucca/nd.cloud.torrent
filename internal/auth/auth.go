@@ -1,34 +1,26 @@
 // Package auth gates an HTTP handler behind a username and password.
 //
-// It replaces jpillora/cookieauth, which had three problems beyond the two
-// modules it cost:
+// The cookie is a signed token — a random nonce and an absolute expiry,
+// authenticated with HMAC-SHA256 under a per-process key. Three properties are
+// load-bearing:
 //
-//   - The cookie's value was a scrypt hash of "user:password". Anyone who
-//     obtained the cookie held an offline-crackable hash of the real password. A
-//     session token should not be derived from the secret it stands in for.
-//   - The expiry was an unsigned integer inside that value, and it was never
-//     checked. It only decided whether to re-issue the cookie, so the Expires
-//     attribute was a hint to the browser and nothing more: a stolen cookie
-//     stayed valid forever, until the password changed.
-//   - The cookie carried no HttpOnly, Secure or SameSite attribute.
+//   - The token is not derived from the credentials. A cookie that carried a
+//     hash of the password would make cookie theft equivalent to password theft.
+//   - The expiry is the server's and is verified on every request. It travels in
+//     the cookie but is authenticated, so a client cannot extend its own
+//     session by editing it; a cookie's Expires attribute is a hint to the
+//     browser, not an access control.
+//   - The cookie is HttpOnly and SameSite=Lax, plus Secure under TLS.
 //
-// Here the cookie is a signed token: a random nonce and an absolute expiry,
-// authenticated with HMAC-SHA256 under a key generated per process. The server
-// decides the expiry and verifies it on every request — it is signed, not
-// trusted from the client — and the cookie is marked HttpOnly and SameSite=Lax
-// (plus Secure under TLS).
+// There is deliberately no session table. One would grow without bound under a
+// scripted client — an uptime probe, curl in a loop — since every request
+// carrying an Authorization header mints an entry, and the sweep that reclaims
+// them walks the map under a lock, so the cost grows with the abuse. A signed
+// token makes that structurally impossible rather than merely bounded.
 //
-// There is deliberately no session table. Holding one meant every request that
-// arrived with an Authorization header minted a fresh 32-byte entry with a
-// fortnight TTL, with no check for an existing session: a scripted client — an
-// uptime probe, curl in a loop — inflated the map without bound, and the sweep
-// that ran on the login path walked it under the lock, so the cost grew with
-// the abuse. A signed token makes that structurally impossible rather than
-// merely bounded.
-//
-// The cost is that an individual session cannot be revoked server-side. Nothing
-// here revoked one except the refresh path, and sessions still do not survive a
-// restart, since the key is per process.
+// The trade, stated rather than discovered: an individual session cannot be
+// revoked server-side. A restart invalidates all of them, since the key is per
+// process.
 package auth
 
 import (

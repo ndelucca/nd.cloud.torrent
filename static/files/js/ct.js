@@ -6,32 +6,40 @@
 
   // --- idiomorph guards -----------------------------------------------------
   //
-  // Verified in Chromium 150 (htmx 2.0.10 + idiomorph 0.7.4): a morph reverts
-  // attributes to whatever the server rendered, including ones Alpine wrote
-  // itself. x-show sets style="display:none"; after a morph that style is gone
-  // and the element is visible again. Alpine does not repair it, because its
-  // effects only re-run when the reactive *data* changes — and the morph did
-  // not change the data. A collapsed panel visibly pops open once per second.
+  // A morph reverts attributes to whatever the server rendered, including ones
+  // Alpine wrote. Alpine does not repair them: its effects re-run when the
+  // reactive data changes, and a morph does not change the data. Elements match
+  // by id, so _x_dataStack survives — it is only the DOM Alpine wrote that needs
+  // protecting.
   //
-  // Elements are matched by id, so Alpine's own state (_x_dataStack) survives.
-  // It is only the DOM Alpine wrote that needs protecting.
+  // The rule is derived from the bindings on the node rather than enumerated.
+  // An enumerated list covered style and aria-expanded on x-show elements only,
+  // which missed every other Alpine-written attribute on the page.
   if (window.Idiomorph) {
     var cb = Idiomorph.defaults.callbacks;
 
     cb.beforeAttributeUpdated = function (attr, node, mutationType) {
-      // Never let a morph touch inline style or aria-expanded on an element
-      // whose visibility Alpine owns.
-      if ((attr === "style" || attr === "aria-expanded") &&
-          node.hasAttribute && node.hasAttribute("x-show")) {
+      if (!node.hasAttribute) return true;
+      // Alpine strips x-cloak exactly once, at init. Re-adding it from the
+      // server markup hides the element behind [x-cloak]{display:none} with
+      // nothing to ever remove it again.
+      if (attr === "x-cloak") return false;
+      // x-show owns inline display.
+      if (attr === "style" && node.hasAttribute("x-show")) return false;
+      // Anything Alpine binds is Alpine's to write, not the morph's. This is
+      // what covers :class and :aria-expanded on elements that have no x-show.
+      if (node.hasAttribute(":" + attr) || node.hasAttribute("x-bind:" + attr)) {
         return false;
       }
       return true;
     };
 
     cb.beforeNodeMorphed = function (oldNode, newNode) {
-      // An explicit opt-out for islands that must survive untouched, e.g. a
-      // playing <video>.
-      if (oldNode instanceof HTMLElement && oldNode.hasAttribute("data-preserve")) {
+      // An explicit opt-out for subtrees the client owns outright: a playing
+      // <video>, and any panel whose content is fetched with hx-get — the
+      // server markup for those is a placeholder, so morphing reverts the
+      // fetched content back to it.
+      if (oldNode.hasAttribute && oldNode.hasAttribute("data-preserve")) {
         return false;
       }
       return true;
@@ -66,37 +74,46 @@
     } catch (e) { /* non-fatal: the tree just will not remember */ }
   }
 
+  // ask arms a two-step delete and disarms it again after a pause, so a
+  // half-pressed delete does not sit armed indefinitely. The pending timer is
+  // cancelled on re-arm: without that, two clicks less than the timeout apart
+  // let the first click's timer disarm the second click's confirmation.
+  function armConfirm(self) {
+    if (self._confirmTimer) clearTimeout(self._confirmTimer);
+    self.confirm = true;
+    self._confirmTimer = setTimeout(function () {
+      self.confirm = false;
+      self._confirmTimer = null;
+    }, 3000);
+  }
+
   window.treeNode = function () {
     return {
       open: false,
-      preview: false,
       confirm: false,
+      _confirmTimer: null,
       init: function () {
         var id = this.$el.dataset.id;
-        // Top-level entries default to open, deeper ones to closed, so a fresh
-        // visit shows something useful without unfolding an entire tree.
-        this.open = readOpen(id, this.$el.closest(".tree-list") === this.$el.parentElement &&
-          this.$el.parentElement.parentElement.classList.contains("tree"));
+        // Whether an entry is top level is server-rendered (data-top), not
+        // derived from how deeply the markup happens to be nested. Structure-
+        // derived state breaks silently the moment the structure changes, which
+        // is the same reason node paths are computed server-side.
+        this.open = readOpen(id, this.$el.dataset.top === "1");
         this.$watch("open", function (v) { writeOpen(id, v); });
       },
-      ask: function () {
-        var self = this;
-        this.confirm = true;
-        // Revert on its own, so a half-pressed delete does not sit armed.
-        setTimeout(function () { self.confirm = false; }, 3000);
-      },
+      ask: function () { armConfirm(this); },
     };
   };
 
   window.treeLeaf = function () {
     return {
+      // No `preview` here: a directory is never previewable — the view model
+      // clears Preview for one — so the preview button never renders inside a
+      // treeNode. Only leaves need it.
       preview: false,
       confirm: false,
-      ask: function () {
-        var self = this;
-        this.confirm = true;
-        setTimeout(function () { self.confirm = false; }, 3000);
-      },
+      _confirmTimer: null,
+      ask: function () { armConfirm(this); },
     };
   };
 
@@ -106,6 +123,9 @@
   // why the upload form uses hx-encoding rather than reading the file in JS and
   // POSTing raw bytes — that path cannot report progress at all.
   document.body.addEventListener("htmx:xhr:progress", function (e) {
+    // Scoped to the upload form, like its afterRequest sibling below. Unscoped,
+    // any htmx request with a computable length drove the upload bar.
+    if (!e.target || e.target.id !== "upload-form") return;
     var bar = document.getElementById("upload-progress");
     if (!bar || !e.detail.lengthComputable) return;
     bar.hidden = false;
@@ -168,7 +188,7 @@
       if (/\.torrent$/i.test(f.name)) accepted.items.add(f);
     }
     if (!accepted.files.length) {
-      showStatus('<p class="err-msg">Only .torrent files can be dropped here.</p>');
+      showError("Only .torrent files can be dropped here.");
       return;
     }
     input.files = accepted.files;
@@ -179,15 +199,23 @@
     return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1;
   }
 
-  function showStatus(html) {
+  // Built as nodes rather than as an HTML string. This is the only status the
+  // client raises on its own — every other one arrives as an api-error fragment
+  // from the server — and assembling markup here put a copy of the template
+  // set's class contract in a file no template test can see.
+  function showError(msg) {
     var el = document.getElementById("omni-status");
-    if (el) el.innerHTML = html;
+    if (!el) return;
+    var p = document.createElement("p");
+    p.className = "err-msg";
+    p.textContent = msg;
+    el.replaceChildren(p);
   }
 
   // --- spacebar toggles the first on-screen media ---------------------------
   // Ported from run.js. Survives swaps because it is delegated from document.
   document.addEventListener("keydown", function (e) {
-    if (e.key !== " " && e.keyCode !== 32) return;
+    if (e.key !== " ") return;
     var el = document.activeElement;
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" ||
                el.tagName === "BUTTON" || el.isContentEditable)) {
@@ -220,29 +248,7 @@
   document.body.addEventListener("htmx:sseError", function () { setConn("offline"); });
   document.body.addEventListener("htmx:sseClose", function () { setConn("offline"); });
 
-  // --- background tabs: deliberately NOT optimised -------------------------
-  //
-  // EventSource is not throttled in a hidden tab, so a backgrounded window
-  // keeps streaming, and without TLS this is HTTP/1.1 with ~6 connections per
-  // origin — several pinned tabs plus a video preview and a zip download can
-  // starve the stream.
-  //
-  // Closing the stream on visibilitychange was tried and removed. htmx owns the
-  // EventSource, so reconnecting means driving htmx's own re-processing through
-  // unexported internals (document.body["htmx-internal-data"].sseEventSource)
-  // and an attribute-hash quirk — and htmx.process alone does NOT reconnect,
-  // because it skips nodes whose attributes have not changed. The first version
-  // shipped exactly that bug: it closed the stream on hide and never reopened
-  // it, leaving the dashboard silently frozen until a manual reload.
-  //
-  // The replacement could not be verified either: Chromium 150 removed
-  // Emulation.setPageVisibilityOverride, so the hide/show path is not reachable
-  // from headless automation here. Shipping an unverifiable optimisation whose
-  // failure mode is a permanently dead UI is the worse trade, so the stream
-  // simply stays open.
-  //
-  // If this becomes a real problem, the sound fix is a SharedWorker or a
-  // BroadcastChannel leader election sharing ONE EventSource across all tabs,
-  // which caps the cost at one connection regardless of tab count and needs no
-  // htmx internals at all.
+  // The stream deliberately stays open in a background tab. See
+  // static/CLAUDE.md for why closing it on visibilitychange was tried, removed,
+  // and is not worth retrying.
 })();

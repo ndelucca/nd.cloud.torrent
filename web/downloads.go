@@ -42,6 +42,12 @@ type fsView struct {
 	Children []fsView
 	// Preview is "", "video", "audio" or "image".
 	Preview string
+	// TopLevel marks a direct child of the download root. It decides the
+	// default collapse state, and it is computed here rather than derived in
+	// the browser from how deeply the markup is nested — structure-derived
+	// state breaks silently when the structure changes, which is the same
+	// reason Path is computed here.
+	TopLevel bool
 }
 
 // newRootView adapts the walk's root. The root node carries the download
@@ -53,7 +59,9 @@ func newRootView(root *files.Node) fsView {
 		if c == nil {
 			continue
 		}
-		v.Children = append(v.Children, newFSView(c, ""))
+		child := newFSView(c, "")
+		child.TopLevel = true
+		v.Children = append(v.Children, child)
 	}
 	sortChildren(&v)
 	return v

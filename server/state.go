@@ -69,10 +69,9 @@ type statsDocument struct {
 // second while anyone is watching — and buys a document that is correct for a
 // caller who is not a browser.
 func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	// No method guard: the route is registered as "GET /api/state", so ServeMux
+	// answers 405 with an Allow header before this runs. server/CLAUDE.md states
+	// that the method is enforced by the pattern; the guard here contradicted it.
 	doc := stateDocument{
 		Torrents:       s.engine.GetTorrents(),
 		Downloads:      files.List(s.downloadDir()),

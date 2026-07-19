@@ -61,11 +61,10 @@ func (t *Torrent) update(tt *torrent.Torrent) {
 }
 
 func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
-	// Rebuilt each pass rather than patched in place. The previous version kept
-	// surviving entries by index, which assumed index i is the same file across
-	// ticks — untrue once a torrent is re-added, and unwritten anywhere. Every
-	// field is read from the live torrent regardless, so preserving nothing
-	// costs one small allocation per torrent per tick.
+	// Rebuilt each pass rather than patched in place: keeping entries by index
+	// assumes index i is the same file across ticks, which stops being true once
+	// a torrent is re-added. Every field is read from the live torrent anyway, so
+	// preserving nothing costs one small allocation per torrent per tick.
 	tfiles := tt.Files()
 	t.Files = make([]File, len(tfiles))
 	for i, f := range tfiles {
@@ -87,17 +86,15 @@ const minRateInterval = 250 * time.Millisecond
 
 // sample records a progress reading and derives the download rate from it.
 //
-// Downloaded, updatedAt and DownloadRate are one sample and move together or
-// not at all. They used to move apart: every caller advanced Downloaded and
-// updatedAt while the rate was only recomputed when the interval happened to be
-// positive. Since GetTorrents refreshes on read, an extra reader — /api/state,
-// or opening a torrent's Files panel — inserted a reading microseconds after
-// the poll loop's, consuming the interval the next real sample needed and
-// driving the displayed rate toward zero. Two clients polling once a second
-// roughly halved every rate on the page.
+// Downloaded, updatedAt and DownloadRate are one sample: they move together or
+// not at all, and a reading that arrives sooner than minRateInterval is dropped
+// whole rather than half-applied.
 //
-// A reading that arrives too soon is therefore dropped whole rather than
-// half-applied.
+// This matters because GetTorrents refreshes on read, so any extra reader —
+// /api/state, or opening a torrent's Files panel — inserts a reading. Advancing
+// Downloaded and updatedAt without recomputing the rate consumed the interval
+// the next real sample needed and drove displayed rates toward zero; two clients
+// polling once a second roughly halved every rate on the page.
 func (t *Torrent) sample(bytes int64, now time.Time) {
 	t.Percent = percent(bytes, t.Size)
 
