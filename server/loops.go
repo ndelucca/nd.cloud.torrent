@@ -10,7 +10,7 @@ import (
 )
 
 // kick asks the render loop to run before its next tick. Without it, pressing
-// Start would take up to a full pollInterval to show any effect.
+// Start would take up to a full engine.SampleInterval to show any effect.
 func (s *Server) kick() {
 	select {
 	case s.kickCh <- struct{}{}:
@@ -18,19 +18,27 @@ func (s *Server) kick() {
 	}
 }
 
+// pollLoop renders whatever changed, once per engine sample.
+//
+// It is driven by engine.Sampled rather than a ticker of its own. Two
+// independent 1 Hz timers meant a render could show a sample up to a second
+// stale, and the two drifted against each other for no benefit: there is nothing
+// new to draw between samples.
+//
+// A kick can be followed immediately by a pending sample signal, producing two
+// renders in quick succession. That is harmless — the renderer is byte-gated, so
+// an unchanged region broadcasts nothing.
 func (s *Server) pollLoop(ctx context.Context) {
-	t := time.NewTicker(pollInterval)
-	defer t.Stop()
+	sampled := s.engine.Sampled()
 	for {
 		// Gated on watchers because files.List walks the download directory with
 		// up to files.Limit stat calls, and rendering for nobody is waste.
 		//
 		// Torrent *freshness* does not ride on this gate: the engine samples on
-		// its own cadence, so GetTorrents here is a pure read of the latest
-		// sample. When reads sampled, this gate silently doubled as the sampling
-		// schedule — with nobody connected nothing sampled, and the first
-		// reading after a browser connected computed its rate over however long
-		// that was.
+		// its own cadence whether or not anyone is connected, so GetTorrents here
+		// is a pure read of the latest sample. If this gate ever doubles as the
+		// sampling schedule again, the first reading after an idle spell becomes
+		// an average over however long nobody was watching.
 		if s.watchers() > 0 {
 			s.renderStats()
 			s.ui.RenderTorrents(s.engine.GetTorrents())
@@ -39,7 +47,7 @@ func (s *Server) pollLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-sampled:
 		case <-s.kickCh:
 			// Floor the rate so a burst of API calls cannot spin this loop.
 			select {

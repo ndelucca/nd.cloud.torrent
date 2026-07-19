@@ -82,8 +82,10 @@ Sampling:
 - **`GetTorrents` is a pure read**: a deep copy of the last sample, touching neither the client nor
   any torrent's reading. The `ts` map and its `*Torrent` values never escape the engine.
 - **The engine owns its cadence.** `refresh` is the only thing that samples and `sampleLoop` (started
-  in `New`, ticking at `sampleInterval`) the only thing that calls it, so the interval between
-  readings *is* the window `DownloadRate` is measured over.
+  in `New`, ticking at `SampleInterval`) the only thing that calls it, so the interval between
+  readings *is* the window `DownloadRate` is measured over. The server's render loop follows this
+  clock rather than running one of its own — two independent 1 Hz timers drift, and a render between
+  samples has nothing new to draw.
 - **There is deliberately no exported way to force a refresh.** If readers could sample, every extra
   reader (`/api/state`, opening a Files panel) would insert a reading just after the loop's, consume
   the interval the next real sample needed, and drive displayed rates toward zero.
@@ -94,12 +96,17 @@ Sampling:
   timestamp, and a zero interval yields `+Inf`, which fails `json.Marshal` and freezes the UI.
 - Across a rebind the sampler skips ticks where `client == nil`, so the next tick spans ~2s. That
   stays correct because the rate comes from real timestamps; do not "optimise" `sample` into
-  `db / sampleInterval`.
+  `db / SampleInterval`.
+- **`Sampled` is a hint, not a queue.** One buffered slot, non-blocking send, never closed. The
+  non-blocking send is load-bearing in two ways: a reader that is slow or absent must not stall
+  sampling, and a blocking send parks `sampleLoop` so `Close`'s `wg.Wait()` deadlocks. The signal is
+  emitted *outside* `refresh` so it also fires on ticks with no client — the render loop draws the
+  download tree and host stats too, and those must keep moving while the engine is unconfigured.
 - `Torrent.Files` is rebuilt from the live torrent every pass. Patching in place assumes index *i* is
   the same file across ticks, which stops being true once a torrent is re-added. `File` is a value,
   so a nil entry is unrepresentable.
-- `percent` truncates rather than rounds, and that is load-bearing: `torrents.html` tests
-  `eq .Percent 100.0` for completeness, so rounding would mark a file done at 99.999%.
+- `percent` truncates rather than rounds, and that is load-bearing: `web.newFileView` tests
+  `Percent >= 100` for completeness, so rounding would mark a file done at 99.999%.
 
 ## Work Guidance
 

@@ -119,10 +119,14 @@ State:
 
 Lifecycle:
 
-- Two goroutines run until the `Run` context is cancelled: polling (`pollInterval`, 1s) and stats
-  (`statsInterval`, 5s). Polling is gated on `watchers() > 0` **because of `files.List`** — up to
-  `files.Limit` stat calls per second — and because rendering for nobody is waste. Torrent freshness
-  does not ride on that gate: the engine samples on its own cadence and `GetTorrents` is a pure read.
+- Two goroutines run until the `Run` context is cancelled. **The render loop has no clock of its
+  own: it waits on `engine.Sampled()`**, so a render always follows a fresh sample instead of
+  drifting against one — two independent 1 Hz timers meant a render could show a sample up to a
+  second stale. Only the stats loop keeps a ticker (`statsInterval`, 5s), and it must: `statsInterval`
+  is the `cpu.Percent` measurement window, a different quantity from the engine's.
+  Rendering is gated on `watchers() > 0` **because of `files.List`** — up to `files.Limit` stat calls
+  per second — and because rendering for nobody is waste. Torrent freshness does not ride on that
+  gate: the engine samples on its own cadence and `GetTorrents` is a pure read.
 - **The host is sampled unconditionally; only the *render* is gated on watchers.** `cpu.Percent(0, …)`
   measures since the previous call anywhere in the process, so the interval *is* the measurement
   window — which is also why `statsInterval` must stay fixed. Gating the sample would make the first

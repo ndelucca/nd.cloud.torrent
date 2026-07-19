@@ -21,8 +21,6 @@ import (
 )
 
 const (
-	// pollInterval is how often torrent and download-tree state is refreshed.
-	pollInterval = 1 * time.Second
 	// statsInterval must stay fixed: cpu.Percent(0, …) reports usage since the
 	// previous call, so the sampling period defines the window.
 	statsInterval = 5 * time.Second

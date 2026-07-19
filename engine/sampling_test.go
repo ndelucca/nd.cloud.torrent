@@ -170,3 +170,63 @@ func TestSamplerRunsWithoutWatchers(t *testing.T) {
 	t.Fatal("no sample was taken within 5s with no watchers; the engine's " +
 		"cadence is gated on something it should not know about")
 }
+
+// TestSampledSignalsAfterEachRefresh pins that the render loop has something to
+// wait on, and that it fires on an *unconfigured* engine.
+//
+// The signal is emitted outside refresh precisely so that it does not depend on
+// a client existing: the server's render loop also draws the download tree and
+// the host stats, which have to keep moving while the engine has no client.
+// Emitting from inside refresh would freeze the whole UI whenever the engine was
+// unconfigured.
+func TestSampledSignalsAfterEachRefresh(t *testing.T) {
+	e := New() // deliberately not configured
+	t.Cleanup(func() { e.Close() })
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-e.Sampled():
+		case <-time.After(5 * SampleInterval):
+			t.Fatalf("no sample signal %d within %s; the render loop would never "+
+				"wake", i+1, 5*SampleInterval)
+		}
+	}
+}
+
+// TestSampledDoesNotBlockTheSampler is the load-bearing half of the channel's
+// contract: a slow or absent reader must never stall sampling.
+//
+// If the send were blocking, the sampler would stop at the first tick nobody
+// drained — which is every tick with no browser connected — and SampleInterval
+// would stop being the window DownloadRate is measured over.
+func TestSampledDoesNotBlockTheSampler(t *testing.T) {
+	e, hash := configuredEngine(t)
+
+	// Never drain Sampled, and require several advances rather than one.
+	//
+	// One is not enough, and this is the trap: the buffer holds a value, so even
+	// a *blocking* send lets the first tick through and lets the second tick
+	// finish its refresh before parking on the send. A test satisfied by one
+	// advance passes against exactly the bug it is written for.
+	const wantAdvances = 4
+
+	var last time.Time
+	advances := 0
+	deadline := time.Now().Add(wantAdvances * 4 * SampleInterval)
+	for time.Now().Before(deadline) && advances < wantAdvances {
+		tor := liveTorrent(t, e, hash)
+		e.mu.Lock()
+		at := tor.updatedAt
+		e.mu.Unlock()
+		if !at.IsZero() && at.After(last) {
+			last = at
+			advances++
+		}
+		time.Sleep(SampleInterval / 4)
+	}
+	if advances < wantAdvances {
+		t.Fatalf("updatedAt advanced %d times in %s, want %d: the sampler is "+
+			"blocked on a reader that may not exist",
+			advances, wantAdvances*4*SampleInterval, wantAdvances)
+	}
+}

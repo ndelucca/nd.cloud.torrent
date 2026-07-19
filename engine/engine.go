@@ -57,12 +57,33 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// sampled carries one notification per completed sample. See Sampled.
+	sampled chan struct{}
 }
 
-// sampleInterval is the engine's sampling cadence, and therefore the window
+// Sampled returns a channel that receives after every sample.
+//
+// It is a hint, not a queue. Sends are non-blocking and dropped when the buffer
+// is full, so nobody listening costs nothing and — the load-bearing half — a
+// slow reader can never stall the sampler. That is what keeps SampleInterval an
+// honest measurement window for DownloadRate.
+//
+// It is never closed: a closed channel makes a select spin, so a consumer must
+// exit on its own context instead.
+//
+// It fires on every tick, including ones where the engine has no client. The
+// render loop also draws the download tree and the host stats, which have to
+// keep moving while the engine is unconfigured.
+func (e *Engine) Sampled() <-chan struct{} { return e.sampled }
+
+// SampleInterval is the engine's sampling cadence, and therefore the window
 // DownloadRate is measured over. It is a constant rather than a Config field: a
 // user-tunable window is a rate whose meaning changes under the user.
-const sampleInterval = 1 * time.Second
+//
+// Exported because the render loop is driven by Sampled rather than a clock of
+// its own, so a caller reasoning about how often it wakes needs this number.
+const SampleInterval = 1 * time.Second
 
 func New() *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -70,6 +91,9 @@ func New() *Engine {
 		ts:     map[string]*Torrent{},
 		ctx:    ctx,
 		cancel: cancel,
+		// Buffered and coalesced: a reader slower than the sampler sees one
+		// pending signal, never a queue.
+		sampled: make(chan struct{}, 1),
 	}
 	// Safe without a lock, unlike watchInfoLocked's Add: New has not returned
 	// the pointer, so no other goroutine can hold the engine and no Close — and
@@ -95,7 +119,7 @@ func New() *Engine {
 // average over however long nobody was connected.
 func (e *Engine) sampleLoop() {
 	defer e.wg.Done()
-	t := time.NewTicker(sampleInterval)
+	t := time.NewTicker(SampleInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -103,6 +127,12 @@ func (e *Engine) sampleLoop() {
 			return
 		case now := <-t.C:
 			e.refresh(now)
+			// Outside refresh, so this also fires on ticks where the engine has
+			// no client. See Sampled.
+			select {
+			case e.sampled <- struct{}{}:
+			default: // the last signal is still pending; coalesce
+			}
 		}
 	}
 }

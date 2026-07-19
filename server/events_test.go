@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
@@ -80,7 +81,7 @@ func TestEventsArriveImmediately(t *testing.T) {
 //
 // The bound is not zero: the stats sample legitimately changes every
 // statsInterval because heap size and goroutine count move. What must not
-// happen is a frame every pollInterval.
+// happen is a frame every engine.SampleInterval.
 func TestIdleServerIsQuiet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing-based")
@@ -183,7 +184,7 @@ func TestIdleServerIsQuiet(t *testing.T) {
 		t.Errorf("%d events in the %s after settling (max %d): "+
 			"change detection is not suppressing unchanged regions", steady, window, maxSteady)
 	}
-	pollTicks := int(window / pollInterval)
+	pollTicks := int(window / engine.SampleInterval)
 	if steady >= pollTicks {
 		t.Errorf("steady traffic (%d) reached the poll tick count (%d): "+
 			"regions are being pushed every tick regardless of change", steady, pollTicks)
