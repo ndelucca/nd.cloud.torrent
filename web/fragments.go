@@ -105,14 +105,18 @@ func writeFragment(w http.ResponseWriter, status int, html []byte) {
 // This is the whole of the API layer's dependency on the template set. It takes
 // the message to display, not an error: deciding what a failure should say —
 // and what it should not say, since operational failures carry syscall strings
-// and filesystem paths — is the server's job, in classify. An empty message
-// means success.
-func (u *UI) WriteAPIResult(w http.ResponseWriter, msg string) {
+// and filesystem paths — is the server's job, in classify.
+//
+// ok is passed rather than inferred from the message being empty. A successful
+// action can have something to say ("saved, but restart to apply it"), and
+// inferring would render that in the error style.
+func (u *UI) WriteAPIResult(w http.ResponseWriter, msg string, ok bool) {
 	name := "api-ok"
+	if !ok {
+		name = "api-error"
+	}
 	if msg == "" {
 		msg = "Done."
-	} else {
-		name = "api-error"
 	}
 	body, err := u.renderer.execute(name, msg)
 	if err != nil {

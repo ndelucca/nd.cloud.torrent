@@ -94,6 +94,13 @@ Runtime settings — download directory, incoming port, upload and seeding — l
 in `cloud-torrent.json` next to the binary and are editable from the Settings
 panel in the UI.
 
+**Everything except Auto-start takes effect on the next start.** The torrent
+client fixes the download directory, listen port, upload, seeding and encryption
+when it is created, and there is no way to change them on a running one. Saving
+writes the value to the config file and tells you a restart is needed; it is not
+silently ignored, and the Settings panel keeps showing what you saved rather than
+what is running.
+
 ### Exposing it
 
 **Authentication is off by default.** With `--auth` unset, anyone who can reach

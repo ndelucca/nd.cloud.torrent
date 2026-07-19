@@ -84,6 +84,9 @@ The API:
     attaches are layout oracles, so a refused traversal must not be tellable from a missing file.
   - **The default is 500**, so an unclassified failure is never reported to the user as their own
     mistake. `engine.ErrInvalidInput` keeps genuine caller mistakes on the 400 side of it.
+  - `engine.ErrRestartRequired` maps to **200**: the request succeeded and there is something worth
+    saying. `finishAPI` therefore decides success from the *status*, not from `err != nil`, and
+    `web.WriteAPIResult` takes an explicit `ok` rather than inferring it from an empty message.
 - **Error strings stay ordinary lowercase Go.** `classify` owns presentation; `sentence` capitalises
   what it shows. `web.WriteAPIResult` takes the *message*, not the error — deciding what a failure
   says, and what it must not say, is the server's job.
@@ -91,9 +94,12 @@ The API:
   the hash is a path parameter, so none of them takes a body.
 - `add` takes a bare string or a `uri` form field, `configure` a form, `torrentfile` raw bytes or
   multipart. A second encoding on any of them means a second parser to keep in step with one struct.
-- **`/api/configure` holds `configMu` across read-merge-apply.** `engine.configureMu` serializes the
-  apply but not the read the merge starts from, so two concurrent saves would each begin from the
-  same config and the second would silently undo the first.
+- **`/api/configure` holds `configMu` across read-merge-apply-persist**, and merges over
+  `s.desired`, not over `engine.Config()`. The engine serializes its own apply but not the read the
+  merge starts from, so without one lock two concurrent saves each begin from the same config and the
+  second silently undoes the first. The merge base matters just as much: most settings need a
+  restart, so the *live* config does not advance when one is saved, and merging over it would drop
+  every pending change on the next save.
 - When `HX-Request` is set, responses are HTML fragments with status 200 — htmx does not swap
   non-2xx. Status codes stay intact for every other client.
 - Multipart uploads are capped with `http.MaxBytesReader` (`maxUploadBody`). `ParseMultipartForm`
@@ -106,8 +112,14 @@ State:
   tree from `files.List`, the config from `engine.Config`, viewers from `web.UI.Watchers`. Do not
   reintroduce a shared snapshot: written by the watcher-gated poll loop, it makes `/api/state` serve
   `null` torrents whenever no browser is connected.
-- The config lives in the engine and nowhere else. The server persists it to `ConfigPath` but keeps
-  no copy — two copies can disagree, and the settings form would render the stale one.
+- **There are two configurations and they are different facts, not two copies of one.**
+  `engine.Config()` is what is *running*; `s.desired` (guarded by `configMu`) is what the user has
+  *asked for*, which is what the file holds and what the settings form renders. Most settings are
+  fixed for the lifetime of a torrent client, so after saving one the two legitimately differ until a
+  restart. Rendering the live config in the form would show the old value straight back after a save
+  that did work.
+- `desired` is updated only *after* `configfile.Save` succeeds, so it never claims something the file
+  does not hold.
 - `stateDocument`/`statsDocument` are the JSON contract of `/api/state`, declared explicitly so
   rearranging the server's own fields cannot change the wire format. Exported field names are the
   contract. `Config` is deliberately absent — it is the engine's.
@@ -141,18 +153,19 @@ Lifecycle:
   requested stop is not a failed run, and `main` calls `log.Fatal` on a non-nil error. Only a genuine
   serving failure (bind, TLS) returns one; if the drain overruns, `srv.Close` stops waiting.
 - `Run` is one-shot: the hub latches closed, so a second call would serve no events.
-- `reconfigure` is `applyConfig` then `configfile.Save`. `applyConfig` absolutizes the download
-  directory and hands the config to the engine. The restart happens first, so a failed one persists
-  nothing.
+- `reconfigure` is `applyConfig`, then `configfile.Save`, then update `desired`; callers hold
+  `configMu`. `applyConfig` absolutizes the download directory and hands the config to the engine. A
+  rejected config persists nothing — **except `engine.ErrRestartRequired`**, which is saved and
+  passed up, because refusing to save a setting the engine cannot apply live would leave no way to
+  change the listen port at all short of editing the file by hand.
 - **Startup applies but never saves.** `New` calls `applyConfig` alone; rewriting the config on every
   boot is a chance to corrupt it that buys nothing.
 - **Reading and writing the config file belongs to `configfile`**, atomic write included. This
   package decides *when* to load and save, not how.
 - **`configMu` stays here, not in `configfile` or `engine`.** It serializes a four-step transaction —
-  read the engine's config, merge a form over it, apply, persist — and a lock belongs with the widest
-  thing it serializes. `configfile` never reads the engine so it cannot cover the read;
-  `engine.configureMu` covers only the apply, and "overlay a form onto the current config" is an
-  HTTP-layer transaction.
+  read the desired config, merge a form over it, apply, persist — and a lock belongs with the widest
+  thing it serializes. `configfile` never reads the engine so it cannot cover the read; the engine
+  covers only the apply, and "overlay a form onto the desired config" is an HTTP-layer transaction.
 - **Port validity is `engine.Config.Validate`'s call and nowhere else.** `configfile.Load` does not
   clamp: it unmarshals over a defaults struct, so an absent port already keeps the default and a
   clamp could only fire on a value someone explicitly wrote. Two policies for one rule end up

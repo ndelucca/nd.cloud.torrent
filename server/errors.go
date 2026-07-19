@@ -47,6 +47,14 @@ func classify(err error) (int, string) {
 		return ae.status, sentence(ae.Error())
 	}
 	switch {
+	// Not a failure at all. The config was accepted and written; it just is not
+	// live yet. Returning 2xx here is deliberate — reconfigure passes the error
+	// up so this can say so, and finishAPI reads the *status*, not err != nil,
+	// to decide whether the outcome was good.
+	case errors.Is(err, engine.ErrRestartRequired):
+		return http.StatusOK, "Saved. Restart to apply it — most settings are " +
+			"fixed while the torrent client is running."
+
 	// Caused by the request.
 	case errors.Is(err, engine.ErrInvalidInput),
 		errors.Is(err, fetch.ErrInvalidURL),

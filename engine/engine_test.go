@@ -176,15 +176,50 @@ func TestStopTorrentClearsHandle(t *testing.T) {
 	}
 }
 
-// TestReconfigureSamePort covers a bug that made the most common settings
-// change impossible.
+// TestConfigureAppliesAutoStartLive covers the one field that can change on a
+// running client, and the fact that changing it does not disturb the client.
 //
-// Configure originally built the replacement client before closing the old one,
-// so that a validation or bind failure left the running client untouched. But
-// the old client holds the listen port, so creating a new one on the SAME port
-// always failed with "address already in use" — and keeping the port is what
-// happens whenever you change any *other* setting.
-func TestReconfigureSamePort(t *testing.T) {
+// AutoStart is the only setting anacrolix never sees: infoArrived is its sole
+// reader. Everything else is baked into the client at construction, so a rebuild
+// for AutoStart would drop and re-add every torrent for a value the client has
+// no opinion about.
+func TestConfigureAppliesAutoStartLive(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	base := Config{DownloadDirectory: t.TempDir(), EnableUpload: true}
+	base.IncomingPort = mustConfigure(t, e, base)
+
+	e.mu.Lock()
+	before := e.client
+	e.mu.Unlock()
+
+	changed := base
+	changed.AutoStart = !base.AutoStart
+	if err := e.Configure(changed); err != nil {
+		t.Fatalf("changing AutoStart must not need a restart, got: %v", err)
+	}
+	if got := e.Config(); got.AutoStart != changed.AutoStart {
+		t.Error("AutoStart was not applied")
+	}
+
+	e.mu.Lock()
+	after := e.client
+	e.mu.Unlock()
+	if before != after {
+		t.Error("the client was rebuilt for a field it never reads")
+	}
+}
+
+// TestConfigureRejectsChangesNeedingARestart covers everything the client bakes
+// in at construction.
+//
+// None of these can be applied to a running client: DataDir is read once to
+// build the default storage; NoUpload, Seed and HeaderObfuscationPolicy are read
+// live but from a struct the client's own goroutines touch with no lock we hold;
+// IncomingPort is the listening socket. Reporting is the honest option — the
+// alternative is a setting that appears to save and does nothing.
+func TestConfigureRejectsChangesNeedingARestart(t *testing.T) {
 	e := New()
 	defer e.Close()
 
@@ -192,27 +227,67 @@ func TestReconfigureSamePort(t *testing.T) {
 	base := Config{DownloadDirectory: dir, EnableUpload: true}
 	base.IncomingPort = mustConfigure(t, e, base)
 
-	// Same port, different settings — the case that used to always fail.
-	changed := base
-	changed.EnableUpload = false
-	if err := e.Configure(changed); err != nil {
-		t.Fatalf("reconfigure on the same port must succeed, got: %v", err)
-	}
-	if got := e.Config(); got.EnableUpload {
-		t.Error("the new setting was not applied")
+	for name, mutate := range map[string]func(*Config){
+		"port":       func(c *Config) { c.IncomingPort = testutil.FreePort(t) },
+		"directory":  func(c *Config) { c.DownloadDirectory = t.TempDir() },
+		"upload":     func(c *Config) { c.EnableUpload = !c.EnableUpload },
+		"seeding":    func(c *Config) { c.EnableSeeding = !c.EnableSeeding },
+		"encryption": func(c *Config) { c.DisableEncryption = !c.DisableEncryption },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if err := e.Configure(changed); !errors.Is(err, ErrRestartRequired) {
+				t.Fatalf("Configure(%s changed) = %v, want ErrRestartRequired", name, err)
+			}
+			if got := e.Config(); got != base {
+				t.Errorf("a rejected change altered the live config: %+v", got)
+			}
+			e.mu.Lock()
+			live := e.client != nil
+			e.mu.Unlock()
+			if !live {
+				t.Error("a rejected change took the client down")
+			}
+		})
 	}
 
-	// And again, to prove it is repeatable rather than working once.
-	changed.EnableSeeding = true
-	if err := e.Configure(changed); err != nil {
-		t.Fatalf("second reconfigure on the same port: %v", err)
+	// Re-applying the identical config is a no-op, not a restart request: a
+	// settings form resubmitting every field unchanged must not report one.
+	if err := e.Configure(base); err != nil {
+		t.Errorf("re-applying the same config = %v, want nil", err)
 	}
+}
 
-	// A port change must still work.
-	moved := changed
-	moved.IncomingPort = testutil.FreePort(t)
-	if err := e.Configure(moved); err != nil {
-		t.Fatalf("reconfigure onto a new port: %v", err)
+// TestNeedsRestart is the table the function above cannot be read off. It is
+// pure — no ports, no wall clock — and it is the one piece here whose failure
+// mode is silent: a new Config field that nobody adds to a list would simply
+// stop requiring a restart.
+func TestNeedsRestart(t *testing.T) {
+	base := Config{
+		DownloadDirectory: "/d", IncomingPort: 1234,
+		EnableUpload: true, EnableSeeding: true,
+		DisableEncryption: true, AutoStart: true,
+	}
+	for name, tc := range map[string]struct {
+		mutate func(*Config)
+		want   bool
+	}{
+		"identical":         {func(*Config) {}, false},
+		"AutoStart":         {func(c *Config) { c.AutoStart = !c.AutoStart }, false},
+		"DownloadDirectory": {func(c *Config) { c.DownloadDirectory = "/other" }, true},
+		"IncomingPort":      {func(c *Config) { c.IncomingPort = 4321 }, true},
+		"EnableUpload":      {func(c *Config) { c.EnableUpload = !c.EnableUpload }, true},
+		"EnableSeeding":     {func(c *Config) { c.EnableSeeding = !c.EnableSeeding }, true},
+		"DisableEncryption": {func(c *Config) { c.DisableEncryption = !c.DisableEncryption }, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			next := base
+			tc.mutate(&next)
+			if got := needsRestart(base, next); got != tc.want {
+				t.Errorf("needsRestart(%s) = %t, want %t", name, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -239,89 +314,6 @@ func TestReconfigureRejectsBadConfigWithoutStopping(t *testing.T) {
 	}
 }
 
-// TestEvictForRebindPicksTheTeardownOrder pins the decision Configure makes
-// before it touches anything, without needing a real rebind to observe it.
-//
-// A nil return means "the running client keeps its port, so build the
-// replacement first and only swap if that succeeds". A non-nil return means
-// the caller now owns the old client and must close it before binding.
-func TestEvictForRebindPicksTheTeardownOrder(t *testing.T) {
-	e := New()
-	defer e.Close()
-
-	// Nothing configured yet: there is nothing to evict.
-	if got := e.evictForRebind(4242); got != nil {
-		t.Error("evicted a client that does not exist")
-	}
-
-	base := Config{DownloadDirectory: t.TempDir()}
-	base.IncomingPort = mustConfigure(t, e, base)
-
-	// A different port: the running client keeps serving while the replacement
-	// is built, so it must NOT be detached here.
-	if got := e.evictForRebind(base.IncomingPort + 1); got != nil {
-		t.Error("a port change must leave the running client in place")
-	}
-	if e.client == nil {
-		t.Fatal("the running client was detached anyway")
-	}
-
-	// The same port: the old client owns it, so it has to go first.
-	evicted := e.evictForRebind(base.IncomingPort)
-	if evicted == nil {
-		t.Fatal("keeping the port must detach the client that holds it")
-	}
-	if e.client != nil {
-		t.Error("an evicted client must be cleared, so operations report ErrNotConfigured")
-	}
-	closeClient(evicted)
-}
-
-// TestConcurrentConfigure covers what configureMu is for.
-//
-// mu alone was not enough: the same-port path releases mu between dropping the
-// old client and installing the replacement, and a second caller entering that
-// window saw client == nil, took the non-retrying branch, and stole the port —
-// leaving the first caller to spin the whole rebind budget and fail.
-//
-// It asserts only what serialization actually guarantees. Which of the two
-// callers wins is a race by design, and asserting a winner would encode that
-// race as a requirement.
-func TestConcurrentConfigure(t *testing.T) {
-	e := New()
-	defer e.Close()
-
-	dir := t.TempDir()
-	base := Config{DownloadDirectory: dir}
-	base.IncomingPort = mustConfigure(t, e, base)
-
-	// Same port, so both callers take the evict-then-rebind path and contend
-	// for exactly the window configureMu exists to close.
-	seeding, uploading := base, base
-	seeding.EnableSeeding = true
-	uploading.EnableUpload = true
-
-	errs := make(chan error, 2)
-	for _, c := range []Config{seeding, uploading} {
-		go func() { errs <- e.Configure(c) }()
-	}
-	for i := 0; i < 2; i++ {
-		if err := <-errs; err != nil {
-			t.Errorf("concurrent Configure: %v", err)
-		}
-	}
-
-	// One of the two must have won outright — not a mixture of both.
-	got := e.Config()
-	if got != seeding && got != uploading {
-		t.Errorf("live config is neither input, so the two interleaved: %+v", got)
-	}
-	// And the engine must still be usable afterwards.
-	if err := e.Configure(base); err != nil {
-		t.Errorf("engine unusable after concurrent configures: %v", err)
-	}
-}
-
 // mustConfigure configures e on a free port, retrying if the bind loses a race.
 //
 // testutil.FreePort closes its probe listeners before the caller binds, so
@@ -334,7 +326,7 @@ func TestConcurrentConfigure(t *testing.T) {
 // c.IncomingPort is overwritten on each attempt, so the port that was actually
 // bound is returned. A test that reconfigures on "the same port" must write it
 // back into its own config, or it asks for a port the engine is not holding and
-// silently exercises the port-change path instead.
+// silently exercises the restart-required path instead.
 func mustConfigure(t *testing.T, e *Engine, c Config) int {
 	t.Helper()
 	var err error
@@ -349,6 +341,54 @@ func mustConfigure(t *testing.T, e *Engine, c Config) int {
 	}
 	t.Fatalf("configure kept losing the port race: %v", err)
 	return 0
+}
+
+// TestConcurrentConfigure pins that Configure is atomic: the live config is
+// always one whole input, never a mixture of two.
+//
+// Configure now runs entirely under mu, so this is nearly free — which is the
+// point. It used to release mu midway through rebuilding the client, and a
+// second caller entering that window saw client == nil and stole the port. This
+// is the test that fails if anything ever moves work back outside the lock.
+//
+// It asserts only what serialization guarantees. Which caller wins is a race by
+// design, and asserting a winner would encode that race as a requirement.
+func TestConcurrentConfigure(t *testing.T) {
+	e := New()
+	defer e.Close()
+
+	base := Config{DownloadDirectory: t.TempDir()}
+	base.IncomingPort = mustConfigure(t, e, base)
+
+	// AutoStart is the only field that applies live, so it is the only one two
+	// callers can both succeed at.
+	on, off := base, base
+	on.AutoStart = true
+	off.AutoStart = false
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		c := on
+		if i%2 == 1 {
+			c = off
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := e.Configure(c); err != nil {
+				t.Errorf("concurrent Configure: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got := e.Config()
+	if got != on && got != off {
+		t.Errorf("live config is neither input, so two calls interleaved: %+v", got)
+	}
+	if err := e.Configure(base); err != nil {
+		t.Errorf("engine unusable after concurrent configures: %v", err)
+	}
 }
 
 // TestConfigureAfterCloseDoesNotLeak covers an engine that had no closed state.
@@ -381,22 +421,19 @@ func TestConfigureAfterCloseDoesNotLeak(t *testing.T) {
 	}
 }
 
-// TestCloseDuringConfigure covers the same defect in the form that is actually
-// reachable in normal operation: Ctrl-C while /api/configure is rebinding.
+// TestCloseDuringConfigure is the shutdown race in the form that is actually
+// reachable: Ctrl-C while /api/configure is in flight.
 //
-// The same-port path releases mu between evicting the old client and installing
-// the replacement, and Close did not take configureMu — so it observed
-// client == nil, reported a clean shutdown, and the rebind installed its client
-// afterwards. Whatever the interleaving, once Close returns no client may
-// remain.
+// Whatever the interleaving, once Close returns no client may remain — a
+// surviving one holds a listening socket, goroutines and a DHT node that
+// nothing will ever release.
 func TestCloseDuringConfigure(t *testing.T) {
 	e := New()
 	base := Config{DownloadDirectory: t.TempDir()}
 	base.IncomingPort = mustConfigure(t, e, base)
 
-	// Same port, so this takes the evict-then-rebind path.
 	changed := base
-	changed.EnableSeeding = true
+	changed.AutoStart = !base.AutoStart
 
 	done := make(chan error, 1)
 	go func() { done <- e.Configure(changed) }()

@@ -42,12 +42,6 @@ var (
 // Every exported method is safe for concurrent use. All access to client, config
 // and ts happens under mu.
 type Engine struct {
-	// configureMu serializes Configure end to end. mu alone is not enough: the
-	// same-port path releases mu between dropping the old client and installing
-	// the replacement, and a second caller entering that window sees
-	// client == nil, takes the non-retrying branch and steals the port.
-	configureMu sync.Mutex
-
 	mu     sync.Mutex
 	client *torrent.Client
 	config Config
@@ -144,43 +138,74 @@ func (e *Engine) Config() Config {
 	return e.config
 }
 
-// Configure replaces the underlying client. It validates and builds the
-// replacement *before* tearing down the existing client, so a rejected config
-// leaves the engine untouched and still running.
+// ErrRestartRequired reports a setting that cannot be applied to a running
+// client. It is not a failure of the request: the server persists the config
+// anyway, so the change takes effect on the next start.
+var ErrRestartRequired = errors.New("this setting needs a restart to take effect")
+
+// Configure applies a configuration.
+//
+// Everything the client bakes in at construction is fixed for the process
+// lifetime, verified against anacrolix/torrent v1.59.1:
+//
+//   - DataDir is read exactly once, in Client.init, to build the default
+//     storage. Writing it on a live client is a silent no-op.
+//   - NoUpload, Seed and HeaderObfuscationPolicy are read live, but from a
+//     *ClientConfig the client aliases (Client.init keeps the caller's pointer)
+//     and its own goroutines read without any lock we hold. Writing them is a
+//     data race, and only partly effective anyway: HeaderObfuscationPolicy is
+//     snapshotted per dial.
+//   - IncomingPort is the listening socket.
+//
+// There are no Client setters for any of them. So a change to any one reports
+// ErrRestartRequired rather than pretending. AutoStart is the exception, and the
+// only one: the client never sees it — infoArrived is the sole reader — so it
+// applies live.
+//
+// The alternative, rebuilding the client in place, is what this replaces. It
+// needed a second mutex, an evict-then-retry dance against a listening socket
+// the kernel had not released yet, and a re-add of every cached torrent into the
+// replacement — and it silently dropped bytes already on disk when the download
+// directory moved.
 func (e *Engine) Configure(c Config) error {
+	// Validation first, before the restart check: a config that is invalid on
+	// its own terms must report *that*, not "this needs a restart". The server
+	// test for an out-of-range port in the config file depends on this order.
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	e.configureMu.Lock()
-	defer e.configureMu.Unlock()
 
-	// Checked under configureMu, which Close holds for its whole duration, so a
-	// Close that has begun cannot be overtaken by a Configure that has not.
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.ctx.Err() != nil {
 		return ErrClosed
 	}
 
-	tc := clientConfig(c)
-
-	// Teardown order depends on whether the listen port is changing, so the
-	// old client is detached first and the decision is made once.
-	evicted := e.evictForRebind(c.IncomingPort)
-	// e.ctx is cancelled only by Close. A rebind must never be cancellable by
-	// the request that triggered it: aborting between evicting the old client
-	// and installing the new one leaves the engine with none, so a user
-	// navigating away mid-save would take their own torrent client down.
-	client, err := buildClient(e.ctx, tc, evicted, c.IncomingPort)
-	if err != nil {
-		return err
+	if e.client != nil {
+		if needsRestart(e.config, c) {
+			return fmt.Errorf("%w", ErrRestartRequired)
+		}
+		e.config = c // AutoStart, and nothing else reaches this line
+		return nil
 	}
 
-	replaced := e.installClient(client, c)
-
-	// Only non-nil on the port-changed path; the same-port path already closed
-	// and waited on the previous client. Closing last means a failed build
-	// above never took the running client down with it.
-	closeClient(replaced)
+	client, err := torrent.NewClient(clientConfig(c))
+	if err != nil {
+		return fmt.Errorf("failed to start torrent client: %w", err)
+	}
+	e.client = client
+	e.config = c
 	return nil
+}
+
+// needsRestart reports whether moving from old to next requires a new client.
+//
+// Written as "copy across what applies live, then compare" rather than as a list
+// of fields, so a field added to Config requires a restart by default. That is
+// the safe direction, and it is not something anyone has to remember.
+func needsRestart(old, next Config) bool {
+	old.AutoStart = next.AutoStart
+	return old != next
 }
 
 // clientConfig translates our Config into anacrolix's. Pure, so the mapping can
@@ -196,137 +221,19 @@ func clientConfig(c Config) *torrent.ClientConfig {
 	return tc
 }
 
-// evictForRebind detaches the running client if the new config keeps its port,
-// and returns it. A nil return means the caller may build the replacement while
-// the current client keeps running.
-//
-// Different port: build the replacement first, so a failure leaves the running
-// client untouched.
-//
-// Same port: the old client is bound to it, so a new one cannot be created
-// until it lets go — building first fails with "address already in use" every
-// single time. That is the common case, since any settings change that is not
-// the port keeps the port.
-func (e *Engine) evictForRebind(newPort int) *torrent.Client {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.client == nil || e.config.IncomingPort != newPort {
-		return nil
-	}
-	evicted := e.client
-	e.client = nil
-	return evicted
-}
-
-// buildClient creates the replacement. If evicted is non-nil it is closed and
-// waited on first, and the bind is retried.
-//
-// ctx is the engine's own, cancelled only by Close, so shutdown does not have
-// to wait out a rebind that is retrying against a port the kernel has not
-// released yet.
-func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent.Client, port int) (*torrent.Client, error) {
-	if evicted == nil {
-		client, err := torrent.NewClient(tc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to start torrent client: %w", err)
-		}
-		return client, nil
-	}
-
-	evicted.Close()
-	select {
-	case <-evicted.Closed():
-	case <-ctx.Done():
-		return nil, ErrClosed
-	}
-	// Closed() only reports that the client finished shutting down; the kernel
-	// can hold the listening socket a moment longer, so a bind right after it
-	// intermittently fails with EADDRINUSE. Retrying until it binds is both
-	// faster in the common case and reliable, which a fixed sleep is not.
-	client, err := newClientWithRetry(ctx, tc)
-	if err != nil {
-		if errors.Is(err, ErrClosed) {
-			return nil, err // shutting down; not a configuration failure
-		}
-		// The old client is already gone, so there is nothing to fall back to.
-		// Leaving e.client nil is honest: every operation now reports
-		// ErrNotConfigured rather than acting on a dead client.
-		return nil, fmt.Errorf("failed to restart torrent client on port %d (the previous "+
-			"client has been stopped): %w", port, err)
-	}
-	return client, nil
-}
-
-// installClient publishes the new client and config, and re-adds every cached
-// torrent to it. It returns the client it displaced (nil on the same-port path,
-// which already closed it).
-func (e *Engine) installClient(client *torrent.Client, c Config) *torrent.Client {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	replaced := e.client
-	e.client = client
-	e.config = c
-
-	// Every cached handle points into the old client. Re-add the torrents we
-	// know about so a settings change does not silently stop all downloads.
-	for _, t := range e.ts {
-		t.t = nil
-		if t.spec == nil {
-			continue
-		}
-		tt, _, err := client.AddTorrentSpec(t.spec)
-		if err != nil {
-			// Clearing Started matters: left set, the torrent shows as running
-			// against a client that never accepted it, with t.t nil, so nothing
-			// would ever move it again.
-			log.Printf("engine: failed to re-add %s: %s", t.InfoHash, err)
-			t.Started = false
-			continue
-		}
-		t.t = tt
-		if tt.Info() != nil {
-			if t.Started {
-				tt.DownloadAll()
-			}
-			continue
-		}
-		// Metadata has not arrived. The original watcher is parked on the OLD
-		// handle and will correctly decline to act once it fires, so without a
-		// fresh one this torrent would never start — permanently, for the
-		// lifetime of the process.
-		e.watchInfoLocked(t.InfoHash, tt)
-	}
-	return replaced
-}
-
-// closeClient shuts a displaced client down, logging rather than returning its
-// errors: the replacement is already live and nothing useful can be done here.
-func closeClient(client *torrent.Client) {
-	if client == nil {
-		return
-	}
-	for _, err := range client.Close() {
-		log.Printf("engine: error closing previous client: %s", err)
-	}
-}
-
 // Close shuts the engine down and releases the underlying client. It is
 // idempotent, and once it has run the engine stays closed: Configure reports
 // ErrClosed rather than building a client nothing would ever release.
 func (e *Engine) Close() error {
-	// Signal first. An in-flight Configure may be seconds into a rebind, and
-	// this is what lets it give up rather than making shutdown wait it out.
+	// Cancel before taking mu, which is what makes the wg.Wait below safe — see
+	// the note there.
 	e.cancel()
 
-	// Then serialize against it. Without this lock, Close observes client == nil
-	// mid-rebind — the same-port path having already evicted it — reports a clean
-	// shutdown, and the Configure still in flight installs a live client, with
-	// its listening socket, goroutines and DHT, into an engine everyone believes
-	// is down.
-	e.configureMu.Lock()
-	defer e.configureMu.Unlock()
-
+	// Configure runs entirely under mu, so there is no window in which it holds
+	// a half-built client this could miss. Taking mu here is therefore enough to
+	// serialize against it: either Configure installed its client before this
+	// point and the client is released below, or it runs after and finds the
+	// context already cancelled.
 	e.mu.Lock()
 	client := e.client
 	e.client = nil
@@ -594,39 +501,4 @@ func str2ih(str string) (metainfo.Hash, error) {
 		return ih, fmt.Errorf("%w: infohash is not a hex string", ErrInvalidInput)
 	}
 	return ih, nil
-}
-
-// rebindTimeout bounds how long Configure waits for a just-closed listen port
-// to become bindable again.
-const rebindTimeout = 5 * time.Second
-
-// newClientWithRetry retries until the client starts or the budget runs out.
-//
-// Only used when replacing a client on the same port, where the one transient
-// failure worth waiting out is the kernel not having released the listening
-// socket yet. It retries on any error rather than matching EADDRINUSE, because
-// that errno differs across the platforms this builds for (Windows reports
-// WSAEADDRINUSE); the cost of being wrong is a few seconds before a genuinely
-// bad config is reported, which is the better trade than a retry that silently
-// does nothing on one platform.
-func newClientWithRetry(ctx context.Context, tc *torrent.ClientConfig) (*torrent.Client, error) {
-	deadline := time.Now().Add(rebindTimeout)
-	delay := 20 * time.Millisecond
-	for {
-		client, err := torrent.NewClient(tc)
-		if err == nil {
-			return client, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ErrClosed
-		case <-time.After(delay):
-		}
-		if delay < 200*time.Millisecond {
-			delay *= 2
-		}
-	}
 }

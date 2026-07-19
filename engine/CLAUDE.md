@@ -7,8 +7,8 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 
 ## Ownership
 
-- `engine.go` — the `Engine` type: client lifecycle (`Configure` and its steps `clientConfig`,
-  `evictForRebind`, `buildClient`, `installClient`, `closeClient`), adding torrents (`NewMagnet`,
+- `engine.go` — the `Engine` type: client lifecycle (`Configure`, `needsRestart`, `clientConfig`),
+  adding torrents (`NewMagnet`,
   `NewTorrentFile`, `addSpec`), the metadata watchers (`watchInfoLocked`, `infoArrived`), the `ts`
   cache and its sampler (`GetTorrents`, `refresh`, `sampleLoop`), and start/stop/delete
 - `torrent.go` — the `Torrent` and `File` view models, `update`, `sample`, `clone`, `percent`
@@ -36,31 +36,35 @@ Boundaries:
 Locking and lifecycle:
 
 - Every exported method takes `e.mu`; helpers suffixed `Locked` assume the caller holds it.
-- **`Configure` is serialized end to end by `configureMu`.** `mu` alone is not enough: the same-port
-  path releases `mu` between dropping the old client and installing the replacement, and a second
-  caller in that window sees `client == nil`, takes the non-retrying branch and steals the port.
-- **`Close` is a one-way door and takes `configureMu`.** Without that lock it observes
-  `client == nil` mid-rebind, reports a clean shutdown, and the in-flight `Configure` then installs a
-  live client — socket, goroutines, DHT — into an engine everyone believes is down. `Configure` after
-  `Close` returns `ErrClosed`. `Close` also clears `ts`, so a closed engine reports no torrents.
+- **`Configure` runs entirely under `mu`**, so it is atomic and needs no second lock. Keep it that
+  way: the moment work moves outside the lock there is a window in which the engine has no client,
+  and a concurrent caller entering it steals the port.
+- **`Close` is a one-way door.** `Configure` after `Close` returns `ErrClosed`, checked under `mu`
+  after `cancel`, so a `Configure` racing shutdown either installed its client before `Close` took
+  the lock — and `Close` releases it — or finds the context already cancelled. `Close` also clears
+  `ts`, so a closed engine reports no torrents.
 - **`Close` must release `mu` before `wg.Wait()`**: the sampler takes `mu` every tick, so waiting
   under it deadlocks.
 - `wg.Add` is safe against that `Wait` because watchers register under `mu` after an `e.ctx.Err()`
   check and `Close` cancels before taking `mu`, and because the sampler's `Add` is in `New`, before
   the pointer is reachable. Unsynchronized `Add` is the documented "Add called concurrently with
   Wait" misuse and panics at a zero counter.
-- **A rebind must never be cancellable by the request that triggered it.** `Configure` takes no
-  context and must not grow one: aborting between evicting the old client and installing the
-  replacement leaves the engine with none, so a user navigating away mid-save takes their own client
-  down. The only cancellation is `e.ctx`, cancelled only by `Close`, so shutdown does not wait out a
-  retrying rebind.
-- The order of `Configure`'s four steps is the contract, not an implementation detail. Keep them
-  separate — the ordering is only reviewable when each step reads on its own.
-- Teardown order depends on whether the listen port changes. Different port: build the replacement
-  first, so a failure leaves the running client untouched. Same port (the common case, since any
-  other settings change keeps the port): close and wait on the old client first, or the bind fails
-  with "address already in use". `Closed()` is necessary but not sufficient — the kernel releases the
-  socket slightly later — hence the bounded `rebindTimeout` retry.
+- **There is exactly one path that builds a client**, and it runs once: the first `Configure`, when
+  `client == nil`. Nothing rebuilds a live client.
+- **Everything the client bakes in at construction is fixed for the process lifetime**, and
+  `Configure` reports `ErrRestartRequired` rather than pretending otherwise. Verified against
+  `anacrolix/torrent` v1.59.1: `DataDir` is read exactly once, in `Client.init`, to build the default
+  storage; `NoUpload`, `Seed` and `HeaderObfuscationPolicy` are read live but from a `*ClientConfig`
+  the client *aliases* and its own goroutines touch with no lock we hold, so writing them is a data
+  race and only partly effective anyway (`HeaderObfuscationPolicy` is snapshotted per dial); and
+  `IncomingPort` is the listening socket. There are no `Client` setters for any of them.
+- **`AutoStart` is the sole exception and applies live**, because the client never sees it —
+  `infoArrived` is its only reader.
+- **`needsRestart` is written as "copy across what applies live, then compare"**, not as a list of
+  fields, so a field added to `Config` requires a restart by default. That is the safe direction and
+  nobody has to remember it.
+- `ErrRestartRequired` is not a failed request: the server persists the config anyway and reports a
+  restart, because refusing to save would leave no way to change the listen port at all.
 
 Torrents:
 
@@ -69,8 +73,6 @@ Torrents:
   Registration is unconditional, not gated on `AutoStart`: the watcher is also what calls
   `DownloadAll` for a torrent started before its metadata landed, which `startLocked` cannot do.
   Re-added magnets need a fresh watcher — the original is parked on the previous handle.
-- If `installClient` fails to re-add a torrent it clears `Started`. Left set, the torrent shows as
-  running against a client that never accepted it, with `t.t` nil, so nothing would ever move it.
 - Stopping is destructive: `StopTorrent` drops the underlying torrent and clears `t.t` rather than
   pausing. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
 - Start/stop is per torrent, never per file: `anacrolix/torrent` has no per-file pause that composes
@@ -94,8 +96,8 @@ Sampling:
 - `Downloaded`, `updatedAt` and `DownloadRate` are one sample — `Torrent.sample` moves all three or
   none. Its `dt <= 0` guard is arithmetic safety, not debouncing: one `refresh` pass shares a
   timestamp, and a zero interval yields `+Inf`, which fails `json.Marshal` and freezes the UI.
-- Across a rebind the sampler skips ticks where `client == nil`, so the next tick spans ~2s. That
-  stays correct because the rate comes from real timestamps; do not "optimise" `sample` into
+- Before the first `Configure` the sampler ticks with `client == nil` and `refresh` returns at once.
+  Rates come from real timestamps rather than the assumed cadence, so do not "optimise" `sample` into
   `db / SampleInterval`.
 - **`Sampled` is a hint, not a queue.** One buffered slot, non-blocking send, never closed. The
   non-blocking send is load-bearing in two ways: a reader that is slow or absent must not stall

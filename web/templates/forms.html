@@ -49,20 +49,31 @@ It lives outside every swap target. idiomorph's ignoreActiveValue only protects
 the element that currently has focus — a field the user typed into and then
 clicked away from would be reverted by the next morph.
 */}}
+{{/* The values here are the *desired* config, not what the engine is running.
+     Everything except Auto-start is baked into the torrent client when it is
+     built, so saving one writes it to disk and reports that a restart is needed;
+     rendering the live config instead would show the old value straight back at
+     the user after a save that did work. */}}
 {{define "config"}}
 <form class="config-form" id="config-form"
       hx-post="/api/configure" hx-target="#config-status" hx-swap="innerHTML">
   <div class="field">
     <label for="cfg-dir">Download directory</label>
     <input id="cfg-dir" name="DownloadDirectory" type="text" required
-           value="{{.DownloadDirectory}}" spellcheck="false">
+           value="{{.DownloadDirectory}}" spellcheck="false"
+           aria-describedby="cfg-restart-note">
   </div>
 
   <div class="field">
     <label for="cfg-port">Incoming port</label>
     <input id="cfg-port" name="IncomingPort" type="number" min="1" max="65535" required
-           value="{{.IncomingPort}}">
+           value="{{.IncomingPort}}" aria-describedby="cfg-restart-note">
   </div>
+
+  <p id="cfg-restart-note" class="muted">
+    Everything except Auto-start takes effect on the next start: the torrent
+    client fixes them when it is created.
+  </p>
 
   <fieldset class="field-group">
     <legend>Options</legend>

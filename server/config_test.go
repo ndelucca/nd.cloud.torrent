@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ndelucca/nd.cloud.torrent/configfile"
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/internal/testutil"
 )
 
@@ -109,11 +111,15 @@ func TestBadPortInConfigIsReported(t *testing.T) {
 
 // TestConcurrentConfigureKeepsBothFields covers a lost update.
 //
-// /api/configure is read-merge-apply: it reads the engine's current config,
-// overlays the submitted fields and applies the result. The engine's own lock
-// serializes the apply but not the read the merge starts from, so two saves in
-// flight together could each begin from the same config and the second would
-// silently undo the first. configMu covers the whole sequence.
+// /api/configure is read-merge-apply-persist: it reads the desired config,
+// overlays the submitted fields, hands the result to the engine and writes it.
+// Without one lock over the whole sequence, two saves in flight together each
+// begin from the same config and the second silently undoes the first.
+//
+// It asserts on the *persisted* config rather than on the engine's. Both fields
+// here need a restart, so the engine deliberately does not apply them — what has
+// to survive the race is what was saved, which is also what the settings form
+// will render back.
 //
 // Probabilistic, so it loops.
 func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
@@ -121,10 +127,9 @@ func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
 	// kernel for UDP ports and would fail on that instead of on the bug.
 	s := newTestServer(t)
 	h := s.handler()
-	// The response is checked rather than discarded. Every one of these is a real
-	// same-port engine rebind, so a round that exhausts rebindTimeout answers 500
-	// — and discarding that surfaced it as "setup: reset did not take" on the
-	// *next* round, which points at the wrong thing entirely.
+	// The response is checked rather than discarded, so a round that fails for
+	// an unrelated reason says so here instead of surfacing as "setup: reset did
+	// not take" on the *next* round, which points at the wrong thing entirely.
 	post := func(t *testing.T, body string) {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
@@ -140,13 +145,20 @@ func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
 		}
 	}
 
-	// Ten rounds, not twenty. Each round is three same-port rebinds, and a
-	// rebind waits on the kernel releasing the listening socket — this test was
-	// most of the package's wall time. Ten rounds still fails reliably with
-	// configMu removed, which is the only thing the count has to buy.
+	// saved reads back what is on disk, which is the contract the form and the
+	// next boot both depend on.
+	saved := func(t *testing.T) engine.Config {
+		t.Helper()
+		c, err := configfile.Load(s.opts.ConfigPath)
+		if err != nil {
+			t.Fatalf("reading back the saved config: %v", err)
+		}
+		return c
+	}
+
 	for i := 0; i < 10; i++ {
 		post(t, "EnableSeeding=false&DisableEncryption=false")
-		if c := s.engine.Config(); c.EnableSeeding || c.DisableEncryption {
+		if c := saved(t); c.EnableSeeding || c.DisableEncryption {
 			t.Fatalf("setup: reset did not take, got %+v", c)
 		}
 
@@ -156,10 +168,67 @@ func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
 		go func() { defer wg.Done(); post(t, "DisableEncryption=false&DisableEncryption=true") }()
 		wg.Wait()
 
-		got := s.engine.Config()
+		got := saved(t)
 		if !got.EnableSeeding || !got.DisableEncryption {
 			t.Fatalf("a concurrent save was lost on round %d: EnableSeeding=%v DisableEncryption=%v",
 				i, got.EnableSeeding, got.DisableEncryption)
 		}
+		// The form renders desired, so it must agree with the file.
+		if d := s.desiredConfig(); d.EnableSeeding != got.EnableSeeding ||
+			d.DisableEncryption != got.DisableEncryption {
+			t.Fatalf("round %d: desired and the file disagree; the settings form "+
+				"would render something that was never saved: desired=%+v file=%+v", i, d, got)
+		}
+	}
+}
+
+// TestConfigureNeedingRestartStillPersists is the whole reason
+// engine.ErrRestartRequired is not treated as a failure here.
+//
+// Most settings are fixed for the lifetime of a torrent client, so the engine
+// refuses to apply them. If the server also refused to *save* them, there would
+// be no way to change the listen port at all short of editing cloud-torrent.json
+// by hand — that removes the feature rather than deferring it.
+//
+// So: 200 with a message saying to restart, the value on disk, and the settings
+// form rendering what was saved rather than what is running.
+func TestConfigureNeedingRestartStillPersists(t *testing.T) {
+	s := newTestServer(t)
+	h := s.handler()
+
+	livePort := s.engine.Config().IncomingPort
+	newPort := testutil.FreePort(t)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/configure",
+		strings.NewReader("IncomingPort="+itoa(newPort)))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "http://"+r.Host)
+	r.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: saving a setting that needs a restart "+
+			"is not a failed request", rec.Code)
+	}
+	// The ok fragment, not the error one — the save worked.
+	if body := rec.Body.String(); !strings.Contains(body, "ok-msg") ||
+		!strings.Contains(strings.ToLower(body), "restart") {
+		t.Errorf("body = %q, want an api-ok fragment mentioning a restart", body)
+	}
+
+	if c, err := configfile.Load(s.opts.ConfigPath); err != nil {
+		t.Fatal(err)
+	} else if c.IncomingPort != newPort {
+		t.Errorf("saved IncomingPort = %d, want %d: the change was reported as "+
+			"accepted and never written", c.IncomingPort, newPort)
+	}
+	if got := s.desiredConfig().IncomingPort; got != newPort {
+		t.Errorf("the settings form would render port %d, but %d was saved",
+			got, newPort)
+	}
+	// And the running client is untouched, which is the honest half.
+	if got := s.engine.Config().IncomingPort; got != livePort {
+		t.Errorf("live port changed to %d; the client cannot rebind in place", got)
 	}
 }

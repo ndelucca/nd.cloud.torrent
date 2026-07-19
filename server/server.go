@@ -72,11 +72,21 @@ type Server struct {
 	ui     *web.UI
 	kickCh chan struct{}
 
-	// configMu serializes read-merge-apply on /api/configure. The engine's own
-	// lock covers the apply but not the read the merge starts from, so without
-	// this two concurrent saves each begin from the same config and the second
-	// silently undoes the first.
+	// configMu guards desired and serializes read-merge-apply-persist on
+	// /api/configure. The engine's own lock covers the apply but not the read
+	// the merge starts from, so without this two concurrent saves each begin
+	// from the same config and the second silently undoes the first.
 	configMu sync.Mutex
+	// desired is the configuration the user has asked for, which is what the
+	// file holds and what the settings form renders.
+	//
+	// It is deliberately NOT the same thing as engine.Config(), which is what is
+	// actually running. Most settings are fixed for the lifetime of a torrent
+	// client, so after saving one the two legitimately differ until a restart —
+	// they are two different facts, not two copies of one. Merging a form over
+	// the *live* config instead would drop every pending change on the next
+	// save, and the form would render the old value back at the user.
+	desired engine.Config
 
 	static http.Handler
 }
@@ -116,7 +126,7 @@ func New(o Options, version string) (*Server, error) {
 		Uptime:   s.startedAt,
 		Torrents: s.engine.GetTorrents,
 		Tree:     func() *files.Node { return files.List(s.downloadDir()) },
-		Config:   s.engine.Config,
+		Config:   s.desiredConfig,
 		Kick:     s.kick,
 	})
 	if err != nil {
@@ -131,9 +141,12 @@ func New(o Options, version string) (*Server, error) {
 	}
 	// applyConfig, not reconfigure: startup applies but never writes. Rewriting
 	// the config on every boot is a chance to corrupt it that buys nothing.
-	if _, err := s.applyConfig(c); err != nil {
+	applied, err := s.applyConfig(c)
+	if err != nil {
 		return nil, fmt.Errorf("initial configure failed: %w", err)
 	}
+	// No lock: New has not returned, so nothing else can reach this yet.
+	s.desired = applied
 	return s, nil
 }
 

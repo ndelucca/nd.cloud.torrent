@@ -32,22 +32,30 @@ func (s *Server) finishAPI(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("api %s: %s", r.URL.Path, err)
 		}
 	}
+	// The status decides, not err != nil. classify maps a non-nil error onto a
+	// 2xx when the request succeeded with something worth saying — saving a
+	// setting that needs a restart is the case — and that must render as an
+	// outcome, not as a failure.
+	ok := status < http.StatusBadRequest
 
 	// htmx wants HTML to swap. It also does not swap non-2xx responses by
 	// default, so the outcome is reported as a 200 fragment; the status codes
 	// stay intact for every other client.
 	if r.Header.Get("HX-Request") == "true" {
-		s.ui.WriteAPIResult(w, msg)
+		s.ui.WriteAPIResult(w, msg, ok)
 		return
 	}
 
-	if err != nil {
+	if !ok {
 		http.Error(w, msg, status)
 		return
 	}
+	if msg == "" {
+		msg = "OK"
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "OK")
+	fmt.Fprint(w, msg)
 }
 
 // readBody drains a request body under the size cap.
@@ -103,13 +111,17 @@ func (s *Server) handleConfigure(w http.ResponseWriter, r *http.Request) error {
 	if err := r.ParseForm(); err != nil {
 		return badRequest("malformed form body")
 	}
-	// Read, merge and apply under one lock. engine.configureMu serializes the
-	// apply, but not the read the merge is based on, so two concurrent saves
-	// could each start from the same config and the second would silently undo
-	// the first.
+	// Read, merge, apply and persist under one lock. The engine serializes its
+	// own apply but not the read the merge starts from, so without this two
+	// concurrent saves each begin from the same config and the second silently
+	// undoes the first.
+	//
+	// The merge base is s.desired, not the engine's live config: most settings
+	// need a restart, so the live config does not advance when one is saved, and
+	// merging over it would drop every pending change on the next save.
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	c, err := parseConfig(r.PostForm, s.engine.Config())
+	c, err := parseConfig(r.PostForm, s.desired)
 	if err != nil {
 		return err
 	}
