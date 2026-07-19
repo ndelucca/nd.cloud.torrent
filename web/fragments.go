@@ -120,12 +120,16 @@ func writeFragment(w http.ResponseWriter, status int, html string) {
 // WriteAPIResult renders the outcome of an /api/* call as an HTML fragment.
 //
 // This is the whole of the API layer's dependency on the template set. It takes
-// an error and calls Error() on it — it never inspects the type, so status
-// policy (apiError, statusFor) stays in the server where it belongs.
-func (u *UI) WriteAPIResult(w http.ResponseWriter, err error) {
-	name, msg := "api-ok", "Done."
-	if err != nil {
-		name, msg = "api-error", err.Error()
+// the message to display, not an error: deciding what a failure should say —
+// and what it should not say, since operational failures carry syscall strings
+// and filesystem paths — is the server's job, in classify. An empty message
+// means success.
+func (u *UI) WriteAPIResult(w http.ResponseWriter, msg string) {
+	name := "api-ok"
+	if msg == "" {
+		msg = "Done."
+	} else {
+		name = "api-error"
 	}
 	var buf bytes.Buffer
 	if rerr := u.renderer.tmpl.ExecuteTemplate(&buf, name, msg); rerr != nil {

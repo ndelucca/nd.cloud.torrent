@@ -29,7 +29,7 @@ const maxUploadBody = 32 << 20
 func (s *Server) addURI(r *http.Request, uri string) error {
 	switch {
 	case uri == "":
-		return badRequest("Nothing to add")
+		return badRequest("nothing to add")
 	case strings.HasPrefix(uri, "magnet:"):
 		return s.engine.NewMagnet(uri)
 	case strings.HasPrefix(uri, "http://"), strings.HasPrefix(uri, "https://"):
@@ -39,7 +39,7 @@ func (s *Server) addURI(r *http.Request, uri string) error {
 		}
 		return s.engine.NewTorrentFile(body)
 	default:
-		return badRequest("Expected a magnet: link or an http(s) URL to a .torrent")
+		return badRequest("expected a magnet: link or an http(s) URL to a .torrent")
 	}
 }
 
@@ -50,7 +50,7 @@ func (s *Server) addURI(r *http.Request, uri string) error {
 func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(maxUploadMemory); err != nil {
-		return badRequest("Malformed upload: %s", err)
+		return badRequest("malformed upload: %s", err)
 	}
 	defer func() {
 		if r.MultipartForm != nil {
@@ -60,7 +60,7 @@ func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) err
 
 	files := r.MultipartForm.File["torrent"]
 	if len(files) == 0 {
-		return badRequest("No .torrent file in the upload")
+		return badRequest("no .torrent file in the upload")
 	}
 
 	var added int
@@ -90,7 +90,7 @@ func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) err
 		if added == 0 {
 			return badRequest("%s", strings.Join(failures, "; "))
 		}
-		return badRequest("Added %d of %d; %s", added, len(files), strings.Join(failures, "; "))
+		return badRequest("added %d of %d; %s", added, len(files), strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -102,20 +102,20 @@ func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) err
 func parseConfig(r *http.Request, data []byte, current engine.Config) (engine.Config, error) {
 	v := formValues(r, data)
 	if v == nil {
-		return current, badRequest("Expected a form-encoded configuration")
+		return current, badRequest("expected a form-encoded configuration")
 	}
 
 	c := current
 	if s, ok := firstValue(v, "DownloadDirectory"); ok {
 		if strings.TrimSpace(s) == "" {
-			return c, badRequest("Download directory cannot be empty")
+			return c, badRequest("download directory cannot be empty")
 		}
 		c.DownloadDirectory = s
 	}
 	if s, ok := firstValue(v, "IncomingPort"); ok {
 		p, err := strconv.Atoi(s)
 		if err != nil {
-			return c, badRequest("Incoming port must be a number")
+			return c, badRequest("incoming port must be a number")
 		}
 		c.IncomingPort = p
 	}

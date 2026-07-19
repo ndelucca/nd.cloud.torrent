@@ -31,18 +31,18 @@ const (
 	maxRedirects = 5
 )
 
-// Sentinel errors. The server maps these onto HTTP status codes, and their
-// strings are shown to the user as-is, so they double as UI copy.
+// Sentinel errors. The server maps these onto HTTP status codes and decides
+// what the user is shown, so they are ordinary lowercase Go error strings.
 var (
 	// ErrInvalidURL is a caller mistake: a malformed URL or a scheme we will
 	// not follow.
-	ErrInvalidURL = errors.New("Invalid remote torrent URL")
+	ErrInvalidURL = errors.New("invalid remote torrent URL")
 	// ErrBlocked means the address resolved somewhere we refuse to go. It is
 	// wrapped by ErrUpstream at the dial site so callers need not special-case
 	// it; it exists so a test can assert why a fetch failed.
 	ErrBlocked = errors.New("refusing to connect to a non-public address")
 	// ErrUpstream is any failure attributable to the remote end.
-	ErrUpstream = errors.New("Failed to fetch remote torrent")
+	ErrUpstream = errors.New("failed to fetch remote torrent")
 )
 
 // Client downloads .torrent files. The zero value is ready to use and refuses

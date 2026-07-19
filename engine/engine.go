@@ -20,14 +20,20 @@ import (
 // infoHashHexLen is the length of a hex-encoded 20-byte BitTorrent infohash.
 const infoHashHexLen = 2 * metainfo.HashSize
 
-// Sentinel errors. These strings are surfaced to the user by the server, so they
-// double as UI copy — wrap them with %w rather than reformatting them.
+// Sentinel errors. The server maps these onto HTTP statuses and decides what
+// the user is shown, so they are ordinary lowercase Go error strings — wrap
+// them with %w.
 var (
-	ErrNotConfigured  = errors.New("Engine is not configured")
-	ErrMissingTorrent = errors.New("Missing torrent")
-	ErrAlreadyStarted = errors.New("Already started")
-	ErrAlreadyStopped = errors.New("Already stopped")
-	ErrClosed         = errors.New("Engine is closed")
+	ErrNotConfigured  = errors.New("engine is not configured")
+	ErrMissingTorrent = errors.New("missing torrent")
+	ErrAlreadyStarted = errors.New("already started")
+	ErrAlreadyStopped = errors.New("already stopped")
+	ErrClosed         = errors.New("engine is closed")
+	// ErrInvalidInput marks a failure the caller caused: a malformed magnet
+	// URI, unparseable .torrent bytes, a bad infohash. It is what lets the
+	// server show the wrapped detail — which is useful, bounded parser prose —
+	// while keeping a fixed message for everything else.
+	ErrInvalidInput = errors.New("invalid input")
 )
 
 // Engine wraps anacrolix/torrent in a server-friendly facade: one client, a
@@ -155,7 +161,7 @@ func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent
 	if evicted == nil {
 		client, err := torrent.NewClient(tc)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to start torrent client: %w", err)
+			return nil, fmt.Errorf("failed to start torrent client: %w", err)
 		}
 		return client, nil
 	}
@@ -180,7 +186,7 @@ func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent
 		// The old client is already gone, so there is nothing to fall back to.
 		// Leaving e.client nil is honest: every operation now reports
 		// ErrNotConfigured rather than acting on a dead client.
-		return nil, fmt.Errorf("Failed to restart torrent client on port %d (the previous "+
+		return nil, fmt.Errorf("failed to restart torrent client on port %d (the previous "+
 			"client has been stopped): %w", port, err)
 	}
 	return client, nil
@@ -281,7 +287,7 @@ func (e *Engine) Close() error {
 func (e *Engine) NewMagnet(magnetURI string) error {
 	spec, err := torrent.TorrentSpecFromMagnetUri(magnetURI)
 	if err != nil {
-		return fmt.Errorf("Invalid magnet URI: %w", err)
+		return fmt.Errorf("%w: invalid magnet URI: %s", ErrInvalidInput, err)
 	}
 	return e.addSpec(spec)
 }
@@ -291,11 +297,11 @@ func (e *Engine) NewMagnet(magnetURI string) error {
 func (e *Engine) NewTorrentFile(data []byte) error {
 	info, err := metainfo.Load(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("Invalid torrent file: %w", err)
+		return fmt.Errorf("%w: invalid torrent file: %s", ErrInvalidInput, err)
 	}
 	spec, err := torrent.TorrentSpecFromMetaInfoErr(info)
 	if err != nil {
-		return fmt.Errorf("Invalid torrent file: %w", err)
+		return fmt.Errorf("%w: invalid torrent file: %s", ErrInvalidInput, err)
 	}
 	return e.addSpec(spec)
 }
@@ -308,7 +314,7 @@ func (e *Engine) addSpec(spec *torrent.TorrentSpec) error {
 	}
 	tt, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
-		return fmt.Errorf("Torrent error: %w", err)
+		return fmt.Errorf("torrent error: %w", err)
 	}
 	t := e.upsertLocked(tt)
 	t.spec = spec
@@ -436,7 +442,7 @@ func (e *Engine) startLocked(t *Torrent) error {
 		}
 		tt, _, err := e.client.AddTorrentSpec(t.spec)
 		if err != nil {
-			return fmt.Errorf("Torrent error: %w", err)
+			return fmt.Errorf("torrent error: %w", err)
 		}
 		t.t = tt
 	}
@@ -487,10 +493,10 @@ func (e *Engine) DeleteTorrent(infohash string) error {
 func str2ih(str string) (metainfo.Hash, error) {
 	var ih metainfo.Hash
 	if len(str) != infoHashHexLen {
-		return ih, fmt.Errorf("Invalid infohash length (expected %d hex chars, got %d)", infoHashHexLen, len(str))
+		return ih, fmt.Errorf("%w: infohash must be %d hex chars, got %d", ErrInvalidInput, infoHashHexLen, len(str))
 	}
 	if _, err := hex.Decode(ih[:], []byte(str)); err != nil {
-		return ih, fmt.Errorf("Invalid infohash: not a hex string")
+		return ih, fmt.Errorf("%w: infohash is not a hex string", ErrInvalidInput)
 	}
 	return ih, nil
 }

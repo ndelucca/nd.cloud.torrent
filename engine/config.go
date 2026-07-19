@@ -18,10 +18,10 @@ type Config struct {
 // any existing client is torn down — see Engine.Configure.
 func (c Config) Validate() error {
 	if c.DownloadDirectory == "" {
-		return fmt.Errorf("Download directory is required")
+		return fmt.Errorf("%w: download directory is required", ErrInvalidInput)
 	}
 	if c.IncomingPort <= 0 || c.IncomingPort > 65535 {
-		return fmt.Errorf("Invalid incoming port (%d)", c.IncomingPort)
+		return fmt.Errorf("%w: invalid incoming port (%d)", ErrInvalidInput, c.IncomingPort)
 	}
 	return nil
 }

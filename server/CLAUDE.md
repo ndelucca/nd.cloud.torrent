@@ -11,7 +11,7 @@ delegated to `web`, `files`, `fetch` and `sysstat`.
 
 - `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `reconfigure`, `renderStats`, the `route` dispatcher and the middleware chain
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
-- `server_api.go` — `/api/*` actions (`add`, `torrentfile`, `configure`, `torrent`), `apiError`/`statusFor`, `checkSameOrigin`
+- `server_api.go` — `/api/*` actions (`add`, `torrentfile`, `configure`, `torrent`), `apiError`/`classify`/`sentence`, `checkSameOrigin`
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
 - Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), host sampling (`sysstat`), authentication and request logging (`internal/auth`, `internal/reqlog`)
@@ -33,7 +33,13 @@ Authorization:
 The API:
 
 - The render loop is kicked after **every** API call, not only successful ones. An action can apply partially and still report an error — an upload of five torrents where two are malformed adds three and returns 400 — and gating the kick on success left those three invisible until the next tick. `kick` is coalesced and floored, so the cost of an unnecessary one is at most a single extra render.
-- API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine and `fetch` sentinels → 404/409/502/503, `apiError` carries its own). Error strings are user-visible.
+- API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil goes to `classify`.
+- **`classify` decides both the status and the message, and its axis is "did what the caller sent cause this?"** — not which package the error came from.
+  - *Input* (magnet URI, remote URL, `.torrent` bytes, a config value): the wrapped detail is the only useful information and is bounded parser prose, so it is shown. → 400/404/409.
+  - *Operational* (disk, bind, upstream, closed): the wrapped detail is a syscall string and a filesystem-layout oracle, so a fixed message is shown and the chain goes to the log. → 500/502/503.
+  - **The default is 500.** It was 400, which reported a disk-full or permission failure to the user as their own mistake — exactly what the function existed to prevent. `engine.ErrInvalidInput` is what keeps genuine caller mistakes on the 400 side of that default.
+- **Error strings are ordinary lowercase Go, everywhere.** `classify` owns presentation: `sentence` capitalises what it decides to show. That is what let `-ST1005` come out of `staticcheck.conf` — the suppression existed because error strings doubled as UI copy, and they no longer do.
+- `web.WriteAPIResult` takes the *message*, not the error. Deciding what a failure says — and what it must not say — is the server's job.
 - Each action accepts exactly one encoding, and adding a second means a second parser to keep in step with the same struct. `add` takes a bare string (or a `uri` form field), `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
 - All API calls must be `POST`; the action is the path suffix after `/api/`.

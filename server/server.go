@@ -114,7 +114,7 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 func New(o Options, version string) (*Server, error) {
 	isTLS := o.CertPath != "" || o.KeyPath != ""
 	if isTLS && (o.CertPath == "" || o.KeyPath == "") {
-		return nil, errors.New("You must provide both key and cert paths")
+		return nil, errors.New("you must provide both key and cert paths")
 	}
 
 	s := &Server{
@@ -174,13 +174,13 @@ func (s *Server) loadConfig() (engine.Config, error) {
 		return c, nil
 	}
 	if err != nil {
-		return c, fmt.Errorf("Read configuration error: %w", err)
+		return c, fmt.Errorf("read configuration error: %w", err)
 	}
 	if len(b) == 0 {
 		return c, nil //ignore empty file
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
-		return c, fmt.Errorf("Malformed configuration: %w", err)
+		return c, fmt.Errorf("malformed configuration: %w", err)
 	}
 	// The port is deliberately not clamped here. c starts from the defaults
 	// above, so an absent IncomingPort already keeps defaultIncomingPort — the
@@ -381,7 +381,7 @@ func (s *Server) reconfigure(c engine.Config) error {
 func (s *Server) applyConfig(c engine.Config) (engine.Config, error) {
 	dldir, err := filepath.Abs(c.DownloadDirectory)
 	if err != nil {
-		return c, fmt.Errorf("Invalid path: %w", err)
+		return c, fmt.Errorf("invalid path: %w", err)
 	}
 	c.DownloadDirectory = dldir
 	if err := s.engine.Configure(c); err != nil {
@@ -400,41 +400,41 @@ func (s *Server) applyConfig(c engine.Config) (engine.Config, error) {
 func (s *Server) saveConfig(c engine.Config) error {
 	b, err := json.MarshalIndent(&c, "", "  ")
 	if err != nil {
-		return fmt.Errorf("Failed to encode configuration: %w", err)
+		return fmt.Errorf("failed to encode configuration: %w", err)
 	}
 	path := s.opts.ConfigPath
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0700); err != nil {
-			return fmt.Errorf("Failed to save configuration: %w", err)
+			return fmt.Errorf("failed to save configuration: %w", err)
 		}
 	}
 	// Same directory as the target: rename is only atomic within a filesystem.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".cloud-torrent-*.json")
 	if err != nil {
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	defer os.Remove(tmp.Name()) // no-op once the rename succeeds
 	// 0600: the file lives next to the binary and holds operational settings.
 	// CreateTemp already makes it 0600, but say so rather than rely on it.
 	if err := tmp.Chmod(0600); err != nil {
 		tmp.Close()
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	if _, err := tmp.Write(b); err != nil {
 		tmp.Close()
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	// Sync before rename: without it the rename can land before the bytes do,
 	// which is the same truncated file this function exists to prevent.
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("Failed to save configuration: %w", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 	return nil
 }

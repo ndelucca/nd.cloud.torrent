@@ -38,7 +38,7 @@ var (
 	// ErrOutsideRoot is returned for any path that does not resolve inside the
 	// download directory. Callers must not echo it back with the path attached:
 	// that turns every rejected probe into a filesystem-layout oracle.
-	ErrOutsideRoot = errors.New("Nice try")
+	ErrOutsideRoot = errors.New("path is outside the download directory")
 )
 
 // List walks root and returns the tree below it. A missing or unreadable root

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/fetch"
@@ -28,28 +30,64 @@ func badRequest(format string, a ...any) error {
 	return apiError{http.StatusBadRequest, fmt.Errorf(format, a...)}
 }
 
-// statusFor maps an engine error onto an HTTP status, so callers can stop
-// treating disk and network failures as client errors.
-func statusFor(err error) int {
+// classify maps an error onto the HTTP status and the message the user sees.
+//
+// The axis is not "engine error versus server error", it is: **did what the
+// caller sent cause this?**
+//
+//   - Input errors — the magnet URI, the remote URL, the .torrent bytes, a
+//     config value. Here the wrapped detail is the only useful information
+//     ("no info hash in magnet link") and it is bounded prose from a parser, so
+//     it is shown.
+//   - Operational errors — disk, bind, upstream, closed. Here the wrapped
+//     detail is a syscall string and a filesystem-layout oracle, so a fixed
+//     message is shown and the chain goes to the log.
+//
+// The default is 500. It used to be 400, which meant a disk-full or permission
+// failure was reported to the user as their own mistake — exactly what the
+// function existed to prevent.
+func classify(err error) (int, string) {
 	var ae apiError
 	if errors.As(err, &ae) {
-		return ae.status
+		return ae.status, sentence(ae.Error())
 	}
 	switch {
+	// Caused by the request.
+	case errors.Is(err, engine.ErrInvalidInput),
+		errors.Is(err, fetch.ErrInvalidURL),
+		errors.Is(err, fetch.ErrBlocked):
+		return http.StatusBadRequest, sentence(err.Error())
 	case errors.Is(err, engine.ErrMissingTorrent):
-		return http.StatusNotFound
+		return http.StatusNotFound, sentence(err.Error())
 	case errors.Is(err, engine.ErrAlreadyStarted), errors.Is(err, engine.ErrAlreadyStopped):
-		return http.StatusConflict
+		return http.StatusConflict, sentence(err.Error())
+
+	// Not caused by the request, but the state is worth naming.
 	case errors.Is(err, engine.ErrNotConfigured), errors.Is(err, engine.ErrClosed):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, fetch.ErrInvalidURL):
-		return http.StatusBadRequest
-	// A remote that is down or refuses us is not the caller's mistake.
+		return http.StatusServiceUnavailable, sentence(err.Error())
+
+	// Not caused by the request, and the detail is not the user's business.
 	case errors.Is(err, fetch.ErrUpstream):
-		return http.StatusBadGateway
+		return http.StatusBadGateway, "Could not fetch the remote torrent."
 	default:
-		return http.StatusBadRequest
+		return http.StatusInternalServerError, "Something went wrong. See the server log for details."
 	}
+}
+
+// sentence capitalises a message for display. Error strings are lowercase and
+// unpunctuated per Go convention, because they get wrapped; the server owns
+// presentation, which is what lets them stay conventional.
+func sentence(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	out := string(r)
+	if !strings.HasSuffix(out, ".") && !strings.HasSuffix(out, "!") && !strings.HasSuffix(out, "?") {
+		out += "."
+	}
+	return out
 }
 
 func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
@@ -65,19 +103,29 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	// extra render.
 	s.kick()
 
+	status, msg := http.StatusOK, ""
+	if err != nil {
+		status, msg = classify(err)
+		// The user gets a fixed message for anything they did not cause, so the
+		// chain is only recoverable from here.
+		if status >= http.StatusInternalServerError {
+			log.Printf("api %s: %s", r.URL.Path, err)
+		}
+	}
+
 	// htmx wants HTML to swap. It also does not swap non-2xx responses by
 	// default, so the outcome is reported as a 200 fragment; the status codes
 	// stay intact for every other client.
 	if r.Header.Get("HX-Request") == "true" {
-		s.ui.WriteAPIResult(w, err)
+		s.ui.WriteAPIResult(w, msg)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if err != nil {
-		http.Error(w, err.Error(), statusFor(err))
+		http.Error(w, msg, status)
 		return
 	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
 }
@@ -85,7 +133,7 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 	defer r.Body.Close()
 	if r.Method != http.MethodPost {
-		return apiError{http.StatusMethodNotAllowed, errors.New("Invalid request method (expecting POST)")}
+		return apiError{http.StatusMethodNotAllowed, errors.New("invalid request method (expecting POST)")}
 	}
 	// The API accepts text/plain bodies, which browsers send cross-origin without
 	// a preflight. Without this check any page could reconfigure the server.
@@ -103,7 +151,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBody))
 	if err != nil {
-		return badRequest("Failed to read request body")
+		return badRequest("failed to read request body")
 	}
 
 	switch action {
@@ -126,11 +174,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 	case "torrent":
 		v := formValues(r, data)
 		if v == nil {
-			return badRequest("Expected a form-encoded body with action and infohash")
+			return badRequest("expected a form-encoded body with action and infohash")
 		}
 		state, infohash := v.Get("action"), v.Get("infohash")
 		if state == "" || infohash == "" {
-			return badRequest("Invalid request")
+			return badRequest("invalid request")
 		}
 		switch state {
 		case "start":
@@ -140,10 +188,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 		case "delete":
 			return s.engine.DeleteTorrent(infohash)
 		default:
-			return badRequest("Invalid state: %s", state)
+			return badRequest("invalid state: %s", state)
 		}
 	default:
-		return apiError{http.StatusNotFound, fmt.Errorf("Invalid action: %s", action)}
+		return apiError{http.StatusNotFound, fmt.Errorf("invalid action: %s", action)}
 	}
 }
 
@@ -167,7 +215,7 @@ func formValues(r *http.Request, data []byte) url.Values {
 // checkSameOrigin rejects cross-site writes. Requests with no Origin (curl, the
 // CLI) are allowed; browsers always send one on cross-origin POSTs.
 func checkSameOrigin(r *http.Request) error {
-	rejected := apiError{http.StatusForbidden, errors.New("Cross-origin request rejected")}
+	rejected := apiError{http.StatusForbidden, errors.New("cross-origin request rejected")}
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
 		if site == "same-origin" || site == "none" {
 			return nil
