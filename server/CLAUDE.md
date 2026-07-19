@@ -32,6 +32,7 @@ Authorization:
 
 The API:
 
+- The render loop is kicked after **every** API call, not only successful ones. An action can apply partially and still report an error — an upload of five torrents where two are malformed adds three and returns 400 — and gating the kick on success left those three invisible until the next tick. `kick` is coalesced and floored, so the cost of an unnecessary one is at most a single extra render.
 - API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil is mapped to a status by `statusFor` (engine and `fetch` sentinels → 404/409/502/503, `apiError` carries its own). Error strings are user-visible.
 - Each action accepts exactly one encoding, and adding a second means a second parser to keep in step with the same struct. `add` takes a bare string (or a `uri` form field), `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
@@ -48,11 +49,15 @@ State:
 
 Lifecycle:
 
-- Two background goroutines run until the `Run` context is cancelled: torrent/file polling (1s) and stats sampling (5s). Polling is gated on `watchers() > 0` — the walk costs up to `files.Limit` stat calls per second and is pure waste with nobody connected. `Run` joins both before returning, so no engine call is in flight when `Close` releases the engine.
+- Two background goroutines run until the `Run` context is cancelled: torrent/file polling (1s) and stats sampling (5s). Polling is gated on `watchers() > 0` — the walk costs up to `files.Limit` stat calls per second and is pure waste with nobody connected.
+- **The host is sampled unconditionally; only the *render* is gated on watchers.** `cpu.Percent` measures since the previous call anywhere in the process, so gating the sample meant the first one after an idle spell reported the average since the last browser disconnected — possibly hours — while `Set` claimed it was trustworthy. Keeping the sample on a fixed cadence is what makes `statsInterval` actually be the measurement window. `Run` joins both before returning, so no engine call is in flight when `Close` releases the engine.
 - Shutdown order is load-bearing: cancel the context → `ui.Close()` → `srv.Shutdown` → join the loops → (`main`) `engine.Close`. **`ui.Close` must come before `srv.Shutdown`.** `Shutdown` waits for connections to become idle and does not cancel request contexts, so an `/events` handler parked in its select is never released by it — with one browser connected that burned the entire shutdown budget and exited non-zero. `TestRunShutsDownPromptlyWithSSEClients` pins it end to end, `web.TestHubCloseReleasesSubscribers` pins the mechanism.
 - `Run` returns nil for any *completed* shutdown, including one that overran its drain budget: a requested stop is not a failed run, and `main` calls `log.Fatal` on a non-nil error. Only a genuine serving failure (bind, TLS) returns one. If the drain does overrun, `srv.Close` stops waiting.
 - `Run` is one-shot — the hub latches closed, so a second call would serve no events. `Close` releases the engine.
-- `reconfigure` absolutizes the download directory, applies it to the engine, then writes `ConfigPath` (0600) — the engine restart happens before the file is persisted, so a failed restart persists nothing.
+- `reconfigure` is `applyConfig` then `saveConfig`. `applyConfig` absolutizes the download directory and hands the config to the engine; `saveConfig` persists it. The engine restart happens first, so a failed restart persists nothing.
+- **Startup applies but never saves.** `New` calls `applyConfig` alone. Rewriting the config on every boot was a chance to corrupt it that bought nothing, and it made `New`'s own doc comment false. `TestNewDoesNotWriteConfig` and `TestNewWithNoConfigCreatesNone` pin it.
+- **`saveConfig` writes a sibling temp file and renames.** Write-in-place could be interrupted by a crash, a full disk or a container stop, leaving a truncated file that `loadConfig` then rejects as "Malformed configuration" — the server refused to start until someone deleted it by hand. The temp file is created in the target's directory because rename is only atomic within a filesystem, and it is `Sync`ed before the rename so the metadata cannot land ahead of the bytes.
+- **Port validity is `engine.Config.Validate`'s call and nowhere else.** `loadConfig` used to silently clamp an out-of-range port to the default while `Validate` rejected the identical value. Since `loadConfig` unmarshals over a defaults struct, an absent port already keeps the default — the clamp could only fire on a value someone explicitly wrote. Two policies for one rule is how they end up disagreeing.
 - TLS requires both `CertPath` and `KeyPath` or startup fails.
 
 ## Work Guidance
