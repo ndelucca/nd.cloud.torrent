@@ -56,9 +56,14 @@ func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	err := s.api(w, r)
 	// A mutation almost always changes what the UI shows; waking the render loop
 	// makes the effect visible immediately rather than up to a tick later.
-	if err == nil {
-		s.kick()
-	}
+	//
+	// Unconditional, including on failure: an action can apply partially and
+	// still report an error. Uploading five torrents where two are malformed
+	// returns 400, but the three that were added are already in the engine — and
+	// gating the kick on success left them invisible until the next tick. kick
+	// is coalesced and floored, so the cost of being wrong here is at most one
+	// extra render.
+	s.kick()
 
 	// htmx wants HTML to swap. It also does not swap non-2xx responses by
 	// default, so the outcome is reported as a 200 fragment; the status codes
