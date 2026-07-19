@@ -113,6 +113,26 @@ func TestListFileLimit(t *testing.T) {
 	}
 }
 
+// TestListRootMayBeHidden covers a self-inflicted outage: the dotfile filter was
+// applied to the walk root as well as to its entries, so a download directory
+// named ".torrents" aborted the whole walk. List did not special-case that
+// sentinel, so it logged "File listing failed: skip entry" once per poll tick
+// and rendered an empty tree.
+func TestListRootMayBeHidden(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".torrents")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	node := List(root)
+	if len(node.Children) != 1 || node.Children[0].Name != "visible.txt" {
+		t.Fatalf("got %d children, want visible.txt under a hidden root", len(node.Children))
+	}
+}
+
 // TestListSkipsDotfiles documents that hidden entries are filtered, not errors.
 func TestListSkipsDotfiles(t *testing.T) {
 	root := t.TempDir()

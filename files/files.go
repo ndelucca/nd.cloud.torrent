@@ -35,7 +35,6 @@ type Node struct {
 
 var (
 	errFileLimit = errors.New("over file limit")
-	errSkipEntry = errors.New("skip entry")
 	// ErrOutsideRoot is returned for any path that does not resolve inside the
 	// download directory. Callers must not echo it back with the path attached:
 	// that turns every rejected probe into a filesystem-layout oracle.
@@ -62,12 +61,21 @@ func List(root string) *Node {
 	return node
 }
 
+// visible reports whether an entry belongs in the tree. It is applied to the
+// *entries* of a directory, never to the walk root: the download directory is
+// the operator's choice, and testing it here made a root named ".torrents" fail
+// the whole walk — once per poll tick, logging an error and rendering an empty
+// tree.
+func visible(info os.FileInfo) bool {
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return false
+	}
+	return !strings.HasPrefix(info.Name(), ".")
+}
+
 // list walks path into node. It returns errFileLimit once the budget is spent,
 // which aborts the whole walk and marks the result truncated.
 func list(path string, info os.FileInfo, node *Node, n *int) error {
-	if (!info.IsDir() && !info.Mode().IsRegular()) || strings.HasPrefix(info.Name(), ".") {
-		return errSkipEntry
-	}
 	*n++
 	if *n > Limit {
 		return errFileLimit
@@ -86,7 +94,7 @@ func list(path string, info os.FileInfo, node *Node, n *int) error {
 	node.Size = 0
 	for _, e := range entries {
 		ei, err := e.Info()
-		if err != nil {
+		if err != nil || !visible(ei) {
 			continue
 		}
 		c := &Node{}
@@ -94,7 +102,7 @@ func list(path string, info os.FileInfo, node *Node, n *int) error {
 			if errors.Is(err, errFileLimit) {
 				return err // propagate: the walk is over
 			}
-			continue // skipped entry or unreadable child
+			continue // unreadable child
 		}
 		node.Size += c.Size
 		node.Children = append(node.Children, c)
