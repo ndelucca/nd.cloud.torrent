@@ -11,7 +11,7 @@ delegated to `web`, `files`, `fetch` and `sysstat`.
 
 - `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `applyConfig`/`saveConfig`/`reconfigure`, `renderStats`, the `routes()` table and the middleware chain (`requireSameOrigin`, `securityHeaders`, `gzip`)
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
-- `server_api.go` — `/api/*` actions (`add`, `torrentfile`, `configure`, `torrent`), `apiError`/`classify`/`sentence`, `checkSameOrigin`
+- `server_api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`, `handleStart`/`handleStop`/`handleDelete`), `apiHandler`/`apiRoute`/`finishAPI`, `apiError`/`classify`/`sentence`, `checkSameOrigin`
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
 - Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), host sampling (`sysstat`), authentication and request logging (`internal/auth`, `internal/reqlog`)
@@ -42,9 +42,12 @@ The API:
   - **The default is 500.** It was 400, which reported a disk-full or permission failure to the user as their own mistake — exactly what the function existed to prevent. `engine.ErrInvalidInput` is what keeps genuine caller mistakes on the 400 side of that default.
 - **Error strings are ordinary lowercase Go, everywhere.** `classify` owns presentation: `sentence` capitalises what it decides to show. That is what let `-ST1005` come out of `staticcheck.conf` — the suppression existed because error strings doubled as UI copy, and they no longer do.
 - `web.WriteAPIResult` takes the *message*, not the error. Deciding what a failure says — and what it must not say — is the server's job.
-- Each action accepts exactly one encoding, and adding a second means a second parser to keep in step with the same struct. `add` takes a bare string (or a `uri` form field), `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.
+- **Each action is its own route with its own handler**, typed `apiHandler` so the contract is compiler-checked rather than documented. `apiRoute` wraps one into an `http.Handler`, applying the kick, the htmx fragment rendering and the status mapping in exactly one place.
+- The torrent verbs are `POST /api/torrents/{hash}/start`, `.../stop` and `DELETE /api/torrents/{hash}`. They were one `torrent` action dispatching on an `action` *form field* inside a nested switch — three routes wearing a trenchcoat, and the reason the body had to be drained before the encoding was known. With the hash in the path they have no body at all, which deleted `formValues` and let `parseConfig` take `url.Values` from `r.ParseForm` instead of re-parsing bytes.
+- `add` takes a bare string or a `uri` form field; `configure` takes a form; `torrentfile` takes raw bytes or multipart. Adding a second encoding to any of them means a second parser to keep in step with the same struct.
+- **`/api/configure` holds `configMu` across read-merge-apply.** The engine's `configureMu` serializes the apply but not the read the merge starts from, so two concurrent saves each began from the same config and the second silently undid the first. `TestConcurrentConfigureKeepsBothFields` pins it.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
-- All API calls must be `POST`; the action is the `{action}` path segment, read with `r.PathValue`. The method is enforced by the route pattern, not by a guard inside the handler.
+- The method is enforced by the route pattern, not by a guard inside a handler. Path parameters are read with `r.PathValue`.
 - Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 
 State:

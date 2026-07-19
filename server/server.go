@@ -84,6 +84,12 @@ type Server struct {
 	ui     *web.UI
 	kickCh chan struct{}
 
+	// configMu serializes read-merge-apply on /api/configure. The engine's own
+	// lock covers the apply but not the read the merge starts from, so two
+	// concurrent saves could each begin from the same config and the second
+	// would silently undo the first.
+	configMu sync.Mutex
+
 	static http.Handler
 }
 
@@ -437,7 +443,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.ui.ServePage)
 	mux.HandleFunc("GET /fragments/downloads", s.ui.ServeDownloads)
 	mux.HandleFunc("GET /fragments/torrent/{hash}/files", s.ui.ServeTorrentFiles)
-	mux.HandleFunc("POST /api/{action}", s.serveAPI)
+	mux.Handle("POST /api/add", s.apiRoute(s.handleAdd))
+	mux.Handle("POST /api/torrentfile", s.apiRoute(s.handleTorrentFile))
+	mux.Handle("POST /api/configure", s.apiRoute(s.handleConfigure))
+	// The torrent verbs are their own routes. They were one "torrent" action
+	// dispatching on an `action` form field inside a nested switch — three
+	// routes wearing a trenchcoat, and the reason api() had to drain the body
+	// before it knew the encoding.
+	mux.Handle("POST /api/torrents/{hash}/start", s.apiRoute(s.handleStart))
+	mux.Handle("POST /api/torrents/{hash}/stop", s.apiRoute(s.handleStop))
+	mux.Handle("DELETE /api/torrents/{hash}", s.apiRoute(s.handleDelete))
 	// StripPrefix because files.Handler reads the request path as relative to
 	// the download root.
 	mux.Handle("/download/", http.StripPrefix("/download/",

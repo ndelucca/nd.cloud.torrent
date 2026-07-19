@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
@@ -174,7 +175,7 @@ func TestFailedActionStillKicks(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/add", strings.NewReader("not-a-magnet"))
 	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
-	s.serveAPI(rec, req)
+	s.handler().ServeHTTP(rec, req)
 
 	if rec.Code < 400 {
 		t.Fatalf("setup: expected the action to fail, got %d", rec.Code)
@@ -184,5 +185,40 @@ func TestFailedActionStillKicks(t *testing.T) {
 	default:
 		t.Fatal("a failed action left the render loop asleep; a partial success " +
 			"would stay invisible until the next tick")
+	}
+}
+
+// TestConcurrentConfigureKeepsBothFields covers a lost update.
+//
+// /api/configure is read-merge-apply: it reads the engine's current config,
+// overlays the submitted fields and applies the result. The engine's own lock
+// serializes the apply but not the read the merge starts from, so two saves in
+// flight together could each begin from the same config and the second would
+// silently undo the first. configMu covers the whole sequence.
+//
+// Probabilistic, so it loops.
+func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		s := newTestServer(t)
+		h := s.handler()
+
+		post := func(body string) {
+			r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			r.Header.Set("Origin", "http://"+r.Host)
+			h.ServeHTTP(httptest.NewRecorder(), r)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); post("EnableSeeding=false&EnableSeeding=true") }()
+		go func() { defer wg.Done(); post("DisableEncryption=false&DisableEncryption=true") }()
+		wg.Wait()
+
+		got := s.engine.Config()
+		if !got.EnableSeeding || !got.DisableEncryption {
+			t.Fatalf("a concurrent save was lost: EnableSeeding=%v DisableEncryption=%v",
+				got.EnableSeeding, got.DisableEncryption)
+		}
 	}
 }

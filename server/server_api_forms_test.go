@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -19,6 +20,18 @@ func formReq(body string) *http.Request {
 // form: an unchecked checkbox submits NOTHING. Without a paired hidden field,
 // "off" is indistinguishable from "field not present", and a setting could be
 // turned on but never off again.
+// mustParseForm turns a form-encoded body into the url.Values parseConfig now
+// takes. parseConfig used to re-parse the body from bytes itself, because api()
+// drained it before knowing the encoding; routing by path removed that need.
+func mustParseForm(t *testing.T, body string) url.Values {
+	t.Helper()
+	v, err := url.ParseQuery(body)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q): %v", body, err)
+	}
+	return v
+}
+
 func TestParseConfigCheckboxes(t *testing.T) {
 	current := engine.Config{
 		DownloadDirectory: "/dl", IncomingPort: 5000,
@@ -33,7 +46,7 @@ func TestParseConfigCheckboxes(t *testing.T) {
 		"&EnableSeeding=false" + // unchecked
 		"&DisableEncryption=false&DisableEncryption=true" // checked
 
-	got, err := parseConfig(formReq(body), []byte(body), current)
+	got, err := parseConfig(mustParseForm(t, body), current)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +71,7 @@ func TestParseConfigLeavesAbsentFieldsAlone(t *testing.T) {
 	current := engine.Config{DownloadDirectory: "/dl", IncomingPort: 5000, AutoStart: true}
 	body := "IncomingPort=6000"
 
-	got, err := parseConfig(formReq(body), []byte(body), current)
+	got, err := parseConfig(mustParseForm(t, body), current)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,25 +92,33 @@ func TestParseConfigRejectsBadInput(t *testing.T) {
 		"empty directory":  "DownloadDirectory=%20%20",
 		"non-numeric port": "IncomingPort=abc",
 	} {
-		if _, err := parseConfig(formReq(body), []byte(body), current); err == nil {
+		if _, err := parseConfig(mustParseForm(t, body), current); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
 }
 
-// TestParseConfigRejectsNonForm: the configuration form is the only supported
+// TestConfigureRejectsNonForm: the configuration form is the only supported
 // encoding. Accepting a second one silently meant two parsers to keep in step
 // with the same struct.
-func TestParseConfigRejectsNonForm(t *testing.T) {
-	current := engine.Config{DownloadDirectory: "/old", IncomingPort: 1}
+//
+// The check now lives in handleConfigure rather than parseConfig, so this goes
+// through the handler: parseConfig takes already-parsed values and no longer
+// has an encoding to reject.
+func TestConfigureRejectsNonForm(t *testing.T) {
+	s := newTestServer(t)
+	before := s.engine.Config()
+
 	body := `{"DownloadDirectory":"/new","IncomingPort":4242}`
 	r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
+	r.Header.Set("Origin", "http://"+r.Host)
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
 
-	got, err := parseConfig(r, []byte(body), current)
-	if err == nil {
-		t.Fatal("a JSON body must be rejected")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a JSON body", w.Code)
 	}
-	if got != current {
+	if got := s.engine.Config(); got != before {
 		t.Errorf("a rejected body must leave the config alone, got %+v", got)
 	}
 }
@@ -152,10 +173,9 @@ func TestHTMXGetsHTMLNotPlainText(t *testing.T) {
 	h := s.handler()
 
 	// Same failing request, with and without the htmx header.
-	body := "action=start&infohash=" + strings.Repeat("ab", 20)
+	path := "/api/torrents/" + strings.Repeat("ab", 20) + "/start"
 
-	plain := httptest.NewRequest(http.MethodPost, "/api/torrent", strings.NewReader(body))
-	plain.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	plain := httptest.NewRequest(http.MethodPost, path, nil)
 	pw := httptest.NewRecorder()
 	h.ServeHTTP(pw, plain)
 	if pw.Code != http.StatusNotFound {
@@ -165,8 +185,7 @@ func TestHTMXGetsHTMLNotPlainText(t *testing.T) {
 		t.Errorf("non-htmx Content-Type = %q, want text/plain", ct)
 	}
 
-	hx := httptest.NewRequest(http.MethodPost, "/api/torrent", strings.NewReader(body))
-	hx.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	hx := httptest.NewRequest(http.MethodPost, path, nil)
 	hx.Header.Set("HX-Request", "true")
 	hw := httptest.NewRecorder()
 	h.ServeHTTP(hw, hx)

@@ -302,9 +302,8 @@ func TestAPIRejectsCrossOrigin(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			body := strings.NewReader("action=start&infohash=" + strings.Repeat("ab", 20))
-			r := httptest.NewRequest(http.MethodPost, "/api/torrent", body)
-			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			path := "/api/torrents/" + strings.Repeat("ab", 20) + "/start"
+			r := httptest.NewRequest(http.MethodPost, path, nil)
 			for k, v := range c.headers {
 				r.Header.Set(k, v)
 			}
@@ -336,12 +335,14 @@ func TestAPIStatusCodes(t *testing.T) {
 		form                     bool
 		want                     int
 	}{
-		{"missing torrent", http.MethodPost, "/api/torrent", "action=start&infohash=" + strings.Repeat("ab", 20), true, http.StatusNotFound},
+		{"missing torrent", http.MethodPost, "/api/torrents/" + strings.Repeat("ab", 20) + "/start", "", false, http.StatusNotFound},
+		{"missing torrent on delete", http.MethodDelete, "/api/torrents/" + strings.Repeat("ab", 20), "", false, http.StatusNotFound},
 		{"unknown action", http.MethodPost, "/api/nope", "", false, http.StatusNotFound},
-		{"wrong method", http.MethodGet, "/api/torrent", "", false, http.StatusMethodNotAllowed},
-		{"bad infohash", http.MethodPost, "/api/torrent", "action=start&infohash=zzz", true, http.StatusBadRequest},
-		{"malformed body", http.MethodPost, "/api/torrent", "action=start", true, http.StatusBadRequest},
-		{"non-form torrent body", http.MethodPost, "/api/torrent", "start:whatever", false, http.StatusBadRequest},
+		{"wrong method", http.MethodGet, "/api/torrents/x/start", "", false, http.StatusMethodNotAllowed},
+		{"bad infohash", http.MethodPost, "/api/torrents/zzz/start", "", false, http.StatusBadRequest},
+		// The "malformed body" and "non-form body" cases that used to live here
+		// are gone with the form: the hash is a path segment now, so a torrent
+		// verb has no body to get wrong.
 		{"non-form config body", http.MethodPost, "/api/configure", "{not json", false, http.StatusBadRequest},
 		{"non-http url", http.MethodPost, "/api/add", "file:///etc/passwd", false, http.StatusBadRequest},
 	}

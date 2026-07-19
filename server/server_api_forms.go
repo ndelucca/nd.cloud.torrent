@@ -99,12 +99,7 @@ func (s *Server) addUploadedTorrents(w http.ResponseWriter, r *http.Request) err
 //
 // current is the starting point so a form that omits a field leaves it alone
 // rather than zeroing it.
-func parseConfig(r *http.Request, data []byte, current engine.Config) (engine.Config, error) {
-	v := formValues(r, data)
-	if v == nil {
-		return current, badRequest("expected a form-encoded configuration")
-	}
-
+func parseConfig(v url.Values, current engine.Config) (engine.Config, error) {
 	c := current
 	if s, ok := firstValue(v, "DownloadDirectory"); ok {
 		if strings.TrimSpace(s) == "" {

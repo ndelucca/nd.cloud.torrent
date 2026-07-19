@@ -67,14 +67,14 @@ inside the per-torrent swap target.
     <div class="torrent-actions">
       {{if .Started}}
       <button type="button" class="btn danger"
-              hx-post="/api/torrent" hx-vals='{"action":"stop","infohash":"{{.InfoHash}}"}'
+              hx-post="/api/torrents/{{.InfoHash}}/stop"
               hx-swap="none">Stop</button>
       {{else}}
       <button type="button" class="btn primary"
-              hx-post="/api/torrent" hx-vals='{"action":"start","infohash":"{{.InfoHash}}"}'
+              hx-post="/api/torrents/{{.InfoHash}}/start"
               hx-swap="none">Start</button>
       <button type="button" class="btn danger"
-              hx-post="/api/torrent" hx-vals='{"action":"delete","infohash":"{{.InfoHash}}"}'
+              hx-delete="/api/torrents/{{.InfoHash}}"
               hx-confirm="Remove this torrent?"
               hx-swap="none">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
       {{end}}
