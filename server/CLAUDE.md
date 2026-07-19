@@ -9,10 +9,15 @@ delegated to `web`, `files`, `fetch` and `sysstat`.
 
 ## Ownership
 
-- `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `applyConfig`/`reconfigure`, `renderStats`, the `routes()` table and the middleware chain (`requireSameOrigin`, `securityHeaders`, `gzip`)
+- `server.go` — the package doc, the interval consts, `Options` (CLI flags), the `Server` runtime, `downloadDir`, `New` and `Close`
+- `run.go` — `Run` and its shutdown sequence
+- `loops.go` — `kick`, `pollLoop`, `statsLoop`, `watchers`, `renderStats`
+- `routes.go` — the `routes()` table and the middleware chain (`handler`, `gzip`, `requireSameOrigin`, `securityHeaders`)
+- `config.go` — `applyConfig` and `reconfigure`, the two that face the engine
+- `api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`, `handleStart`/`handleStop`/`handleDelete`), `apiHandler`/`apiRoute`/`finishAPI`/`readBody`, `isForm`
+- `errors.go` — `apiError`, `badRequest`, `classify`, `sentence`, `checkSameOrigin`
+- `forms.go` — form-encoded and multipart request handling for the htmx UI
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
-- `server_api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`, `handleStart`/`handleStop`/`handleDelete`), `apiHandler`/`apiRoute`/`finishAPI`, `apiError`/`classify`/`sentence`, `checkSameOrigin`
-- `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
 - `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
 - Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), host sampling (`sysstat`), authentication and request logging (`internal/auth`, `internal/reqlog`)
 
