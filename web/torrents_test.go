@@ -199,3 +199,59 @@ func newTestUI(t *testing.T) *UI {
 	}
 	return u
 }
+
+// TestForgetSurvivesARenderFailure covers regions that were never forgotten.
+//
+// seen was advanced from a defer, so it ran even on the early return taken when
+// the skeleton fails to render — a tick where nothing was sent at all. The
+// forget events computed for that tick were skipped, the next tick saw an empty
+// removal set, and the deleted torrents' regions stayed in the renderer
+// forever: unbounded growth, and rows resurrected for every new subscriber via
+// the connect-time snapshot.
+//
+// seen means "what the browsers have been told", so it may only advance once
+// they have actually been told.
+func TestForgetSurvivesARenderFailure(t *testing.T) {
+	u := newTestUI(t)
+	good := u.renderer.tmpl
+
+	// Cloned from a fresh parse: html/template refuses to Clone a template that
+	// has already been executed.
+	bad, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+	// Fails at execution, not parse, so the failure lands where a real template
+	// bug would: inside renderer.render.
+	if _, err := bad.Parse(`{{define "torrent-list"}}<div>{{index . 99}}</div>{{end}}`); err != nil {
+		t.Fatalf("override torrent-list: %v", err)
+	}
+
+	a := torrent("aa", "A", 10)
+	b := torrent("bb", "B", 20)
+	both := map[string]*engine.Torrent{"aa": a, "bb": b}
+	onlyA := map[string]*engine.Torrent{"aa": a}
+
+	// Establish both torrents.
+	collect(t, u, func() { u.RenderTorrents(both) })
+
+	// b disappears on a tick whose skeleton cannot render: nothing is sent.
+	u.renderer.tmpl = bad
+	got := collect(t, u, func() { u.RenderTorrents(onlyA) })
+	for _, ev := range got {
+		if strings.HasPrefix(ev, torrentEventPrefix+"bb") {
+			t.Fatalf("a failed render still emitted %q; sent: %v", ev, got)
+		}
+	}
+
+	// The next healthy tick must still report b as gone.
+	u.renderer.tmpl = good
+	got = collect(t, u, func() { u.RenderTorrents(onlyA) })
+	want := torrentEventPrefix + "bb [EMPTY]"
+	for _, ev := range got {
+		if ev == want {
+			return
+		}
+	}
+	t.Fatalf("torrent bb was never forgotten; sent: %v", got)
+}

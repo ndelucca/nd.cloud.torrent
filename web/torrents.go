@@ -143,11 +143,6 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	// subscriber receives on connect and a stale skeleton would show them stale
 	// rows until each one next changed.
 	membershipChanged := !sameHashes(current, u.seen)
-	// seenTorrents is updated even if the skeleton fails to render: bailing out
-	// early would leave it describing a state that no longer exists, so the
-	// next tick would compute the wrong membership delta and never emit the
-	// forget events for torrents that had already gone.
-	defer func() { u.seen = current }()
 
 	listFrame, err := u.renderer.render(torrentListEvent, "torrent-list", views)
 	if err != nil {
@@ -181,6 +176,16 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	for _, name := range removed {
 		u.hub.broadcast(u.renderer.forget(name))
 	}
+
+	// Last, and deliberately not deferred. seen is "what the browsers have been
+	// told", so it may only advance once they have been told. Advancing it from
+	// a defer meant an early return on a render failure — when nothing was sent
+	// at all — still marked the tick as delivered: the forget events computed
+	// above were skipped, the next tick saw an empty removal set, and the
+	// regions of deleted torrents were never forgotten. They grew without bound
+	// in the renderer and were replayed to every new subscriber, resurrecting
+	// rows for torrents that no longer exist.
+	u.seen = current
 }
 
 // newThisTick reports whether this infohash had no region before this render,
