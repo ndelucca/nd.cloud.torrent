@@ -674,3 +674,31 @@ func TestSampleHandlesBytesGoingBackwards(t *testing.T) {
 		t.Fatalf("Downloaded = %d, want the new reading", tor.Downloaded)
 	}
 }
+
+// TestAddRejectsSpecWithoutInfohash covers a remote panic.
+//
+// AddTorrentSpec panics with "v1 infohash must be nonzero or v2 infohash must
+// be set", and TorrentSpecFromMagnetUri happily produces such a spec:
+// "magnet:?nonsense" parses without error and yields a zero hash. Anyone who
+// could reach /api/add could therefore kill a request handler. Found by driving
+// the running server, not by a test — which is why this one exists.
+func TestAddRejectsSpecWithoutInfohash(t *testing.T) {
+	e := New()
+	defer e.Close()
+	if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	for _, uri := range []string{"magnet:?nonsense", "magnet:?dn=name-only", "magnet:?xt=urn:btih:"} {
+		t.Run(uri, func(t *testing.T) {
+			// The assertion is as much "does not panic" as it is the error.
+			err := e.NewMagnet(uri)
+			if err == nil {
+				t.Fatalf("%q was accepted; it has no infohash", uri)
+			}
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("error = %v, want it to wrap ErrInvalidInput so the server answers 400", err)
+			}
+		})
+	}
+}

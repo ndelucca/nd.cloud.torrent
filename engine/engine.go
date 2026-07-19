@@ -307,6 +307,14 @@ func (e *Engine) NewTorrentFile(data []byte) error {
 }
 
 func (e *Engine) addSpec(spec *torrent.TorrentSpec) error {
+	// AddTorrentSpec *panics* on a spec with no infohash, and the magnet parser
+	// happily produces one: "magnet:?nonsense" parses without error and yields a
+	// zero hash. Anyone who can reach /api/add could therefore take down a
+	// request handler, so this check is load-bearing, not defensive padding.
+	if spec.InfoHash.IsZero() && !spec.InfoHashV2.Ok {
+		return fmt.Errorf("%w: no infohash in torrent source", ErrInvalidInput)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.client == nil {

@@ -92,7 +92,12 @@ func (c *Client) Torrent(ctx context.Context, raw string) ([]byte, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUpstream, err)
+		// %w twice, not %w plus %s: the dial error carries ErrBlocked, and
+		// flattening it to a string broke the chain, so a caller checking for
+		// ErrBlocked never saw it. The refusal was reported as a generic
+		// upstream failure — a 502 saying "could not fetch" rather than a 400
+		// saying which address was refused.
+		return nil, fmt.Errorf("%w: %w", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
