@@ -113,7 +113,7 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 
 ## Work Guidance
 
-- Keep the binary dependency-free at runtime: `CGO_ENABLED=0` builds must keep working across linux/darwin/windows/openbsd
+- Keep the binary dependency-free at runtime: `CGO_ENABLED=0` builds must keep working across linux/darwin/windows. OpenBSD is deliberately not built — `anacrolix/torrent`'s storage package does not compile there (`undefined: unix.SEEK_DATA`); see `.github/goreleaser.yml`.
 - Error strings are ordinary lowercase Go, in every package. `server.classify` owns what the user is shown: it capitalises the detail of errors the caller caused and substitutes a fixed message for everything else, logging the chain. Do not reintroduce error-strings-as-UI-copy — it welds the producing package to an HTML caller and puts raw syscall text in front of users.
 - Prefer the standard library. Three direct dependencies remain, each earning its place by encapsulating platform or protocol detail: `anacrolix/torrent` (the engine), `klauspost/compress` (gzip middleware) and `gopsutil/v4` (cross-platform system stats). Authentication, CLI parsing and request logging now live in `internal/` — weigh that precedent before adding a dependency for something small.
 - Run `go mod tidy` after touching `go.mod`
@@ -125,7 +125,8 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 - `go build -v -o /dev/null .`
 - `go vet ./...` and `gofmt -l .` (both must be clean; CI enforces them)
 - `go test -race ./...` — the race detector is not optional here: the bugs this codebase actually shipped were unsynchronized map access
-- CI runs `go vet`, the build and `go test -race` across linux/macos/windows, and `gofmt`, `staticcheck` and `govulncheck` on linux only. It triggers on every pull request, but on push only for `master` and `refactor/**`.
+- CI runs `go vet`, the build and `go test -race` across linux/macos/windows, and `gofmt`, coverage, the `go mod tidy` gate, the boundary checks, `staticcheck` and `govulncheck` on linux only. It triggers on every pull request, and on push for `master`, `refactor/**` and `v*` tags. The release jobs are gated on a `v*` tag, but the release *build* (`goreleaser build --snapshot`, `docker build`) runs on every PR so a broken packaging config is not discovered on a tag that is already public.
+- **The architectural boundaries are CI gates, not conventions.** `web` must not import `server`, `server` must not import `html/template`, and no `jpillora` module may return to the graph. Each is one line in the `boundaries` job; each was previously stated in a `CLAUDE.md` and enforced by nothing.
 
 ## Child DOX Index
 

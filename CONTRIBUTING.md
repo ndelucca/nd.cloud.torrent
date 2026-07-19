@@ -12,11 +12,15 @@ files/               download tree, path containment, file serving
 fetch/               SSRF-guarded remote .torrent download
 sysstat/             host CPU/memory/disk sampling
 static/files/        embedded CSS and JavaScript
+internal/auth/       basic-auth login plus a signed session cookie
+internal/cli/        flag registration, env fallbacks, the help screen
+internal/reqlog/     one log line per request
 ```
 
-Dependencies flow one way: `main` → `server` → {`engine`, `web`, `files`,
-`fetch`, `sysstat`, `static`}, and `web` → {`files`, `sysstat`}. Nothing below
-the server imports it.
+Dependencies flow one way: `main` → {`server`, `internal/cli`}, `server` →
+{`engine`, `web`, `files`, `fetch`, `sysstat`, `static`, `internal/auth`,
+`internal/reqlog`}, and `web` → {`files`, `sysstat`}. Nothing below the server
+imports it, and CI enforces that rather than trusting it.
 
 ## Building
 
@@ -76,8 +80,9 @@ weight, both verified in a real browser rather than assumed:
 2. **Every SSE fragment must be wrapped in an element.** A bare-text payload
    swaps as empty, with no error anywhere.
 
-`server/CLAUDE.md` and `static/CLAUDE.md` carry the full contracts, including
-why each one exists. Read the relevant one before changing that layer.
+`web/CLAUDE.md` owns the fragment-wrapping rule and `static/CLAUDE.md` owns the
+Alpine/idiomorph rules; `server/CLAUDE.md` owns the middleware chain and routing.
+Read the relevant one before changing that layer.
 
 ## Commits
 

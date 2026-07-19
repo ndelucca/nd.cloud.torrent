@@ -105,17 +105,22 @@ in memory, so restarting the server ends them.
 | `/` | the web UI |
 | `/events` | Server-Sent Events: named events carrying HTML fragments |
 | `/api/state` | torrents, the download tree, viewer count and host stats as JSON — for scripts and monitoring. Read live, so it is correct with no browser open. The engine configuration is not included; it is not the server's to publish. |
-| `/api/*` | commands: `add`, `torrentfile`, `configure`, `torrent` |
+| `/api/*` | commands; see the table below |
 | `/download/<path>` | file download (range requests supported); a directory streams as a zip |
 
-`/api/*` requires `POST` and rejects cross-origin requests.
+Every request that is not `GET` or `HEAD` is rejected cross-origin.
 
-| Action | Body |
+| Command | Body |
 |---|---|
-| `add` | a magnet URI or an `http(s)` URL to a `.torrent` — either as the raw body, or as a `uri` form field. The server dispatches on the scheme. |
-| `torrentfile` | raw `.torrent` bytes, or a multipart upload under `torrent` |
-| `configure` | form-encoded; omitted fields keep their current value |
-| `torrent` | form-encoded `action` (`start`, `stop`, `delete`) and `infohash` |
+| `POST /api/add` | a magnet URI or an `http(s)` URL to a `.torrent` — either as the raw body, or as a `uri` form field. The server dispatches on the scheme. |
+| `POST /api/torrentfile` | raw `.torrent` bytes, or a multipart upload under `torrent` |
+| `POST /api/configure` | form-encoded; omitted fields keep their current value |
+| `POST /api/torrents/<infohash>/start` | none |
+| `POST /api/torrents/<infohash>/stop` | none |
+| `DELETE /api/torrents/<infohash>` | none |
+
+The infohash is 40 hex characters and travels in the path, so the three torrent
+verbs take no body at all.
 
 Note that `curl -d` defaults to `Content-Type: application/x-www-form-urlencoded`,
 so `add` will look for a `uri` field; use `--data-urlencode "uri=…"`, or send the

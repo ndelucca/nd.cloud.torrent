@@ -44,12 +44,26 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build -v -o /dev/null .
+      # -short on macos and windows skips the two wall-clock tests
+      # (TestIdleServerIsQuiet, TestRunShutsDownPromptlyWithSSEClients). They
+      # assert timing, and these are the slowest and most contended runners, so
+      # a failure there is far more likely to be the runner than the code. Linux
+      # runs the full set.
       - name: Test (race)
+        if: matrix.platform == 'ubuntu-latest'
         run: go test -race -v ./...
+      - name: Test (race, short)
+        if: matrix.platform != 'ubuntu-latest'
+        run: go test -race -v -short ./...
+      # -coverpkg=./... so cross-package exercise is attributed. Without it the
+      # web fragment handlers report 0.0% while server tests drive them through
+      # the real mux, which understated the total by ~6 points — hiding real
+      # gaps behind fake ones. Reuses the -race profile rather than re-running
+      # the suite uninstrumented.
       - name: Coverage
         if: matrix.platform == 'ubuntu-latest'
         run: |
-          go test -coverprofile=coverage.out ./...
+          go test -race -coverpkg=./... -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out | tail -1
       - name: go mod tidy is clean
         if: matrix.platform == 'ubuntu-latest'
@@ -59,6 +73,44 @@ jobs:
             echo "go.mod/go.sum are not tidy; run 'go mod tidy' and commit:"
             git diff -- go.mod go.sum
             exit 1
+          fi
+
+  # ================
+  # ARCHITECTURAL BOUNDARIES
+  # ================
+  # Each of these was stated as a binding contract in a CLAUDE.md and enforced
+  # by nothing but memory. They are one line each; the dependency graph is the
+  # repo's central architectural asset and deserves a gate, not a convention.
+  boundaries:
+    name: Boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      # web renders and server routes. The standing temptation is for web to
+      # reach for server state; the moment that edge exists the split is undone.
+      - name: web must not import server
+        run: |
+          if go list -deps ./web | grep -q 'nd\.cloud\.torrent/server'; then
+            echo "web imports server; the rendering/routing split is broken"; exit 1
+          fi
+      # Anything producing HTML belongs in web. This is web/CLAUDE.md's own
+      # stated check that the boundary is real.
+      - name: server must not import html/template
+        run: |
+          if grep -rn "html/template" server/*.go; then
+            echo "server renders HTML; move it to the web package"; exit 1
+          fi
+      # internal/{auth,cli,reqlog} exist to remove these. A reappearance means
+      # a replacement was quietly reverted.
+      - name: no jpillora modules
+        run: |
+          n=$(go mod graph | grep -c jpillora || true)
+          if [ "$n" != "0" ]; then
+            echo "jpillora modules are back in the graph ($n edges)"; exit 1
           fi
 
   # ================
@@ -86,11 +138,53 @@ jobs:
           govulncheck ./...
 
   # ================
+  # PACKAGING DRY RUN (everything except a tag)
+  # ================
+  # The release jobs below are the only consumers of goreleaser.yml and the
+  # Dockerfile, and they are gated on a v* tag — so a broken packaging config
+  # used to be discovered *during* a release, on a tag that is already public.
+  # This builds both without publishing either. It is the only irreversible
+  # operation in the pipeline, so it is the one that most needs a rehearsal.
+  release_build:
+    name: Packaging Dry Run
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: goreleaser build (snapshot)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean --config .github/goreleaser.yml
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # amd64 only and no push: this is a compile check on the Dockerfile, not
+      # a release. The multi-arch matrix belongs to the tagged job.
+      - name: docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            VERSION=0.0.0-ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ================
   # RELEASE BINARIES (on push "v*" tag)
   # ================
   release_binaries:
     name: Release Binaries
-    needs: [test, analyze]
+    needs: [test, analyze, boundaries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -115,7 +209,7 @@ jobs:
   # ================
   release_docker:
     name: Release Docker Images
-    needs: [test, analyze]
+    needs: [test, analyze, boundaries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

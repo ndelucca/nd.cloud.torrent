@@ -13,7 +13,7 @@ authorization.
 
 ## Local Contracts
 
-- **`Handler` performs no authorization and must never be mounted on a mutating route without a caller-side gate.** DELETE here removes files from disk for anyone who reaches it. `server.serveDownload` is that gate and checks same-origin before delegating; the split moved the check there deliberately, so CSRF policy lives in one package. Any new mutating method added here inherits the assumption.
+- **`Handler` performs no authorization and must never be mounted on a mutating route without a caller-side gate.** DELETE here removes files from disk for anyone who reaches it. The gate is `server.requireSameOrigin`, middleware wrapping the whole mux: anything that is not GET or HEAD must be same-origin. CSRF policy lives in that one package. Any new mutating method added here inherits the assumption.
 - **Every user-supplied path goes through `ResolveWithin`.** A `strings.HasPrefix` check is not enough — it has no separator boundary, so `<root>-backup/secret` passes it. `ResolveWithin` uses `filepath.Rel` *and* resolves symlinks and re-checks, because a link inside the download directory can otherwise point anywhere on disk.
 - Rejections return `ErrOutsideRoot` and callers must answer with a generic 404. Echoing the resolved path back turns every rejected probe into a filesystem-layout oracle.
 - `Handler.Root` is a `func() string`, not a string: `/api/configure` can move the download directory at any time and a captured copy would serve from the old one.
