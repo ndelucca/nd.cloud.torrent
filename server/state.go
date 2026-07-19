@@ -44,7 +44,7 @@ func (s *sampledStats) get() sysstat.Stats {
 // Exported field names are the contract; renaming one breaks any script
 // consuming it.
 type stateDocument struct {
-	Torrents       map[string]*engine.Torrent
+	Torrents       map[string]*engine.TorrentWithFiles
 	Downloads      *files.Node
 	ConnectedUsers int
 	Stats          statsDocument
@@ -72,7 +72,7 @@ func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
 	// No method guard: the route is registered as "GET /api/state", so ServeMux
 	// answers 405 with an Allow header before this runs.
 	doc := stateDocument{
-		Torrents:       s.engine.GetTorrents(),
+		Torrents:       s.engine.GetTorrentsWithFiles(),
 		Downloads:      files.List(s.downloadDir()),
 		ConnectedUsers: s.watchers(),
 		Stats: statsDocument{

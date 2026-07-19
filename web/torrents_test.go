@@ -282,8 +282,8 @@ func TestOneBroadcastPerTick(t *testing.T) {
 // started rendering in map order. Building the view now sorts it, so an
 // unsorted one is unrepresentable.
 func TestFileViewIsSorted(t *testing.T) {
-	tor := &engine.Torrent{
-		InfoHash: "abc",
+	tor := &engine.TorrentWithFiles{
+		Torrent: engine.Torrent{InfoHash: "abc"},
 		Files: []engine.File{
 			{Path: "z/last.mkv"},
 			{Path: "a/first.mkv"},

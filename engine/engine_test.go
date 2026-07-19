@@ -97,26 +97,45 @@ func TestPercent(t *testing.T) {
 	}
 }
 
-// TestTorrentCloneIsDeep guards the fix for the engine handing its live internal
-// map to the server, which then marshalled it from another goroutine.
-func TestTorrentCloneIsDeep(t *testing.T) {
-	orig := &Torrent{
-		InfoHash: "abc",
-		Started:  true,
-		Files:    []File{{Path: "a.mkv", Percent: 10}, {Path: "b.mkv", Percent: 20}},
+// TestViewWithFilesIsDeep guards the engine handing its live internal state to
+// the server, which then marshals it from another goroutine.
+//
+// It no longer has to check that the internal handles stayed behind: Torrent has
+// no field that could carry them, so that is unrepresentable rather than
+// asserted. What still needs asserting is the Files slice, which is the one
+// thing a shallow copy would share.
+func TestViewWithFilesIsDeep(t *testing.T) {
+	orig := &torrentState{
+		Torrent: Torrent{InfoHash: "abc", Started: true},
+		Files:   []File{{Path: "a.mkv", Percent: 10}, {Path: "b.mkv", Percent: 20}},
 	}
-	c := orig.clone()
+	c := orig.viewWithFiles()
 
 	c.Started = false
 	c.Files[0].Percent = 99
 	if !orig.Started {
-		t.Error("clone shares the Started field")
+		t.Error("the view shares the Started field")
 	}
 	if orig.Files[0].Percent != 10 {
-		t.Error("clone shares File values")
+		t.Error("the view shares the Files backing array")
 	}
-	if c.t != nil || c.spec != nil {
-		t.Error("clone must not carry internal handles out of the engine")
+}
+
+// TestViewCarriesNoFiles pins the hot path. GetTorrents runs once per sample for
+// every connected browser and the streamed row never renders a file table, so
+// copying one into every row would be pure waste — and it is the reason Torrent
+// and TorrentWithFiles are separate types rather than one with an optional
+// slice.
+func TestViewCarriesNoFiles(t *testing.T) {
+	orig := &torrentState{
+		Torrent: Torrent{InfoHash: "abc"},
+		Files:   []File{{Path: "a.mkv"}},
+	}
+	if got := orig.view(); got.InfoHash != "abc" {
+		t.Fatalf("view lost its fields: %+v", got)
+	}
+	if orig.viewWithFiles().Files == nil {
+		t.Error("viewWithFiles dropped the file table")
 	}
 }
 
@@ -134,7 +153,7 @@ func TestStartAfterStopReAdds(t *testing.T) {
 	defer e.Close()
 
 	// A stopped torrent: flags cleared, handle dropped, spec retained.
-	stopped := &Torrent{InfoHash: "ih", Started: false, t: nil, spec: nil}
+	stopped := &torrentState{Torrent: Torrent{InfoHash: "ih"}}
 	e.ts["ih"] = stopped
 
 	// With no client configured, restarting must report that rather than
@@ -153,7 +172,7 @@ func TestStartAfterStopReAdds(t *testing.T) {
 func TestStopTorrentClearsHandle(t *testing.T) {
 	e := New()
 	defer e.Close()
-	tor := &Torrent{InfoHash: "ih", Started: true, Files: []File{{Path: "a"}}}
+	tor := &torrentState{Torrent: Torrent{InfoHash: "ih", Started: true}, Files: []File{{Path: "a"}}}
 	e.ts["ih"] = tor
 
 	// t.t is nil here, so Drop is skipped, but the bookkeeping must still run.
@@ -163,7 +182,7 @@ func TestStopTorrentClearsHandle(t *testing.T) {
 
 	// Via the real path, with a valid hash.
 	valid := "abababababababababababababababababababab"
-	tor2 := &Torrent{InfoHash: valid, Started: true, Files: []File{{Path: "a"}}}
+	tor2 := &torrentState{Torrent: Torrent{InfoHash: valid, Started: true}, Files: []File{{Path: "a"}}}
 	e.ts[valid] = tor2
 	if err := e.StopTorrent(valid); err != nil {
 		t.Fatalf("StopTorrent: %v", err)
@@ -555,8 +574,8 @@ func testTorrentFile(t *testing.T) []byte {
 
 // onlyTorrent returns the single cached torrent, failing if there is not
 // exactly one. It reaches into ts because the test needs the live entry, not
-// the clone GetTorrents hands out.
-func onlyTorrent(t *testing.T, e *Engine) *Torrent {
+// the view GetTorrents hands out.
+func onlyTorrent(t *testing.T, e *Engine) *torrentState {
 	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -595,7 +614,7 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	// and the "autostart starts it" case would pass whether or not the call
 	// under test did anything. Each subtest sets the flag afterwards, under the
 	// lock, so the only thing that can act on it is the infoArrived call itself.
-	newLoaded := func(t *testing.T) (*Engine, *Torrent) {
+	newLoaded := func(t *testing.T) (*Engine, *torrentState) {
 		t.Helper()
 		e := New()
 		t.Cleanup(func() { e.Close() })
@@ -663,7 +682,7 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 // negative rate.
 func TestSampleHandlesBytesGoingBackwards(t *testing.T) {
 	t0 := time.Now()
-	tor := &Torrent{Size: 10_000}
+	tor := &torrentState{Torrent: Torrent{Size: 10_000}}
 	tor.sample(5000, t0)
 	tor.sample(6000, t0.Add(time.Second))
 	tor.sample(0, t0.Add(2*time.Second))

@@ -127,7 +127,11 @@ func New(o Options, version string) (*Server, error) {
 		Torrents: s.engine.GetTorrents,
 		Tree:     func() *files.Node { return files.List(s.downloadDir()) },
 		Config:   s.desiredConfig,
-		Kick:     s.kick,
+		TorrentFiles: func(hash string) (*engine.TorrentWithFiles, bool) {
+			t, err := s.engine.TorrentWithFiles(hash)
+			return t, err == nil
+		},
+		Kick: s.kick,
 	})
 	if err != nil {
 		return nil, err

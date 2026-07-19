@@ -43,13 +43,17 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 					return
 				default:
 				}
-				for _, tor := range e.GetTorrents() {
-					// Touch the copied fields: a shallow clone would show up
-					// here as a race on the Files backing array.
+				for ih, tor := range e.GetTorrents() {
 					_ = tor.Name
 					_ = tor.Percent
-					for _, f := range tor.Files {
-						_ = f.Path
+					// The file table is a separate call now, and it has to be
+					// made here: Torrent carries no Files, so a reader that only
+					// ranged over GetTorrents would range over nothing and this
+					// test would silently stop covering the copy at all.
+					if wf, err := e.TorrentWithFiles(ih); err == nil {
+						for _, f := range wf.Files {
+							_ = f.Path
+						}
 					}
 				}
 			}
@@ -114,8 +118,8 @@ func TestConcurrentStateReadsAreConsistent(t *testing.T) {
 				"(%d -> %d); GetTorrents is not returning a deep copy",
 				ih, before[ih], tor.Downloaded)
 		}
-		if tor.t != nil || tor.spec != nil {
-			t.Fatalf("torrent %s: internal handles escaped the engine", ih)
-		}
+		// No check that the internal handles did not escape: Torrent has no
+		// field that could carry them, so it is unrepresentable rather than
+		// asserted.
 	}
 }

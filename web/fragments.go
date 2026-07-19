@@ -29,8 +29,8 @@ func (u *UI) ServeDownloads(w http.ResponseWriter, r *http.Request) {
 // ServeTorrentFiles renders one torrent's file table. The infohash comes from
 // the route pattern, so it is a single path segment by construction.
 func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
-	t, ok := u.deps.Torrents()[r.PathValue("hash")]
-	if !ok || t == nil {
+	t, ok := u.deps.TorrentFiles(r.PathValue("hash"))
+	if !ok {
 		// A fragment response is HTML, not an error page: htmx swaps whatever
 		// comes back straight into the document.
 		u.writeTemplate(w, http.StatusNotFound, "fragment-message",

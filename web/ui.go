@@ -28,6 +28,13 @@ type Deps struct {
 	// Torrents and Tree are read once per render tick.
 	Torrents func() map[string]*engine.Torrent
 	Tree     func() *files.Node
+	// TorrentFiles fetches one torrent with its file table, for the on-demand
+	// file fragment. A keyed lookup rather than a scan of a full snapshot: the
+	// row being expanded is one row.
+	//
+	// It returns a bool, not an error, because this package does not see errors
+	// — both failure modes render the same fragment either way.
+	TorrentFiles func(hash string) (*engine.TorrentWithFiles, bool)
 	// Config backs the settings form.
 	Config func() engine.Config
 	// Kick asks the render loop to run before its next tick, so a browser

@@ -127,7 +127,7 @@ func TestVerbsRejectUnknownHashes(t *testing.T) {
 // liveTorrent reaches into ts for the real entry. GetTorrents hands out clones
 // with the internal handles stripped, and t.t is exactly what these tests need
 // to see.
-func liveTorrent(t *testing.T, e *Engine, hash string) *Torrent {
+func liveTorrent(t *testing.T, e *Engine, hash string) *torrentState {
 	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()

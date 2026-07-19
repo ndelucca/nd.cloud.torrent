@@ -69,8 +69,8 @@ func newTorrentView(t *engine.Torrent) torrentView {
 }
 
 // newTorrentViewWithFiles is the variant used by the /fragments file table.
-func newTorrentViewWithFiles(t *engine.Torrent) torrentView {
-	v := newTorrentView(t)
+func newTorrentViewWithFiles(t *engine.TorrentWithFiles) torrentView {
+	v := newTorrentView(&t.Torrent)
 	v.Files = make([]fileView, 0, len(t.Files))
 	for _, f := range t.Files {
 		v.Files = append(v.Files, newFileView(f))

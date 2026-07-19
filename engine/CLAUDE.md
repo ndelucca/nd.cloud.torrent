@@ -11,7 +11,8 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
   adding torrents (`NewMagnet`,
   `NewTorrentFile`, `addSpec`), the metadata watchers (`watchInfoLocked`, `infoArrived`), the `ts`
   cache and its sampler (`GetTorrents`, `refresh`, `sampleLoop`), and start/stop/delete
-- `torrent.go` — the `Torrent` and `File` view models, `update`, `sample`, `clone`, `percent`
+- `torrent.go` — `Torrent`/`TorrentWithFiles`/`File` (the exported views), `torrentState` (the
+  internal record), `view`, `viewWithFiles`, `update`, `sample`, `percent`
 - `config.go` — the `Config` struct the server persists as JSON, plus `Validate`
 
 ## Local Contracts
@@ -20,8 +21,8 @@ Boundaries:
 
 - Bottom of the dependency chain: must not import `server` or `static`, and `anacrolix/torrent`
   types must not appear in exported signatures. Torrent parsing lives here for that reason.
-- `Torrent`, `File` and `Config` exported field names are marshalled straight to the browser and
-  round-trip through the settings form — they are the UI and wire contract.
+- `Torrent`, `TorrentWithFiles`, `File` and `Config` exported field names are marshalled straight to
+  the browser and round-trip through the settings form — they are the UI and wire contract.
 - Errors are sentinels (`ErrMissingTorrent`, `ErrAlreadyStarted`, …) wrapped with `%w`, in ordinary
   lowercase Go; `server.classify` decides status and presentation.
 - **Anything the caller caused wraps `ErrInvalidInput`** — bad magnet URI, unparseable `.torrent`
@@ -81,8 +82,17 @@ Torrents:
 
 Sampling:
 
-- **`GetTorrents` is a pure read**: a deep copy of the last sample, touching neither the client nor
-  any torrent's reading. The `ts` map and its `*Torrent` values never escape the engine.
+- **One torrent, three types, and the split is the point.** `torrentState` is the internal record
+  and never leaves the package — it holds the live handle, the spec and `updatedAt`, so the internal
+  state is *unrepresentable* outside rather than nil'd out by hand. `Torrent` is progress only, with
+  **no file list**. `TorrentWithFiles` adds one.
+- **`GetTorrents` is the hot path and carries no files.** It runs once per sample for every connected
+  browser and the streamed row discards file tables, so copying every file into every row once a
+  second was pure waste. `GetTorrentsWithFiles` is for `/api/state`, one document per request;
+  `TorrentWithFiles(hash)` is a keyed lookup for the on-demand file fragment, so expanding one row
+  costs one torrent's files rather than a copy of the whole engine.
+- **`GetTorrents` is a pure read**: a copy of the last sample, touching neither the client nor any
+  torrent's reading. The `ts` map and its values never escape.
 - **The engine owns its cadence.** `refresh` is the only thing that samples and `sampleLoop` (started
   in `New`, ticking at `SampleInterval`) the only thing that calls it, so the interval between
   readings *is* the window `DownloadRate` is measured over. The server's render loop follows this

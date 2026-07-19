@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 // TestStateIsServedAsJSON keeps the machine-readable feed alive.
@@ -73,5 +76,57 @@ func TestStateIsLiveWithoutWatchers(t *testing.T) {
 	}
 	if doc.Stats.Version != "test" {
 		t.Errorf("Stats.Version = %q, want %q", doc.Stats.Version, "test")
+	}
+}
+
+// TestStateIncludesFileTables pins the half of the Torrent split that could
+// break in silence.
+//
+// engine.Torrent deliberately has no Files field — the streamed row never
+// renders one, and copying every file into every row once a second is waste. But
+// /api/state is the only machine-readable view of the server, and dropping the
+// file tables from it would be invisible to every other test: the document would
+// still have a Torrents map, still marshal, still contain the torrent.
+func TestStateIncludesFileTables(t *testing.T) {
+	s := newTestServer(t)
+	if err := s.engine.NewTorrentFile(testTorrentFile(t, "payload.bin")); err != nil {
+		t.Fatalf("NewTorrentFile: %v", err)
+	}
+	// A sample is what populates Files from the live torrent.
+	select {
+	case <-s.engine.Sampled():
+	case <-time.After(5 * engine.SampleInterval):
+		t.Fatal("no sample within 5 intervals")
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	w := httptest.NewRecorder()
+	s.handler().ServeHTTP(w, r)
+
+	var doc struct {
+		Torrents map[string]struct {
+			Name  string
+			Files []struct {
+				Path string
+				Size int64
+			}
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decoding /api/state: %v", err)
+	}
+	if len(doc.Torrents) != 1 {
+		t.Fatalf("Torrents has %d entries, want 1", len(doc.Torrents))
+	}
+	for hash, tor := range doc.Torrents {
+		if len(tor.Files) == 0 {
+			t.Errorf("torrent %s has no Files in /api/state; the file tables were "+
+				"dropped when Torrent stopped carrying them", hash)
+		}
+		for _, f := range tor.Files {
+			if f.Path == "" {
+				t.Errorf("torrent %s has a file with no Path: %+v", hash, f)
+			}
+		}
 	}
 }

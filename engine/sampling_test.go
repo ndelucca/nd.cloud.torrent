@@ -86,7 +86,7 @@ func TestRefreshIsTheOnlySampler(t *testing.T) {
 // json.Marshal, which froze the whole UI.
 func TestSampleRejectsZeroInterval(t *testing.T) {
 	t0 := time.Now()
-	tor := &Torrent{Size: 10_000}
+	tor := &torrentState{Torrent: Torrent{Size: 10_000}}
 	tor.sample(0, t0)
 	tor.sample(1000, t0.Add(time.Second))
 	if tor.DownloadRate != 1000 {

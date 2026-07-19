@@ -45,7 +45,7 @@ type Engine struct {
 	mu     sync.Mutex
 	client *torrent.Client
 	config Config
-	ts     map[string]*Torrent
+	ts     map[string]*torrentState
 
 	// Lifecycle for the per-torrent metadata watchers.
 	ctx    context.Context
@@ -82,7 +82,7 @@ const SampleInterval = 1 * time.Second
 func New() *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		ts:     map[string]*Torrent{},
+		ts:     map[string]*torrentState{},
 		ctx:    ctx,
 		cancel: cancel,
 		// Buffered and coalesced: a reader slower than the sampler sees one
@@ -373,14 +373,43 @@ func (e *Engine) infoArrived(ih string, tt *torrent.Torrent) {
 // on the page.
 //
 // The copy matters: the caller marshals this concurrently with engine mutations.
+//
+// No file lists — see Torrent. This runs once per sample for every connected
+// browser, and the streamed row discards them.
 func (e *Engine) GetTorrents() map[string]*Torrent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make(map[string]*Torrent, len(e.ts))
 	for ih, t := range e.ts {
-		out[ih] = t.clone()
+		out[ih] = t.view()
 	}
 	return out
+}
+
+// GetTorrentsWithFiles is GetTorrents plus the file tables, for /api/state. One
+// document per request rather than a per-tick cost.
+func (e *Engine) GetTorrentsWithFiles() map[string]*TorrentWithFiles {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]*TorrentWithFiles, len(e.ts))
+	for ih, t := range e.ts {
+		out[ih] = t.viewWithFiles()
+	}
+	return out
+}
+
+// TorrentWithFiles returns one torrent by hex infohash, file table included.
+//
+// A keyed lookup, so answering "what is in this row" costs one torrent's files
+// rather than a copy of every torrent and every file in the engine.
+func (e *Engine) TorrentWithFiles(infohash string) (*TorrentWithFiles, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t, err := e.getLocked(infohash)
+	if err != nil {
+		return nil, err
+	}
+	return t.viewWithFiles(), nil
 }
 
 // refresh takes one progress reading for every torrent the client holds. It is
@@ -396,18 +425,18 @@ func (e *Engine) refresh(now time.Time) {
 	}
 }
 
-func (e *Engine) upsertLocked(tt *torrent.Torrent, now time.Time) *Torrent {
+func (e *Engine) upsertLocked(tt *torrent.Torrent, now time.Time) *torrentState {
 	ih := tt.InfoHash().HexString()
 	t, ok := e.ts[ih]
 	if !ok {
-		t = &Torrent{InfoHash: ih}
+		t = &torrentState{Torrent: Torrent{InfoHash: ih}}
 		e.ts[ih] = t
 	}
 	t.update(tt, now)
 	return t
 }
 
-func (e *Engine) getLocked(infohash string) (*Torrent, error) {
+func (e *Engine) getLocked(infohash string) (*torrentState, error) {
 	ih, err := str2ih(infohash)
 	if err != nil {
 		return nil, err
@@ -432,7 +461,7 @@ func (e *Engine) StartTorrent(infohash string) error {
 	return e.startLocked(t)
 }
 
-func (e *Engine) startLocked(t *Torrent) error {
+func (e *Engine) startLocked(t *torrentState) error {
 	// Stopping drops the underlying torrent, so restarting means re-adding it.
 	// Without this, start-after-stop flips the flag and downloads nothing.
 	if t.t == nil {

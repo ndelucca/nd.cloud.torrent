@@ -7,8 +7,14 @@ import (
 	"github.com/anacrolix/torrent"
 )
 
-// Torrent is the view model handed to the server and marshalled straight to the
-// browser. Exported field names are part of the UI contract.
+// Torrent is one torrent's progress: the wire contract of GET /api/state and
+// the source for the streamed row in the UI. Exported field names are part of
+// both contracts.
+//
+// It deliberately carries no file list. The streamed row never renders one, and
+// GetTorrents runs once per sample for every connected browser — copying every
+// file into every row once a second is pure waste. Callers that need files ask
+// for one torrent by key.
 type Torrent struct {
 	//anacrolix/torrent
 	InfoHash   string
@@ -16,15 +22,17 @@ type Torrent struct {
 	Loaded     bool
 	Downloaded int64
 	Size       int64
-	Files      []File
 	//cloud torrent
 	Started      bool
 	Percent      float32
 	DownloadRate float32
-	//internal — never leaves the engine
-	t         *torrent.Torrent
-	spec      *torrent.TorrentSpec
-	updatedAt time.Time
+}
+
+// TorrentWithFiles is a Torrent plus its file table, for the on-demand file
+// fragment and for /api/state.
+type TorrentWithFiles struct {
+	Torrent
+	Files []File
 }
 
 // File is the per-file progress view. It is a value, not a pointer, so no
@@ -37,15 +45,28 @@ type File struct {
 	Percent float32
 }
 
-// clone returns a deep copy safe to hand to another goroutine. The internal
-// handles are deliberately dropped: callers outside the engine must not be able
-// to reach the underlying client.
-func (t *Torrent) clone() *Torrent {
-	c := *t
-	c.t = nil
-	c.spec = nil
-	c.Files = slices.Clone(t.Files)
+// torrentState is the engine's internal record for one torrent. It never leaves
+// the package: the live client handle and the spec are how the engine acts on a
+// torrent, and handing them out would let a caller reach the underlying client.
+type torrentState struct {
+	Torrent
+	Files     []File
+	t         *torrent.Torrent
+	spec      *torrent.TorrentSpec
+	updatedAt time.Time
+}
+
+// view returns the progress snapshot. No file list and no internal handles —
+// both are unrepresentable in Torrent rather than nil'd out by hand.
+func (t *torrentState) view() *Torrent {
+	c := t.Torrent
 	return &c
+}
+
+// viewWithFiles is view plus a copy of the file table. slices.Clone is the whole
+// of the deep copy: File is a value type.
+func (t *torrentState) viewWithFiles() *TorrentWithFiles {
+	return &TorrentWithFiles{Torrent: t.Torrent, Files: slices.Clone(t.Files)}
 }
 
 // update copies live state out of the underlying torrent. Callers must hold the
@@ -54,7 +75,7 @@ func (t *Torrent) clone() *Torrent {
 // now is passed in rather than read here so one pass shares a single timestamp,
 // and so a test can drive a deterministic two-sample sequence without a real
 // clock or a real download.
-func (t *Torrent) update(tt *torrent.Torrent, now time.Time) {
+func (t *torrentState) update(tt *torrent.Torrent, now time.Time) {
 	t.Name = tt.Name()
 	t.Loaded = tt.Info() != nil
 	if t.Loaded {
@@ -63,7 +84,7 @@ func (t *Torrent) update(tt *torrent.Torrent, now time.Time) {
 	t.t = tt
 }
 
-func (t *Torrent) updateLoaded(tt *torrent.Torrent, now time.Time) {
+func (t *torrentState) updateLoaded(tt *torrent.Torrent, now time.Time) {
 	// Rebuilt each pass rather than patched in place: keeping entries by index
 	// assumes index i is the same file across ticks, which stops being true once
 	// a torrent is re-added. Every field is read from the live torrent anyway, so
@@ -91,7 +112,7 @@ func (t *Torrent) updateLoaded(tt *torrent.Torrent, now time.Time) {
 // readings *is* the measurement window. Readers must never produce a reading:
 // an extra one inserted microseconds after the sampler's consumes the interval
 // the next real sample needed and drives displayed rates toward zero.
-func (t *Torrent) sample(bytes int64, now time.Time) {
+func (t *torrentState) sample(bytes int64, now time.Time) {
 	t.Percent = percent(bytes, t.Size)
 
 	if t.updatedAt.IsZero() {

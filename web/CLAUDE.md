@@ -152,7 +152,10 @@ Rendering and the SSE stream:
   belong to the server's route table; done here they produce a hand-rolled
   prefix-and-suffix match that reads `torrent/a/b/files` as the infohash `a/b`.
   `ServeTorrentFiles` takes its hash from `r.PathValue`, so it is one path
-  segment by construction.
+  segment by construction, and it fetches through `Deps.TorrentFiles` — a keyed
+  lookup for the one row being expanded, not a scan of a full snapshot.
+  `engine.Torrent` deliberately has no `Files` field, so the streamed row cannot
+  pay for a file table by accident.
 
 ## Work Guidance
 
