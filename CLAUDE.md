@@ -95,11 +95,14 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
   - The release *build* (`goreleaser build --snapshot`, `docker build`) runs on every PR, so a
     broken packaging config is not discovered on a tag that is already public. The release
     *publish* jobs are gated on a `v*` tag and on `test`, `analyze` and `boundaries` passing.
-- **Some architectural boundaries are CI gates.** The `boundaries` job currently enforces three:
-  `web` must not import `server` (via `go list -deps`, the real build graph), `server` must not
-  import `html/template`, and no `jpillora` module may return to the graph. Other boundaries stated
-  in the child docs — `internal/`, `files` and `fetch` staying stdlib-only, `sysstat` owning the
-  `gopsutil` import, `configfile` importing only `engine` — are conventions, not gates.
+- **The architectural boundaries are CI gates, not conventions.** The `boundaries` job enforces
+  six, all of them off `go list`/`go mod` rather than a text search: `web` must not import
+  `server`; `server` must not import `html`/`text/template` *directly* (it reaches `html/template`
+  transitively through `web`, so the dependency closure cannot answer this); no `jpillora` module
+  may return to the graph; `files`, `fetch` and `internal/{auth,cli,reqlog}` stay stdlib-only;
+  `sysstat` is the only importer of `gopsutil`; and `configfile` imports nothing beyond `engine`
+  and the stdlib. Each step runs its `go` command separately so a tooling failure aborts it rather
+  than reading as "nothing matched".
 
 ## Child DOX Index
 

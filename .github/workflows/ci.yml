@@ -90,27 +90,82 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+      # Every check below runs `go list`/`go mod` in its own command, so a
+      # tooling failure aborts the step under `set -e` instead of being read as
+      # "nothing matched". Only the greps are allowed to come back empty.
+      #
       # web renders and server routes. The standing temptation is for web to
       # reach for server state; the moment that edge exists the split is undone.
       - name: web must not import server
         run: |
+          set -euo pipefail
           if go list -deps ./web | grep -q 'nd\.cloud\.torrent/server'; then
             echo "web imports server; the rendering/routing split is broken"; exit 1
           fi
-      # Anything producing HTML belongs in web. This is web/CLAUDE.md's own
-      # stated check that the boundary is real.
+      # Anything producing HTML belongs in web.
+      #
+      # Direct imports, not `go list -deps`: server legitimately reaches
+      # html/template transitively through web, so the dependency closure can
+      # never answer this question. Not a grep either -- that matched the string
+      # in comments and in _test.go files, missed text/template, and its -r was
+      # inert against a `server/*.go` glob that had already expanded.
       - name: server must not import html/template
         run: |
-          if grep -rn "html/template" server/*.go; then
+          set -euo pipefail
+          imports=$(go list -f '{{join .Imports "\n"}}' ./server)
+          if printf '%s\n' "$imports" | grep -qxE '(html|text)/template'; then
             echo "server renders HTML; move it to the web package"; exit 1
           fi
       # internal/{auth,cli,reqlog} exist to remove these. A reappearance means
       # a replacement was quietly reverted.
       - name: no jpillora modules
         run: |
-          n=$(go mod graph | grep -c jpillora || true)
+          set -euo pipefail
+          graph=$(go mod graph)
+          n=$(printf '%s\n' "$graph" | grep -c jpillora || true)
           if [ "$n" != "0" ]; then
             echo "jpillora modules are back in the graph ($n edges)"; exit 1
+          fi
+      # The leaf packages carry their own no-dependency contracts, each stated
+      # in a CLAUDE.md. A stdlib import path has no dot in its first segment,
+      # which is what the first grep selects; the second drops this module's own
+      # packages, leaving only third-party.
+      - name: leaf packages stay stdlib-only
+        run: |
+          set -euo pipefail
+          deps=$(go list -deps ./files ./fetch ./internal/auth ./internal/cli ./internal/reqlog)
+          third=$(printf '%s\n' "$deps" \
+            | grep -E '^[^/]+\.' \
+            | grep -v '^github\.com/ndelucca/nd\.cloud\.torrent' || true)
+          if [ -n "$third" ]; then
+            echo "these packages must not depend on anything outside the stdlib:"
+            printf '%s\n' "$third"; exit 1
+          fi
+      # sysstat is the only place gopsutil is imported, so the platform detail
+      # it encapsulates has exactly one home.
+      - name: sysstat owns the gopsutil import
+        run: |
+          set -euo pipefail
+          users=$(go list -f '{{.ImportPath}} {{join .Imports " "}}' ./...)
+          other=$(printf '%s\n' "$users" \
+            | grep gopsutil \
+            | grep -v '^github\.com/ndelucca/nd\.cloud\.torrent/sysstat ' || true)
+          if [ -n "$other" ]; then
+            echo "gopsutil must be imported only by sysstat; also imported by:"
+            printf '%s\n' "$other"; exit 1
+          fi
+      # configfile is named for the file, not the type: the config itself lives
+      # in the engine. Anything else it imports is a second copy waiting to be.
+      - name: configfile imports only engine
+        run: |
+          set -euo pipefail
+          imports=$(go list -f '{{join .Imports "\n"}}' ./configfile)
+          extra=$(printf '%s\n' "$imports" \
+            | grep -E '^[^/]+\.' \
+            | grep -v '^github\.com/ndelucca/nd\.cloud\.torrent/engine$' || true)
+          if [ -n "$extra" ]; then
+            echo "configfile may import engine and the stdlib, nothing else:"
+            printf '%s\n' "$extra"; exit 1
           fi
 
   # ================

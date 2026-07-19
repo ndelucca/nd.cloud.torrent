@@ -10,6 +10,13 @@ run where; this doc owns the details behind them.
 - `workflows/ci.yml` — `test`, `boundaries`, `analyze`, `release_build`
   (packaging dry run, on everything that is *not* a tag), `release_binaries` and
   `release_docker` (gated on `refs/tags/v*`)
+- The `boundaries` job is the import-graph gate; the root doc lists what it
+  enforces. Two rules for adding a check to it: derive the answer from
+  `go list`/`go mod`, never from a text search over sources — a grep matches
+  comments and `_test.go` files, and misses transitive edges — and run the `go`
+  command on its own line so `set -e` catches a tooling failure. A check written
+  as `n=$(go mod graph | grep -c X || true)` reports zero and passes green when
+  `go mod graph` itself fails.
 - `goreleaser.yml` — cross-platform binary matrix, deb/rpm/apk packages, changelog
   filters
 - `Dockerfile` — two-stage build producing a `scratch` image with only the binary
@@ -31,6 +38,16 @@ run where; this doc owns the details behind them.
 - `WORKDIR` is `/app` and the default download directory is the relative
   `./downloads`, so the mount target is `/app/downloads`. `VOLUME` declares it so
   the path is discoverable from the image, not only from the docs.
+- **`/app` and `/app/downloads` are staged and chowned to `65534` in the build
+  stage, and copied as one tree.** The run stage is `scratch`, so there is no
+  shell and no `RUN` that could create or chown them afterwards. Both are
+  needed, not just the download directory: `configfile.Save` writes a temp file
+  beside the config and renames it, so `/app` itself must be writable by the
+  runtime UID. The copy source is `/out/` rather than `/out/app` so that `/app`
+  is a copied entry that takes `--chown`, instead of a destination directory
+  Docker creates implicitly. An anonymous volume is initialised from the image
+  content at the mount path, ownership included, which is the other reason the
+  directory has to exist in the image.
 - Docker images publish to `ghcr.io/<repo>` with semver tags; goreleaser publishes
   the GitHub release artifacts.
 
@@ -45,6 +62,12 @@ run where; this doc owns the details behind them.
 - `staticcheck` and `govulncheck` are **pinned**, not `latest`. This is the
   security job: a tool that moves under us can break the build or quietly stop
   checking.
+- Known deprecation, not yet acted on: `archives[].format` in `goreleaser.yml`
+  was superseded by `formats` (a list) in GoReleaser v2. It is a warning today
+  and will become an error on some future minor, and the action resolves
+  `~> v2`. `release_build` runs on every PR, so the break will surface there
+  rather than on a published tag — fix it when a v2 with `formats` support is
+  confirmed for the resolved version.
 
 ## Verification
 

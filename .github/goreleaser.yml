@@ -13,8 +13,9 @@ builds:
       - darwin
       - windows
       # openbsd is not built: anacrolix/torrent's storage package does not
-      # compile there (undefined: unix.SEEK_DATA), still true as of v1.61.0.
-      # Leaving it listed fails the whole release, not just that artifact.
+      # compile there (undefined: unix.SEEK_DATA). Leaving it listed fails the
+      # whole release, not just that artifact. Recheck when bumping the engine;
+      # go.mod is the version this claim is about.
     goarch:
       - '386'
       - amd64

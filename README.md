@@ -55,8 +55,19 @@ download directory is the relative `./downloads`, so downloads land in
 container, where they vanish on restart. The config mount is optional but
 without it the settings you save do not survive one either.
 
-The image runs as a non-root user (65534); make sure the mounted directory is
-writable by it.
+The image runs as a non-root user (65534). Both `/app` and `/app/downloads`
+ship owned by it, so the container works with no mounts at all. **If you bind-
+mount either path, the host directory's ownership wins and you have to grant it
+yourself:**
+
+```sh
+mkdir -p /path/to/downloads && chown 65534:65534 /path/to/downloads
+```
+
+Saving settings needs `/app` writable too, not just the config file: the config
+is written to a temp file beside it and renamed, so that an interrupted write
+cannot leave a truncated file behind. Bind-mounting a single read-only
+`config.json` will load fine and fail to save.
 
 ## Usage
 
