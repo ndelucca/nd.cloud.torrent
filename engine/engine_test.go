@@ -452,8 +452,15 @@ func TestCloseClearsTheCache(t *testing.T) {
 //
 // The race is timing-dependent, so this loops. It asserts no panic and no
 // deadlock; which side wins is not a requirement.
+//
+// Iterations that fail to configure are skipped but counted, and the test fails
+// if too few real ones ran. Without that it could pass having exercised the race
+// zero times — a test that can silently degenerate to a no-op is indistinguishable
+// from one that works.
 func TestAddDuringClose(t *testing.T) {
-	for i := 0; i < 25; i++ {
+	const rounds = 25
+	exercised := 0
+	for i := 0; i < rounds; i++ {
 		e := New()
 		// freeTCPPort only proves the TCP port is free, and anacrolix binds UDP
 		// too. A collision here is the previous iteration's client still letting
@@ -462,6 +469,7 @@ func TestAddDuringClose(t *testing.T) {
 			e.Close()
 			continue
 		}
+		exercised++
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -476,6 +484,12 @@ func TestAddDuringClose(t *testing.T) {
 			_ = e.Close()
 		}()
 		wg.Wait()
+	}
+	// Port collisions are expected occasionally; a majority failing means the
+	// test is measuring the environment rather than the code.
+	if exercised < rounds/2 {
+		t.Fatalf("only %d of %d rounds configured an engine; the race was barely exercised",
+			exercised, rounds)
 	}
 }
 

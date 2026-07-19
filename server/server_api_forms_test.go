@@ -189,15 +189,15 @@ func TestHTMXGetsHTMLNotPlainText(t *testing.T) {
 	if ct := hw.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("htmx Content-Type = %q, want text/html", ct)
 	}
-	if !strings.Contains(hw.Body.String(), "err-msg") {
-		t.Errorf("htmx body should carry the error fragment, got %q", hw.Body.String())
+	// Assert the message, not the CSS class. "err-msg" lives in
+	// web/templates/forms.html, so keying on it made a server-package test break
+	// on a stylesheet rename. The message is what classify decides and what the
+	// user reads, which is the behaviour worth pinning.
+	if body := hw.Body.String(); !strings.Contains(body, "Missing torrent") {
+		t.Errorf("htmx body should carry the error message, got %q", body)
 	}
 }
 
-func urlEncode(s string) string {
-	r := strings.NewReplacer(
-		"%", "%25", "&", "%26", "=", "%3D", "?", "%3F",
-		":", "%3A", "/", "%2F", " ", "+", "+", "%2B",
-	)
-	return r.Replace(s)
-}
+// urlEncode was a strings.NewReplacer reimplementation of url.QueryEscape whose
+// correctness depended on Replacer's single-pass semantics for the " "/"+" pair.
+func urlEncode(s string) string { return url.QueryEscape(s) }

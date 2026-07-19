@@ -33,6 +33,13 @@ func freePort(t *testing.T) int {
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newTestServerWith(t, nil)
+}
+
+// newTestServerWith is newTestServer with a hook to adjust the options before
+// New sees them, for the tests that need a non-default chain (--auth, TLS).
+func newTestServerWith(t *testing.T, tweak func(*Options)) *Server {
+	t.Helper()
 	dir := t.TempDir()
 
 	// Seed a config file so the engine binds a free port and downloads into a
@@ -47,6 +54,9 @@ func newTestServer(t *testing.T) *Server {
 	o := DefaultOptions()
 	o.Port = freePort(t)
 	o.ConfigPath = configPath
+	if tweak != nil {
+		tweak(&o)
+	}
 
 	s, err := New(o, "test")
 	if err != nil {
@@ -488,13 +498,66 @@ func TestSecurityHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 
+	// All three that securityHeaders sets. Referrer-Policy was previously
+	// unasserted, so removing it would have failed nothing.
 	for k, want := range map[string]string{
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
 	} {
 		if got := w.Header().Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// TestTLSRequiresBothPaths pins a startup rule that had no test at all: TLS is
+// configured by two options and one of them alone is a misconfiguration, not a
+// half-enabled server. Failing at New is what stops it silently serving
+// plaintext on the port an operator believed was HTTPS.
+func TestTLSRequiresBothPaths(t *testing.T) {
+	for name, tweak := range map[string]func(*Options){
+		"cert without key": func(o *Options) { o.CertPath = "/tmp/cert.pem" },
+		"key without cert": func(o *Options) { o.KeyPath = "/tmp/key.pem" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			o := DefaultOptions()
+			o.Port = freePort(t)
+			o.ConfigPath = filepath.Join(dir, "config.json")
+			tweak(&o)
+
+			s, err := New(o, "test")
+			if err == nil {
+				s.Close()
+				t.Fatal("New succeeded with only half of the TLS pair")
+			}
+			if !strings.Contains(err.Error(), "key and cert") {
+				t.Errorf("error = %v, want it to name the missing half", err)
+			}
+		})
+	}
+}
+
+// TestTLSWithBothPathsIsAccepted is the other half: with both set, New gets past
+// the check and the server knows it is serving TLS. That flag decides whether
+// the session cookie is marked Secure, so it is not cosmetic.
+func TestTLSWithBothPathsIsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	o := DefaultOptions()
+	o.Port = freePort(t)
+	o.ConfigPath = filepath.Join(dir, "config.json")
+	o.CertPath = filepath.Join(dir, "cert.pem")
+	o.KeyPath = filepath.Join(dir, "key.pem")
+
+	s, err := New(o, "test")
+	if err != nil {
+		t.Fatalf("New with both TLS paths: %v", err)
+	}
+	defer s.Close()
+	if !s.isTLS {
+		t.Error("isTLS is false with both paths set; the session cookie would " +
+			"not be marked Secure")
 	}
 }
 

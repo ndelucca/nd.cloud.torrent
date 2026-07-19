@@ -33,6 +33,10 @@ func splitFrames(buf []byte) []string {
 	return out
 }
 
+// sentinelEvent terminates a collect run. It is a real broadcast, so it arrives
+// after everything fn produced and cannot overtake it.
+const sentinelEvent = "__collect_sentinel__"
+
 // collect drains everything the hub broadcast during fn, as event names, with
 // " [EMPTY]" appended for content-free events.
 //
@@ -40,6 +44,13 @@ func splitFrames(buf []byte) []string {
 // hub's buffer is subBuffer deep and broadcast *disconnects* a subscriber that
 // fills it, so a test with more than a handful of torrents would silently lose
 // events instead of failing.
+//
+// The end of the run is a sentinel broadcast, not a sleep. A fixed settle was a
+// guess at how long the drainer needs, and under -race on a contended machine a
+// broadcast could miss the window — which surfaced as an assertion about event
+// contents rather than as a timeout, i.e. as a bug that is not there. The
+// sentinel makes it exact: frames are delivered in order, so seeing it means
+// everything before it has been collected.
 func collect(t *testing.T, u *UI, fn func()) []string {
 	t.Helper()
 	sub := u.hub.subscribe()
@@ -56,8 +67,15 @@ func collect(t *testing.T, u *UI, fn func()) []string {
 				if !ok {
 					return
 				}
+				names := splitFrames(frame)
 				mu.Lock()
-				out = append(out, splitFrames(frame)...)
+				for _, n := range names {
+					if strings.HasPrefix(n, sentinelEvent) {
+						mu.Unlock()
+						return
+					}
+					out = append(out, n)
+				}
 				mu.Unlock()
 			case <-sub.done:
 				return
@@ -66,11 +84,14 @@ func collect(t *testing.T, u *UI, fn func()) []string {
 	}()
 
 	fn()
-	// Let the drainer catch up; broadcast is synchronous into the channel, so a
-	// short settle is enough.
-	time.Sleep(50 * time.Millisecond)
+	u.hub.broadcast(frameSSE(sentinelEvent, []byte("<i></i>")))
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("collect: sentinel never arrived; the drainer is stuck or the hub dropped it")
+	}
 	u.hub.unsubscribe(sub)
-	<-done
 
 	mu.Lock()
 	defer mu.Unlock()

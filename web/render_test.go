@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 
@@ -100,32 +101,72 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 	if perr != nil {
 		t.Fatal(perr)
 	}
-	fragments := []struct {
-		name string
-		data any
-	}{
-		{"stats", statsView{Stats: sysstat.Stats{Set: true}}},
-		{"api-ok", "Done."},
-		{"api-error", "Nope."},
-		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},
-		{"torrent-row", torrentView{InfoHash: "abc", Name: "N", Loaded: true, Started: true}},
-		{"torrent-files", torrentView{InfoHash: "abc", Files: []fileView{{Name: "b.mkv", Size: 1, Percent: 50, InProgress: true}}}},
-		{"omni", nil},
-		{"config", engine.Config{DownloadDirectory: "/d", IncomingPort: 1}},
-		{"downloads", newDownloadsView(&files.Node{Name: "d", IsDir: true})},
+	// Sample data per fragment. The set of *names* is not written here — it is
+	// enumerated from the parsed templates below, so adding a {{define}} without
+	// a fixture fails this test instead of being silently skipped. The list used
+	// to be the source of truth and covered 9 of 11; `page` and `fsnode` were
+	// absent while web/CLAUDE.md claimed the test ran over every shipped
+	// template.
+	fixtures := map[string]any{
+		"stats":         statsView{Stats: sysstat.Stats{Set: true}},
+		"api-ok":        "Done.",
+		"api-error":     "Nope.",
+		"torrent-list":  []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}},
+		"torrent-row":   torrentView{InfoHash: "abc", Name: "N", Loaded: true, Started: true},
+		"torrent-files": torrentView{InfoHash: "abc", Files: []fileView{{Name: "b.mkv", Size: 1, Percent: 50, InProgress: true}}},
+		"omni":          nil,
+		"config":        engine.Config{DownloadDirectory: "/d", IncomingPort: 1},
+		"downloads":     newDownloadsView(&files.Node{Name: "d", IsDir: true}),
+		"fsnode":        newFSView(&files.Node{Name: "f.mkv", Size: 2}, ""),
+		// page is a full document, not a fragment: it opens with <!doctype html>,
+		// so checkFragment's "starts with <" holds but the element-wrapping rule
+		// is not what governs it. It is still executed here for the render and
+		// ZgotmplZ checks.
+		"page": pageView{Title: "T", Config: engine.Config{DownloadDirectory: "/d", IncomingPort: 1}},
 	}
-	for _, f := range fragments {
-		var buf bytes.Buffer
-		if err := tmpl.ExecuteTemplate(&buf, f.name, f.data); err != nil {
-			t.Errorf("%s: render failed: %v", f.name, err)
+
+	// Enumerate what actually shipped rather than what someone remembered to
+	// list.
+	//
+	// Two kinds of name are skipped. The root ("cloud-torrent") defines nothing.
+	// The "*.html" entries are ParseFS's doing: it registers every file under its
+	// base name as well as registering each {{define}} inside it, so the set
+	// contains "torrents.html" alongside "torrent-list" and "torrent-row". Those
+	// file-level templates are the whitespace between the defines and are never
+	// executed. This is the same base-name behaviour web/CLAUDE.md warns about
+	// for collisions — worth seeing here, since it is why templates are addressed
+	// only by {{define}} name.
+	var names []string
+	for _, tm := range tmpl.Templates() {
+		n := tm.Name()
+		if n == "" || n == "cloud-torrent" || strings.HasSuffix(n, ".html") {
 			continue
 		}
-		if err := checkFragment(f.name, buf.Bytes()); err != nil {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		t.Fatal("no templates found; the enumeration is broken, not the templates")
+	}
+
+	for _, name := range names {
+		data, ok := fixtures[name]
+		if !ok {
+			t.Errorf("template %q has no fixture in this test; add one so it is "+
+				"checked rather than skipped", name)
+			continue
+		}
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+			t.Errorf("%s: render failed: %v", name, err)
+			continue
+		}
+		if err := checkFragment(name, buf.Bytes()); err != nil {
 			t.Errorf("%v", err)
 		}
 		if strings.Contains(buf.String(), "ZgotmplZ") {
 			t.Errorf("%s: ZgotmplZ in output — a value reached a URL or CSS "+
-				"context the autoescaper could not prove safe", f.name)
+				"context the autoescaper could not prove safe", name)
 		}
 	}
 }

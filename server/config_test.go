@@ -202,23 +202,39 @@ func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
 	// kernel for UDP ports and would fail on that instead of on the bug.
 	s := newTestServer(t)
 	h := s.handler()
-	post := func(body string) {
+	// The response is checked rather than discarded. Every one of these is a real
+	// same-port engine rebind, so a round that exhausts rebindTimeout answers 500
+	// — and discarding that surfaced it as "setup: reset did not take" on the
+	// *next* round, which points at the wrong thing entirely.
+	post := func(t *testing.T, body string) {
+		t.Helper()
 		r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		r.Header.Set("Origin", "http://"+r.Host)
-		h.ServeHTTP(httptest.NewRecorder(), r)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		// Errorf, not Fatalf: post runs on the concurrent goroutines below, and
+		// Fatalf calls runtime.Goexit, which is only defined behaviour on the
+		// test's own goroutine.
+		if rec.Code != http.StatusOK {
+			t.Errorf("configure %q: status %d, body %q", body, rec.Code, rec.Body.String())
+		}
 	}
 
-	for i := 0; i < 20; i++ {
-		post("EnableSeeding=false&DisableEncryption=false")
+	// Ten rounds, not twenty. Each round is three same-port rebinds, and a
+	// rebind waits on the kernel releasing the listening socket — this test was
+	// most of the package's wall time. Ten rounds still fails reliably with
+	// configMu removed, which is the only thing the count has to buy.
+	for i := 0; i < 10; i++ {
+		post(t, "EnableSeeding=false&DisableEncryption=false")
 		if c := s.engine.Config(); c.EnableSeeding || c.DisableEncryption {
 			t.Fatalf("setup: reset did not take, got %+v", c)
 		}
 
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); post("EnableSeeding=false&EnableSeeding=true") }()
-		go func() { defer wg.Done(); post("DisableEncryption=false&DisableEncryption=true") }()
+		go func() { defer wg.Done(); post(t, "EnableSeeding=false&EnableSeeding=true") }()
+		go func() { defer wg.Done(); post(t, "DisableEncryption=false&DisableEncryption=true") }()
 		wg.Wait()
 
 		got := s.engine.Config()

@@ -111,6 +111,38 @@ func TestListFileLimit(t *testing.T) {
 	if n <= Limit {
 		t.Fatalf("walked %d entries, expected to exceed %d", n, Limit)
 	}
+
+	// The exported path, which is what the UI actually calls. This test drove
+	// the unexported walk and stopped at "it returns an error" — so the
+	// conversion of that error into Truncated, the flag the UI reads to say a
+	// listing is partial rather than presenting it as complete, was untested.
+	// A regression there shows a truncated tree as the whole truth.
+	got := List(root)
+	if !got.Truncated {
+		t.Error("List must set Truncated when the walk hits Limit")
+	}
+	if len(got.Children) == 0 {
+		t.Error("a truncated listing must still return what it managed to walk")
+	}
+}
+
+// TestListNotTruncatedUnderLimit is the other half: Truncated must not be set
+// for a tree that fits, or the UI warns about truncation on every listing.
+func TestListNotTruncatedUnderLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(root, string(rune('a'+i))+".txt")
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := List(root)
+	if got.Truncated {
+		t.Error("Truncated set for a tree well under Limit")
+	}
+	if len(got.Children) != 5 {
+		t.Errorf("children = %d, want 5", len(got.Children))
+	}
 }
 
 // TestListRootMayBeHidden covers a self-inflicted outage: the dotfile filter was

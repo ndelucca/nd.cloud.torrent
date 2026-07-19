@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,47 +112,68 @@ func TestIdleServerIsQuiet(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Names are collected with a timestamp so the settling period can be
-	// discarded after the fact. Measuring steady state directly, rather than
-	// subtracting an expected snapshot size, means the bound does not depend on
-	// how many regions happen to exist.
-	type stamped struct {
-		name string
-		at   time.Time
-	}
-	events := make(chan []stamped, 1)
+	// Names accumulate under a lock so the main goroutine can watch the stream
+	// settle rather than guess how long settling takes.
+	var mu sync.Mutex
+	var names []string
 	go func() {
 		r := bufio.NewReader(resp.Body)
-		var got []stamped
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
-				events <- got
 				return
 			}
 			if name, ok := strings.CutPrefix(line, "event: "); ok {
-				got = append(got, stamped{strings.TrimSpace(name), time.Now()})
+				mu.Lock()
+				names = append(names, strings.TrimSpace(name))
+				mu.Unlock()
 			}
 		}
 	}()
 
-	// The initial snapshot and the kick that follows a new connection both land
-	// immediately; everything after this instant is steady-state traffic.
-	const settle = 1 * time.Second
-	window := 3 * time.Second
-	start := time.Now()
-	time.Sleep(settle + window)
-	cancel()
-	resp.Body.Close()
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(names)
+	}
 
-	all := <-events
-	var steadyNames []string
-	for _, e := range all {
-		if e.at.After(start.Add(settle)) {
-			steadyNames = append(steadyNames, e.name)
+	// Wait for the stream to go quiet, instead of assuming it does so within a
+	// fixed settle. The initial snapshot and the kick a new connection triggers
+	// both land promptly, but "promptly" on a loaded CI runner is not bounded by
+	// any constant — and the previous version's 1s guess meant a slow startup
+	// frame was counted as steady traffic, failing the test with a message about
+	// change detection being broken. Observing quiescence removes the guess.
+	const quietFor = 750 * time.Millisecond
+	settleDeadline := time.Now().Add(15 * time.Second)
+	last := count()
+	quietSince := time.Now()
+	for {
+		time.Sleep(50 * time.Millisecond)
+		if n := count(); n != last {
+			last, quietSince = n, time.Now()
+		}
+		if time.Since(quietSince) >= quietFor {
+			break
+		}
+		if time.Now().After(settleDeadline) {
+			t.Fatalf("stream never went quiet: %d events and still arriving; "+
+				"change detection is not suppressing unchanged regions", count())
 		}
 	}
-	steady := len(steadyNames)
+
+	// Steady state starts here, by observation rather than by clock arithmetic.
+	before := count()
+	window := 3 * time.Second
+	time.Sleep(window)
+	steady := count() - before
+
+	mu.Lock()
+	steadyNames := append([]string(nil), names[min(before, len(names)):]...)
+	all := append([]string(nil), names...)
+	mu.Unlock()
+
+	cancel()
+	resp.Body.Close()
 
 	// What remains should only be the stats sample, whose heap and goroutine
 	// numbers legitimately move every statsInterval. One frame per poll tick
