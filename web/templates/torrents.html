@@ -1,11 +1,15 @@
 {{/*
-torrent-list is the membership skeleton: it creates and destroys rows, and is
-emitted only when the set of infohashes changes. A row cannot listen for
-torrent-<hash> before it exists, so this is the only thing that can bootstrap
-one.
+torrent-list is the whole list, morphed into #torrents as one region.
 
-Everything Alpine owns lives here, in the <article> scaffolding, and never
-inside the per-torrent swap target.
+Each <article> carries a stable server-rendered id, so idiomorph matches it by
+id: Alpine's _x_dataStack survives, and a row that changes position is moved
+rather than rebuilt. What the morph would otherwise revert — the attributes
+Alpine wrote, and the hx-get panel's fetched content — is covered by the
+guards in ct.js and by data-preserve.
+
+x-data is a constant literal. Alpine leaves _x_marker set on an initialised
+element, so interpolating server data into x-data is ignored forever after the
+first render.
 */}}
 {{define "torrent-list"}}
 <div id="torrent-list">
@@ -14,9 +18,7 @@ inside the per-torrent swap target.
   {{end}}
   {{range .}}
   <article class="torrent" id="t-{{.InfoHash}}" x-data="{files:false}">
-    <div id="tr-{{.InfoHash}}" sse-swap="torrent-{{.InfoHash}}" hx-swap="morph:innerHTML">
-      {{template "torrent-row" .}}
-    </div>
+    {{template "torrent-row" .}}
     <div class="torrent-files-row">
       <button type="button" class="btn"
               :class="files && 'active'"
@@ -52,7 +54,9 @@ inside the per-torrent swap target.
 </div>
 {{end}}
 
-{{/* torrent-row is the volatile part, morphed once per second. */}}
+{{/* torrent-row is the volatile part of one row. It is no longer its own SSE
+     region — it renders inline inside torrent-list — but stays a {{define}} for
+     legibility and so the fragment tests still execute it. */}}
 {{define "torrent-row"}}
 <div class="torrent-main">
   <div class="torrent-info">

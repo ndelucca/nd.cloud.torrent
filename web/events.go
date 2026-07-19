@@ -162,10 +162,9 @@ func (u *UI) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	defer u.hub.unsubscribe(sub)
 
 	// A client connecting mid-tick must see current state immediately rather
-	// than wait for something to change. One write: the membership skeleton
-	// leads, so the elements exist before the per-torrent regions that target
-	// them arrive.
-	if snap := u.renderer.snapshot(torrentListEvent); len(snap) > 0 {
+	// than wait for something to change. One write, because SSE frames are
+	// self-delimiting.
+	if snap := u.renderer.snapshot(); len(snap) > 0 {
 		if !write(snap) {
 			return
 		}

@@ -94,12 +94,11 @@ func TestSSESwapNamesAreEmitted(t *testing.T) {
 	for name, src := range templateSources(t) {
 		for _, m := range sseSwapRe.FindAllStringSubmatch(src, -1) {
 			region := m[1]
-			// The per-torrent rows are namespaced by infohash.
-			if strings.HasPrefix(region, torrentEventPrefix) &&
-				strings.Contains(region, "{{") {
-				listened[torrentEventPrefix] = true
-				continue
-			}
+			// Every region name is now a literal. There used to be a special case
+			// here for the infohash-namespaced per-torrent regions, and dropping
+			// it makes this check strictly stricter: a templated sse-swap value is
+			// no longer excusable, it is a region the renderer cannot be shown to
+			// emit.
 			listened[region] = true
 			if !emitted[region] {
 				t.Errorf("%s listens for sse-swap=%q, which the renderer never emits", name, region)
@@ -120,8 +119,5 @@ func TestSSESwapNamesAreEmitted(t *testing.T) {
 		if !listened[region] {
 			t.Errorf("the renderer emits %q but no template listens for it", region)
 		}
-	}
-	if !listened[torrentEventPrefix] {
-		t.Errorf("the renderer emits %q regions but no template listens for them", torrentEventPrefix)
 	}
 }

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"strings"
 	"sync"
 	"testing"
@@ -101,6 +102,15 @@ func collect(t *testing.T, u *UI, fn func()) []string {
 	return append([]string(nil), out...)
 }
 
+func newTestUI(t *testing.T) *UI {
+	t.Helper()
+	u, err := New(Deps{Title: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
 func torrent(hash, name string, pct float32) *engine.Torrent {
 	return &engine.Torrent{
 		InfoHash: hash, Name: name, Loaded: true, Started: true,
@@ -108,189 +118,98 @@ func torrent(hash, name string, pct float32) *engine.Torrent {
 	}
 }
 
-// TestTorrentListIsNotTreatedAsATorrent pins a bug that would have been
-// invisible server-side and destructive in the browser.
-//
-// Removals were originally found by scanning cached region names for the
-// "torrent-" prefix — which also matches the membership region "torrent-list".
-// Every tick the skeleton was forgotten, re-rendered, and shipped alongside an
-// *empty* torrent-list event, which htmx would have swapped in, wiping the
-// entire torrent list once per second.
-func TestTorrentListIsNotTreatedAsATorrent(t *testing.T) {
+// The two-tier scheme's tests were deleted with it:
+// TestTorrentListIsNotTreatedAsATorrent (removals derived by scanning region
+// names for a "torrent-" prefix, which also matched "torrent-list"),
+// TestSkeletonIsGatedOnMembershipNotBytes, TestTorrentTwoTierEvents and
+// TestForgetSurvivesARenderFailure (a render failure marking a tick delivered
+// via a defer, so its forget events were skipped forever). Each pinned
+// machinery that no longer exists; the ones below assert observable output
+// instead of internal bookkeeping.
+
+// TestIdleServerIsSilent is the byte-gating property, and the reason a full
+// list per tick is affordable: an unchanged list emits nothing at all. This is
+// what the manual `curl -sN localhost:3000/events` check corresponds to.
+func TestIdleServerIsSilent(t *testing.T) {
 	u := newTestUI(t)
 	torrents := map[string]*engine.Torrent{
-		"aaa": torrent("aaa", "Alpha", 10),
+		"aaa": torrent("aaa", "A", 10),
+		"bbb": torrent("bbb", "B", 20),
 	}
 
-	first := collect(t, u, func() { u.RenderTorrents(torrents) })
-	if len(first) == 0 {
-		t.Fatal("first render produced nothing")
+	if got := collect(t, u, func() { u.RenderTorrents(torrents) }); len(got) != 1 {
+		t.Fatalf("first render emitted %v, want one torrent-list", got)
 	}
-	// Second render emits the row, which the first deliberately deferred.
+	if got := collect(t, u, func() { u.RenderTorrents(torrents) }); len(got) != 0 {
+		t.Errorf("an unchanged list emitted %v, want nothing", got)
+	}
+}
+
+// TestProgressEmitsTheList is the inverse, and the behaviour the two-tier
+// scheme deliberately avoided: progress on any torrent re-sends the whole list.
+func TestProgressEmitsTheList(t *testing.T) {
+	u := newTestUI(t)
+	torrents := map[string]*engine.Torrent{"aaa": torrent("aaa", "A", 10)}
 	collect(t, u, func() { u.RenderTorrents(torrents) })
 
-	// By now nothing at all has changed, so this must be completely silent.
-	third := collect(t, u, func() { u.RenderTorrents(torrents) })
-	for _, ev := range third {
-		if strings.HasPrefix(ev, torrentListEvent) {
-			t.Errorf("torrent-list re-sent with no membership change (%q); "+
-				"an empty one would wipe the list in the browser", ev)
-		}
-	}
-	if len(third) != 0 {
-		t.Errorf("unchanged state produced %v, want no events", third)
+	torrents["aaa"].Percent = 50
+	got := collect(t, u, func() { u.RenderTorrents(torrents) })
+	if len(got) != 1 || got[0] != torrentListEvent {
+		t.Errorf("progress emitted %v, want one %s", got, torrentListEvent)
 	}
 }
 
-// TestSkeletonIsGatedOnMembershipNotBytes covers the second half of the same
-// design. The skeleton embeds each row's current content so a new row is never
-// briefly blank — which means its bytes change whenever any progress does.
-// Gating its emission on rendered bytes would therefore re-send the entire
-// skeleton every second and collapse the two tiers back into one.
-func TestSkeletonIsGatedOnMembershipNotBytes(t *testing.T) {
+// TestRemovedTorrentLeavesTheList asserts the hash is absent from the payload.
+// That is strictly stronger than the old test, which only proved an empty
+// event had been emitted for its region — i.e. that a listener was released,
+// not that the row was gone.
+func TestRemovedTorrentLeavesTheList(t *testing.T) {
 	u := newTestUI(t)
-	m := map[string]*engine.Torrent{"aaa": torrent("aaa", "Alpha", 10)}
-	collect(t, u, func() { u.RenderTorrents(m) })
-	collect(t, u, func() { u.RenderTorrents(m) })
+	torrents := map[string]*engine.Torrent{
+		"aaa": torrent("aaa", "A", 10),
+		"bbb": torrent("bbb", "B", 20),
+	}
+	u.RenderTorrents(torrents)
 
-	// Progress moves on every tick, which changes the skeleton's bytes.
-	for i, p := range []float32{20, 30, 40} {
-		m["aaa"] = torrent("aaa", "Alpha", p)
-		got := collect(t, u, func() { u.RenderTorrents(m) })
-		if contains(got, torrentListEvent) {
-			t.Fatalf("tick %d: skeleton re-sent for a progress change (%v); "+
-				"the whole list would be re-shipped every second", i, got)
-		}
-		if !contains(got, "torrent-aaa") {
-			t.Errorf("tick %d: expected the row, got %v", i, got)
-		}
+	delete(torrents, "bbb")
+	u.RenderTorrents(torrents)
+
+	body := u.renderer.framed(torrentListEvent)
+	if bytes.Contains(body, []byte("bbb")) {
+		t.Errorf("the removed torrent is still in the list payload:\n%s", body)
+	}
+	if !bytes.Contains(body, []byte("aaa")) {
+		t.Errorf("the surviving torrent is missing from the payload:\n%s", body)
 	}
 }
 
-// TestTorrentTwoTierEvents covers the membership/volatile split.
-func TestTorrentTwoTierEvents(t *testing.T) {
+// TestSortOrderFollowsName pins a bug the two-tier scheme could not fix. The
+// skeleton was gated on the infohash *set*, which does not change when a
+// magnet's metadata arrives — so the row's contents updated but the list stayed
+// in the position it held under "Fetching metadata…" until membership next
+// moved for some other reason.
+func TestSortOrderFollowsName(t *testing.T) {
 	u := newTestUI(t)
-
-	// 1. A new torrent emits the skeleton. Its row is NOT emitted in the same
-	//    flush: emitting an item event alongside the event that creates its
-	//    element races the extension's registration (observed in-browser as a
-	//    missed update at 300 ms).
-	one := map[string]*engine.Torrent{"aaa": torrent("aaa", "Alpha", 10)}
-	got := collect(t, u, func() { u.RenderTorrents(one) })
-	if !contains(got, torrentListEvent) {
-		t.Errorf("new torrent: got %v, want torrent-list", got)
+	// zzz has no name yet, so it renders as "Fetching metadata… zzz" and sorts
+	// after "Alpha".
+	torrents := map[string]*engine.Torrent{
+		"aaa": torrent("aaa", "Alpha", 10),
+		"zzz": {InfoHash: "zzz", Loaded: false, Started: true},
 	}
-	if contains(got, "torrent-aaa") {
-		t.Errorf("row emitted in the same flush as the skeleton that creates it: %v", got)
+	u.RenderTorrents(torrents)
+	before := string(u.renderer.framed(torrentListEvent))
+	if strings.Index(before, "aaa") > strings.Index(before, "zzz") {
+		t.Fatalf("setup: expected Alpha first\n%s", before)
 	}
 
-	// 2. Progress changes emit only the row, never the skeleton.
-	one["aaa"] = torrent("aaa", "Alpha", 42)
-	got = collect(t, u, func() { u.RenderTorrents(one) })
-	if !contains(got, "torrent-aaa") {
-		t.Errorf("progress change: got %v, want torrent-aaa", got)
+	// The name lands and should sort first.
+	torrents["zzz"].Name = "AAAA"
+	torrents["zzz"].Loaded = true
+	u.RenderTorrents(torrents)
+	after := string(u.renderer.framed(torrentListEvent))
+	if strings.Index(after, "zzz") > strings.Index(after, "aaa") {
+		t.Errorf("a torrent whose name arrived did not move in the list:\n%s", after)
 	}
-	if contains(got, torrentListEvent) {
-		t.Errorf("skeleton re-sent for a progress change: %v", got)
-	}
-
-	// 3. Adding a torrent changes membership, so the skeleton returns.
-	one["bbb"] = torrent("bbb", "Beta", 0)
-	got = collect(t, u, func() { u.RenderTorrents(one) })
-	if !contains(got, torrentListEvent) {
-		t.Errorf("added torrent: got %v, want torrent-list", got)
-	}
-
-	// 4. Removing one must emit a final EMPTY event for its name, or htmx never
-	//    unregisters the listener and leaks the detached subtree.
-	delete(one, "bbb")
-	got = collect(t, u, func() { u.RenderTorrents(one) })
-	if !contains(got, "torrent-bbb [EMPTY]") {
-		t.Errorf("removed torrent: got %v, want an empty torrent-bbb event", got)
-	}
-	if !contains(got, torrentListEvent) {
-		t.Errorf("removal must also update the skeleton: %v", got)
-	}
-}
-
-func contains(hay []string, needle string) bool {
-	for _, h := range hay {
-		if h == needle {
-			return true
-		}
-	}
-	return false
-}
-
-// newTestUI builds a UI with no engine, no server and no ports.
-//
-// These tests assert on SSE event names, which is a property of the renderer
-// and the hub alone. Before the split they went through newTestServer, which
-// meant a real torrent client, a temp config file and two bound ports to check
-// that a string starts with "torrent-".
-func newTestUI(t *testing.T) *UI {
-	t.Helper()
-	u, err := New(Deps{Title: "test"})
-	if err != nil {
-		t.Fatalf("web.New: %v", err)
-	}
-	return u
-}
-
-// TestForgetSurvivesARenderFailure covers regions that were never forgotten.
-//
-// seen was advanced from a defer, so it ran even on the early return taken when
-// the skeleton fails to render — a tick where nothing was sent at all. The
-// forget events computed for that tick were skipped, the next tick saw an empty
-// removal set, and the deleted torrents' regions stayed in the renderer
-// forever: unbounded growth, and rows resurrected for every new subscriber via
-// the connect-time snapshot.
-//
-// seen means "what the browsers have been told", so it may only advance once
-// they have actually been told.
-func TestForgetSurvivesARenderFailure(t *testing.T) {
-	u := newTestUI(t)
-	good := u.renderer.tmpl
-
-	// Cloned from a fresh parse: html/template refuses to Clone a template that
-	// has already been executed.
-	bad, err := parseTemplates()
-	if err != nil {
-		t.Fatalf("parseTemplates: %v", err)
-	}
-	// Fails at execution, not parse, so the failure lands where a real template
-	// bug would: inside renderer.render.
-	if _, err := bad.Parse(`{{define "torrent-list"}}<div>{{index . 99}}</div>{{end}}`); err != nil {
-		t.Fatalf("override torrent-list: %v", err)
-	}
-
-	a := torrent("aa", "A", 10)
-	b := torrent("bb", "B", 20)
-	both := map[string]*engine.Torrent{"aa": a, "bb": b}
-	onlyA := map[string]*engine.Torrent{"aa": a}
-
-	// Establish both torrents.
-	collect(t, u, func() { u.RenderTorrents(both) })
-
-	// b disappears on a tick whose skeleton cannot render: nothing is sent.
-	u.renderer.tmpl = bad
-	got := collect(t, u, func() { u.RenderTorrents(onlyA) })
-	for _, ev := range got {
-		if strings.HasPrefix(ev, torrentEventPrefix+"bb") {
-			t.Fatalf("a failed render still emitted %q; sent: %v", ev, got)
-		}
-	}
-
-	// The next healthy tick must still report b as gone.
-	u.renderer.tmpl = good
-	got = collect(t, u, func() { u.RenderTorrents(onlyA) })
-	want := torrentEventPrefix + "bb [EMPTY]"
-	for _, ev := range got {
-		if ev == want {
-			return
-		}
-	}
-	t.Fatalf("torrent bb was never forgotten; sent: %v", got)
 }
 
 // TestOneBroadcastPerTick pins the invariant that makes subBuffer mean
@@ -314,10 +233,6 @@ func TestOneBroadcastPerTick(t *testing.T) {
 		torrents[h] = torrent(h, "T"+h, float32(i))
 	}
 
-	// First tick creates the rows. Their content events are deliberately held
-	// back to the next tick — emitting an item event in the same flush as the
-	// event that creates its element races htmx's listener registration — so
-	// the interesting tick is the second one.
 	u.RenderTorrents(torrents)
 
 	sub := u.hub.subscribe()
@@ -329,11 +244,13 @@ func TestOneBroadcastPerTick(t *testing.T) {
 	u.RenderTorrents(torrents)
 
 	var receives, events int
+	var payload []byte
 	for draining := true; draining; {
 		select {
 		case frame := <-sub.ch:
 			receives++
 			events += len(splitFrames(frame))
+			payload = append(payload, frame...)
 		default:
 			draining = false
 		}
@@ -343,9 +260,17 @@ func TestOneBroadcastPerTick(t *testing.T) {
 		t.Fatalf("a tick produced %d broadcasts for %d torrents; want exactly 1",
 			receives, len(torrents))
 	}
-	// The single buffer must carry every changed row.
-	if events < len(torrents) {
-		t.Errorf("the coalesced frame carried %d events, want at least %d", events, len(torrents))
+	// One frame, not one per changed row. The single-region scheme makes this
+	// structural rather than something the render loop has to be careful about.
+	if events != 1 {
+		t.Errorf("a tick carried %d events, want exactly 1 (%s)", events, torrentListEvent)
+	}
+	// And that one frame must actually contain every torrent, or "one broadcast"
+	// would be satisfied by sending less.
+	for hash := range torrents {
+		if !bytes.Contains(payload, []byte(hash)) {
+			t.Fatalf("torrent %s is missing from the coalesced frame", hash)
+		}
 	}
 }
 

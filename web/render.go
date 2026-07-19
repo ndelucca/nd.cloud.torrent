@@ -209,23 +209,8 @@ func (r *renderer) store(event string, body []byte) []byte {
 	return framed
 }
 
-// forget drops a region's cache and returns a framed empty event.
-//
-// The empty event is not cosmetic: htmx's SSE extension unregisters a
-// per-element listener lazily, from inside the listener itself, when it notices
-// the element has left the document. If the server simply stops emitting an
-// event name, that listener never runs again, never unregisters, and retains
-// the detached DOM subtree forever. One final empty event lets it collect
-// itself.
-func (r *renderer) forget(event string) []byte {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.framedBody, event)
-	return frameSSE(event, nil)
-}
-
-// framed returns the cached framing for a region, for callers that must emit it
-// even though its bytes did not change.
+// framed returns the cached framing for a region. Only tests read it; the
+// render path gets the frame back from store.
 func (r *renderer) framed(event string) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -233,31 +218,26 @@ func (r *renderer) framed(event string) []byte {
 }
 
 // snapshot returns every region's current framed body as one buffer, for a
-// newly connected subscriber, with first's region ahead of the rest.
+// newly connected subscriber.
 //
-// The ordering is a parameter because it is load-bearing: a membership region
-// must arrive before the item regions whose elements it creates, since an
-// element cannot listen for torrent-<hash> before it exists and earlier frames
-// are silently discarded. Alphabetical order satisfies that only by accident of
-// infohashes being lowercase hex.
+// Order does not matter: every region name is fixed and its element exists in
+// the page the browser already has. It mattered when region names were created
+// dynamically — an element cannot listen for a name before it exists, so a frame
+// arriving ahead of its element was silently discarded — and that constraint
+// left with them.
 //
 // One buffer rather than a slice of frames: SSE frames are self-delimiting, so
 // the caller makes a single Write and Flush instead of one pair per region.
-func (r *renderer) snapshot(first string) []byte {
+func (r *renderer) snapshot() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.framedBody))
 	for name := range r.framedBody {
-		if name != first {
-			names = append(names, name)
-		}
+		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	var out []byte
-	if frame, ok := r.framedBody[first]; ok {
-		out = append(out, frame...)
-	}
 	for _, name := range names {
 		out = append(out, r.framedBody[name]...)
 	}

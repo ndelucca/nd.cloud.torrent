@@ -172,58 +172,30 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 	}
 }
 
-// TestRendererForget covers the htmx SSE listener leak. The extension
-// unregisters a per-element listener lazily, from inside the listener itself.
-// If the server just stops emitting an event name after a torrent is deleted,
-// that listener never runs again and retains the detached DOM subtree forever.
-func TestRendererForget(t *testing.T) {
+// TestSnapshotIsOneBuffer replaces two tests that pinned machinery the
+// single-region scheme removed: renderer.forget (the final empty event that let
+// htmx's SSE extension collect a per-element listener) and snapshot's
+// membership-first ordering. Both existed only because region names were
+// created and destroyed at runtime. With three fixed names there is no listener
+// lifecycle to manage and no ordering constraint to satisfy — what remains worth
+// asserting is that a connecting client gets every region in one buffer.
+func TestSnapshotIsOneBuffer(t *testing.T) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := newRenderer(tmpl)
-	r.store("torrent-abc", []byte("<div>x</div>"))
-
-	if !bytes.Contains(r.snapshot(torrentListEvent), []byte("torrent-abc")) {
-		t.Fatal("expected the region in the snapshot")
-	}
-	frame := r.forget("torrent-abc")
-	if string(frame) != "event: torrent-abc\ndata:\n\n" {
-		t.Errorf("forget frame = %q, want an empty data event", frame)
-	}
-	if len(r.snapshot(torrentListEvent)) != 0 {
-		t.Error("forgotten region must leave the snapshot")
-	}
-}
-
-// TestSnapshotLeadsWithMembership pins an ordering that used to be accidental.
-//
-// A new subscriber receives every region's current body at once. The membership
-// skeleton has to come first: an element cannot listen for torrent-<hash>
-// before it exists, so a row frame that arrives ahead of the skeleton is
-// silently discarded. That happened to hold only because infohashes are
-// lowercase hex and 'l' sorts after 'f' — it inverts the day hashes are encoded
-// any other way.
-func TestSnapshotLeadsWithMembership(t *testing.T) {
-	tmpl, err := parseTemplates()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := newRenderer(tmpl)
-	// Deliberately stored out of order, and with a hash that sorts *before*
-	// "torrent-list" so alphabetical order alone would put the row first.
-	r.store(torrentEventPrefix+"aaaa", []byte("<div>row</div>"))
-	r.store(torrentListEvent, []byte("<ul>list</ul>"))
+	r.store(torrentListEvent, []byte("<div>list</div>"))
 	r.store(statsEvent, []byte("<div>stats</div>"))
 
-	snap := r.snapshot(torrentListEvent)
-	if !bytes.HasPrefix(snap, []byte("event: "+torrentListEvent+"\n")) {
-		t.Fatalf("snapshot must lead with %q, got:\n%s", torrentListEvent, snap)
-	}
-	// And it is one buffer, not one frame: every region is present.
-	for _, want := range []string{torrentEventPrefix + "aaaa", statsEvent} {
-		if !bytes.Contains(snap, []byte("event: "+want+"\n")) {
-			t.Errorf("snapshot is missing region %q", want)
+	snap := r.snapshot()
+	for _, want := range []string{"event: " + torrentListEvent, "event: " + statsEvent} {
+		if !bytes.Contains(snap, []byte(want)) {
+			t.Errorf("snapshot is missing %q:\n%s", want, snap)
 		}
+	}
+	// Self-delimiting frames concatenated into one write, not one write each.
+	if n := bytes.Count(snap, []byte("event: ")); n != 2 {
+		t.Errorf("snapshot carries %d frames, want 2", n)
 	}
 }

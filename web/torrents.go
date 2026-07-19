@@ -9,19 +9,6 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
-// sameHashes reports whether two infohash sets are equal.
-func sameHashes(a, b map[string]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
-			return false
-		}
-	}
-	return true
-}
-
 // torrentView is one torrent as the templates want it. It exists so template
 // authors are not coupled to engine.Torrent's field names.
 //
@@ -111,24 +98,29 @@ func displayName(t *engine.Torrent) string {
 	return "Fetching metadata… " + t.InfoHash[:min(8, len(t.InfoHash))]
 }
 
-// RenderTorrents implements the two-tier event scheme.
+// RenderTorrents renders the whole list as one region and broadcasts it if the
+// bytes changed.
 //
-// Tier 1, "torrent-list", is the membership skeleton. It is emitted only when
-// the set of infohashes changes, because it is the only thing that can create
-// or destroy a row: an element cannot listen for torrent-<hash> before it
-// exists.
+// One region, not two tiers. The previous scheme emitted a membership skeleton
+// plus a per-torrent region, which needed cross-tick state (`seen`), a rule for
+// not emitting an item event in the same flush as the element that hosts it, a
+// final empty event per disappearing region so htmx's SSE extension would
+// collect its listener, and a snapshot ordering that put membership first.
+// About 110 lines, all of it compensating for the lifecycle of *dynamic region
+// names*.
 //
-// Tier 2, "torrent-<hash>", carries the volatile row and is emitted only for
-// torrents whose rendered output actually changed.
+// The argument for that complexity was frame size, and it does not hold: the
+// SSE stream is excluded from gzip outright (an SSE frame is below gzhttp's
+// 1 KiB threshold, so compressing buffers the first event forever), so there was
+// never a persistent deflate window for small frames to fit inside. What it cost
+// was real — three live bugs and a permanent coupling to one library's
+// listener bookkeeping.
 //
-// Granularity is per torrent rather than per field: per-field naming would mean
-// ~1000 event names for 20 torrents of 50 files, whose SSE framing alone
-// outweighs the payload, and 1000 morphs per second would jank the tab.
-//
-// It buys nothing in transfer size. The stream is excluded from gzip outright
-// (an SSE frame is below gzhttp's 1 KiB threshold, so compressing would buffer
-// the first event forever), so there is no persistent deflate window for small
-// frames to fit inside.
+// With three fixed region names, all present from the first frame, that
+// bookkeeping stops being part of this program's correctness argument. The price
+// is the full list on every tick that changes: ~2 KB per torrent, so ~42 KB/s
+// with 20 active torrents versus ~21 KB/s before. An idle server still sends
+// nothing, because the whole region is byte-gated by renderer.store.
 func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -137,7 +129,11 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	for _, t := range torrents {
 		views = append(views, newTorrentView(t))
 	}
-	// Stable order, or the skeleton churns on every map iteration.
+	// Stable order, or the list churns on every map iteration. Sorting by name
+	// also means a magnet moves from its "Fetching metadata…" position to its
+	// real one as soon as the name lands — the old scheme could not, because it
+	// gated the skeleton on the infohash *set*, which does not change when a
+	// name arrives.
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Name != views[j].Name {
 			return views[i].Name < views[j].Name
@@ -145,99 +141,13 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 		return views[i].InfoHash < views[j].InfoHash
 	})
 
-	current := make(map[string]bool, len(views))
-	for _, v := range views {
-		current[v.InfoHash] = true
-	}
-
-	// Drop regions for torrents that are gone, and tell the browser explicitly.
-	// htmx's SSE extension unregisters a per-element listener lazily, from
-	// inside the listener itself; a name that simply stops being emitted leaks
-	// both the listener and the detached DOM subtree it closes over.
-	//
-	// Removals are derived from the tracked infohash set, NOT by scanning region
-	// names for the "torrent-" prefix: that prefix also matches the membership
-	// region "torrent-list", so the scan forgot and re-sent the skeleton every
-	// tick — and shipped an *empty* torrent-list event, which would have wiped
-	// the whole list in the browser once per second.
-	var removed []string
-	for hash := range u.seen {
-		if !current[hash] {
-			removed = append(removed, torrentEventPrefix+hash)
-		}
-	}
-	sort.Strings(removed)
-
-	// Tier 1. The skeleton embeds each row's current content so a new row is
-	// never briefly blank — which means its bytes change whenever any torrent's
-	// progress does. So its emission is gated on the infohash *set*, not on the
-	// rendered bytes: byte-gating would re-send the whole skeleton every second
-	// and collapse the two tiers back into one.
-	//
-	// It is still re-rendered every tick, because the cache is what a late
-	// subscriber receives on connect and a stale skeleton would show them stale
-	// rows until each one next changed.
-	membershipChanged := !sameHashes(current, u.seen)
-
-	listFrame, err := u.renderer.render(torrentListEvent, "torrent-list", views)
+	frame, err := u.renderer.render(torrentListEvent, "torrent-list", views)
 	if err != nil {
 		log.Printf("render torrent-list: %s", err)
 		return
 	}
-
-	// A tick is one write. SSE frames are self-delimiting, so everything this
-	// pass produces is concatenated and broadcast once.
-	//
-	// That is what gives subBuffer a meaning. Broadcasting per torrent makes the
-	// buffer measure *changed rows* rather than lag: eight rows moving in one
-	// tick can stall a healthy client, since each frame is its own Write and
-	// Flush and broadcast disconnects a subscriber it cannot deliver to — which
-	// reconnects, takes the snapshot, kicks the loop and produces another burst.
-	var out []byte
-	if membershipChanged {
-		if listFrame == nil {
-			// Bytes unchanged but membership moved: send the cached framing.
-			listFrame = u.renderer.framed(torrentListEvent)
-		}
-		out = append(out, listFrame...)
-	}
-
-	// Tier 2. Torrents whose row arrived with this tick's skeleton are skipped:
-	// emitting an item event in the same flush as the event that creates its
-	// element races the extension's registration (observed in-browser: missed
-	// at 300 ms, delivered at 600 ms). They refresh on the next tick.
-	for _, v := range views {
-		if listFrame != nil && u.newThisTick(v.InfoHash) {
-			continue
-		}
-		frame, err := u.renderer.render(torrentEventPrefix+v.InfoHash, "torrent-row", v)
-		if err != nil {
-			log.Printf("render torrent %s: %s", v.InfoHash, err)
-			continue
-		}
-		out = append(out, frame...)
-	}
-
-	for _, name := range removed {
-		out = append(out, u.renderer.forget(name)...)
-	}
-
-	if len(out) > 0 {
-		u.hub.broadcast(out)
-	}
-
-	// Last, and deliberately not deferred. seen is "what the browsers have been
-	// told", so it may only advance once they have been told. From a defer it
-	// would also fire on the early return above — a tick where nothing was sent
-	// — marking it delivered, skipping its forget events, and leaving the next
-	// tick with an empty removal set. Deleted torrents' regions then stay cached
-	// forever and are replayed to every new subscriber.
-	u.seen = current
+	u.hub.broadcast(frame)
 }
-
-// newThisTick reports whether this infohash had no region before this render,
-// i.e. its row was created by the skeleton we just sent.
-func (u *UI) newThisTick(hash string) bool { return !u.seen[hash] }
 
 // sortFilesByName orders a torrent's files for display.
 func sortFilesByName(files []fileView) {

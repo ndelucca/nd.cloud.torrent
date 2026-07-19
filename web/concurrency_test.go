@@ -113,7 +113,7 @@ func TestConcurrentRendersAreSerialized(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < rounds; i++ {
-			_ = u.renderer.snapshot(torrentListEvent)
+			_ = u.renderer.snapshot()
 			_ = u.Watchers()
 		}
 	}()
@@ -122,9 +122,8 @@ func TestConcurrentRendersAreSerialized(t *testing.T) {
 }
 
 // TestConcurrentRendersWithChurningMembership is the same race with the torrent
-// set changing underneath, which is what moves `seen` and drives the removal
-// bookkeeping. Membership churn plus a concurrent stats render is the exact
-// pairing the poll and stats loops produce.
+// set changing underneath. Membership churn plus a concurrent stats render is
+// the exact pairing the poll and stats loops produce.
 func TestConcurrentRendersWithChurningMembership(t *testing.T) {
 	u := newTestUI(t)
 
@@ -159,16 +158,14 @@ func TestConcurrentRendersWithChurningMembership(t *testing.T) {
 
 	wg.Wait()
 
-	// After the churn the renderer must not be holding regions for torrents that
-	// no longer exist. The last round rendered i%6+1 of them; anything beyond
-	// the live set plus the two fixed regions means forget did not keep up.
-	live := (rounds-1)%6 + 1
+	// The region count is fixed regardless of churn: torrent-list, stats and
+	// downloads-changed. It used to grow with the torrent set, which is what
+	// made the forget bookkeeping necessary.
 	u.renderer.mu.Lock()
 	cached := len(u.renderer.framedBody)
 	u.renderer.mu.Unlock()
-	if cached > live+2 {
-		t.Fatalf("renderer holds %d regions after churn, want at most %d "+
-			"(%d live torrents plus torrent-list and downloads-changed)",
-			cached, live+2, live)
+	if cached > 3 {
+		t.Fatalf("renderer holds %d regions after churn, want at most 3 fixed ones; "+
+			"a dynamic region name has come back", cached)
 	}
 }

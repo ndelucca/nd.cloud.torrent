@@ -43,10 +43,8 @@ type UI struct {
 
 	// mu serializes rendering. The server's poll and stats loops both call in,
 	// and unsynchronized they can broadcast samples in the opposite order to the
-	// one they were taken in, leaving browsers on the older one. It also covers
-	// seen, which is a plain map two RenderTorrents calls would race on.
-	mu   sync.Mutex
-	seen map[string]bool
+	// one they were taken in, leaving browsers on the older one.
+	mu sync.Mutex
 }
 
 // New parses the templates and returns a UI.
@@ -63,7 +61,6 @@ func New(d Deps) (*UI, error) {
 		renderer: newRenderer(tmpl),
 		hub:      newHub(),
 		deps:     d,
-		seen:     map[string]bool{},
 	}, nil
 }
 

@@ -8,9 +8,12 @@ package web
 // hx-get attribute and in the server's route table. Declaring them once is what
 // makes a rename either complete or a compile error.
 const (
-	// torrentEventPrefix namespaces the per-torrent SSE regions.
-	torrentEventPrefix = "torrent-"
-	// torrentListEvent is the membership skeleton's region name.
+	// torrentListEvent carries the whole torrent list. There is deliberately no
+	// per-torrent region: a dynamic region name means the browser must create an
+	// element before its frames arrive, and htmx's SSE extension unregisters
+	// per-element listeners lazily, from inside the listener. Both are the
+	// library's bookkeeping, and neither is this program's problem while every
+	// region name is fixed and present from the first frame.
 	torrentListEvent = "torrent-list"
 	// statsEvent carries the host stats region.
 	statsEvent = "stats"
