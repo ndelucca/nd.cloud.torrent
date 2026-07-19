@@ -10,12 +10,6 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
-func formReq(body string) *http.Request {
-	r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return r
-}
-
 // TestParseConfigCheckboxes covers the one genuinely subtle part of an HTML
 // form: an unchecked checkbox submits NOTHING. Without a paired hidden field,
 // "off" is indistinguishable from "field not present", and a setting could be

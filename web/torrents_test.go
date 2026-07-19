@@ -327,3 +327,33 @@ func TestOneBroadcastPerTick(t *testing.T) {
 		t.Errorf("the coalesced frame carried %d events, want at least %d", events, len(torrents))
 	}
 }
+
+// TestFileViewIsSorted pins an ordering that was lost without anything
+// noticing.
+//
+// The sort used to live in the handler and was dropped when that handler was
+// collapsed into a shared helper. No test covered it, so the file table simply
+// started rendering in map order. Building the view now sorts it, so an
+// unsorted one is unrepresentable.
+func TestFileViewIsSorted(t *testing.T) {
+	tor := &engine.Torrent{
+		InfoHash: "abc",
+		Files: []engine.File{
+			{Path: "z/last.mkv"},
+			{Path: "a/first.mkv"},
+			{Path: "m/middle.mkv"},
+		},
+	}
+	v := newTorrentViewWithFiles(tor)
+
+	var got []string
+	for _, f := range v.Files {
+		got = append(got, f.Name)
+	}
+	want := []string{"first.mkv", "last.mkv", "middle.mkv"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("file order = %v, want %v", got, want)
+		}
+	}
+}

@@ -91,6 +91,14 @@ func newTorrentViewWithFiles(t *engine.Torrent) torrentView {
 	for _, f := range t.Files {
 		v.Files = append(v.Files, newFileView(f))
 	}
+	// Sorted by the constructor, not by the handler. It was the handler's job
+	// once and was silently dropped when that handler was collapsed into a
+	// helper — nothing failed, because nothing asserted the order. Building an
+	// unsorted view is now unrepresentable.
+	//
+	// Sorted here rather than in the browser: it costs nothing on this side and
+	// the client never has to re-sort on every update.
+	sortFilesByName(v.Files)
 	return v
 }
 
