@@ -70,13 +70,20 @@ func TestNewDoesNotWriteConfig(t *testing.T) {
 
 // TestNewWithNoConfigCreatesNone is the same rule for a first run: defaults are
 // applied in memory, and nothing is written until the user saves something.
+//
+// The file has to be genuinely absent, which is the one case that cannot seed a
+// free port: the engine gets configfile.Defaults() and binds its fixed
+// IncomingPort for real. Whether that bind wins is not what this test is about —
+// another instance on the machine may hold the port — so the assertion is made
+// independent of it. Either outcome, no file may appear.
 func TestNewWithNoConfigCreatesNone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if _, err := newConfigTestServer(t, path); err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
+	s, err := newConfigTestServer(t, path)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("startup created %s; want no file until a save", path)
+	}
+	if err != nil && s != nil {
+		t.Fatalf("New returned both a server and an error: %v", err)
 	}
 }
 

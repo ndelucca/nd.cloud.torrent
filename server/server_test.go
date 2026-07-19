@@ -30,26 +30,42 @@ func newTestServer(t *testing.T) *Server {
 func newTestServerWith(t *testing.T, tweak func(*Options)) *Server {
 	t.Helper()
 	dir := t.TempDir()
-
-	// Seed a config file so the engine binds a free port and downloads into a
-	// scratch directory, rather than the shipped defaults.
-	cfg := fmt.Sprintf(`{"DownloadDirectory":%q,"IncomingPort":%d,"EnableUpload":true,"AutoStart":true}`,
-		filepath.Join(dir, "downloads"), testutil.FreePort(t))
 	configPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(configPath, []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
 
-	o := DefaultOptions()
-	o.Port = testutil.FreePort(t)
-	o.ConfigPath = configPath
-	if tweak != nil {
-		tweak(&o)
-	}
+	// Retried, because testutil.FreePort is a TOCTOU by construction: it closes
+	// its probe listeners before returning, so under load another process can
+	// take the port before the engine binds it. engine.mustConfigure retries for
+	// the same reason. Without this the failure lands on whichever test drew the
+	// port, blaming the code under test for a collision in the fixture.
+	var s *Server
+	for attempt := 0; ; attempt++ {
+		// Seeded so the engine binds a free port and downloads into a scratch
+		// directory rather than the shipped defaults. Rewritten on each attempt
+		// so a retry draws a new port instead of losing the same race again.
+		cfg := fmt.Sprintf(`{"DownloadDirectory":%q,"IncomingPort":%d,"EnableUpload":true,"AutoStart":true}`,
+			filepath.Join(dir, "downloads"), testutil.FreePort(t))
+		if err := os.WriteFile(configPath, []byte(cfg), 0600); err != nil {
+			t.Fatal(err)
+		}
 
-	s, err := New(o, "test")
-	if err != nil {
-		t.Fatalf("New: %v", err)
+		// Rebuilt from the defaults each attempt: tweak takes a pointer and is
+		// free to mutate, so reusing one Options across retries would compound
+		// its edits.
+		o := DefaultOptions()
+		o.ConfigPath = configPath
+		o.Port = testutil.FreePort(t)
+		if tweak != nil {
+			tweak(&o)
+		}
+
+		var err error
+		s, err = New(o, "test")
+		if err == nil {
+			break
+		}
+		if attempt == 20 || !strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("New: %v", err)
+		}
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
@@ -470,6 +486,10 @@ func TestTLSWithBothPathsIsAccepted(t *testing.T) {
 	o.ConfigPath = filepath.Join(dir, "config.json")
 	o.CertPath = filepath.Join(dir, "cert.pem")
 	o.KeyPath = filepath.Join(dir, "key.pem")
+	// Seeded, because this test needs New to get all the way past the engine.
+	// Without a file the engine gets configfile.Defaults() and binds its fixed
+	// IncomingPort, which collides with any other instance on the machine.
+	writeConfig(t, o.ConfigPath, "")
 
 	s, err := New(o, "test")
 	if err != nil {
