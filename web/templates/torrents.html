@@ -83,7 +83,7 @@ inside the per-torrent swap target.
     <p class="torrent-status">
       <span{{if eq .Downloaded 0}} class="muted"{{end}}>{{bytes .Downloaded}}</span>
       / {{bytes .Size}} &middot; {{pct .Percent}}%
-      <strong{{if eq .DownloadRate 0.0}} class="muted"{{end}}>{{bytes .Rate}}/s</strong>
+      <strong{{if .Idle}} class="muted"{{end}}>{{bytes .Rate}}/s</strong>
     </p>
     {{end}}
   </div>
@@ -102,13 +102,13 @@ inside the per-torrent swap target.
     {{range .Files}}
     <tr>
       <td>
-        {{filename .Path}}
-        {{if and (gt .Percent 0.0) (lt .Percent 100.0)}}
+        {{.Name}}
+        {{if .InProgress}}
         <progress value="{{pct .Percent}}" max="100" aria-label="File progress"></progress>
         <span class="percent">{{pct .Percent}}%</span>
         {{end}}
       </td>
-      <td>{{bytes .Size}}{{if eq .Percent 100.0}} <span class="done" title="Complete">&check;</span>{{end}}</td>
+      <td>{{bytes .Size}}{{if .Complete}} <span class="done" title="Complete">&check;</span>{{end}}</td>
     </tr>
     {{end}}
   </tbody>

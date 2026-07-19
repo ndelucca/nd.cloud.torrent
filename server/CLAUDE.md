@@ -77,6 +77,8 @@ Lifecycle:
 - Anything that produces HTML belongs in `web`, not here. `grep -rn "html/template" server/*.go` returning nothing is the check.
 - `statsInterval` must stay fixed: `cpu.Percent(0, …)` measures since the previous call, so the interval *is* the measurement window.
 
+- `TestKnownRoutesResolve` asserts every `web.KnownRoutes` entry reaches a handler on the mux. Together with `web`'s template scan it is the only thing tying an `hx-get` attribute to a route that answers it.
+
 ## Verification
 
 - `go build ./...`

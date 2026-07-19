@@ -109,14 +109,10 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 		{"api-error", "Nope."},
 		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},
 		{"torrent-row", torrentView{InfoHash: "abc", Name: "N", Loaded: true, Started: true}},
-		{"torrent-files", torrentView{InfoHash: "abc", Files: []engine.File{{Path: "a/b.mkv", Size: 1}}}},
+		{"torrent-files", torrentView{InfoHash: "abc", Files: []fileView{{Name: "b.mkv", Size: 1, Percent: 50, InProgress: true}}}},
 		{"omni", nil},
 		{"config", engine.Config{DownloadDirectory: "/d", IncomingPort: 1}},
-		{"downloads", struct {
-			Root      fsView
-			Truncated bool
-			Limit     int
-		}{Root: newRootView(&files.Node{Name: "d", IsDir: true}), Limit: 10}},
+		{"downloads", newDownloadsView(&files.Node{Name: "d", IsDir: true})},
 	}
 	for _, f := range fragments {
 		var buf bytes.Buffer

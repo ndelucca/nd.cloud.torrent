@@ -2,17 +2,11 @@ package web
 
 import (
 	"log"
+	"path"
 	"sort"
 	"strings"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
-)
-
-const (
-	// torrentEventPrefix namespaces the per-torrent SSE regions.
-	torrentEventPrefix = "torrent-"
-	// torrentListEvent is the membership skeleton's region name.
-	torrentListEvent = "torrent-list"
 )
 
 // sameHashes reports whether two infohash sets are equal.
@@ -43,30 +37,60 @@ type torrentView struct {
 	Downloaded int64
 	Size       int64
 	// Rate is int64 so the `bytes` template func can format it; the engine
-	// reports a float32 of bytes per second.
-	Rate         int64
-	DownloadRate float32
-	Files        []engine.File
+	// reports a float32 of bytes per second. There used to be a DownloadRate
+	// alongside it holding the same number as a float, purely so the template
+	// could compare it to 0.0.
+	Rate  int64
+	Idle  bool
+	Files []fileView
+}
+
+// fileView is one file's progress row.
+//
+// Complete and InProgress are decided here rather than by comparing Percent to
+// 0.0 and 100.0 in the template. web/CLAUDE.md already required arithmetic to
+// live in the view model, and float equality against a truncated percentage is
+// exactly the sort of thing that rule exists for: a file at 99.999% renders as
+// "100.00%" yet must not be marked done.
+type fileView struct {
+	Name       string
+	Size       int64
+	Percent    float32
+	Complete   bool
+	InProgress bool
+}
+
+func newFileView(f engine.File) fileView {
+	return fileView{
+		Name:       path.Base(f.Path),
+		Size:       f.Size,
+		Percent:    f.Percent,
+		Complete:   f.Percent >= 100,
+		InProgress: f.Percent > 0 && f.Percent < 100,
+	}
 }
 
 func newTorrentView(t *engine.Torrent) torrentView {
 	return torrentView{
-		InfoHash:     t.InfoHash,
-		Name:         displayName(t),
-		Loaded:       t.Loaded,
-		Started:      t.Started,
-		Percent:      t.Percent,
-		Downloaded:   t.Downloaded,
-		Size:         t.Size,
-		Rate:         int64(t.DownloadRate),
-		DownloadRate: t.DownloadRate,
+		InfoHash:   t.InfoHash,
+		Name:       displayName(t),
+		Loaded:     t.Loaded,
+		Started:    t.Started,
+		Percent:    t.Percent,
+		Downloaded: t.Downloaded,
+		Size:       t.Size,
+		Rate:       int64(t.DownloadRate),
+		Idle:       t.DownloadRate == 0,
 	}
 }
 
 // newTorrentViewWithFiles is the variant used by the /fragments file table.
 func newTorrentViewWithFiles(t *engine.Torrent) torrentView {
 	v := newTorrentView(t)
-	v.Files = t.Files
+	v.Files = make([]fileView, 0, len(t.Files))
+	for _, f := range t.Files {
+		v.Files = append(v.Files, newFileView(f))
+	}
 	return v
 }
 
@@ -192,7 +216,7 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 // i.e. its row was created by the skeleton we just sent.
 func (u *UI) newThisTick(hash string) bool { return !u.seen[hash] }
 
-// sortFilesByPath orders a torrent's files for display.
-func sortFilesByPath(files []engine.File) {
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+// sortFilesByName orders a torrent's files for display.
+func sortFilesByName(files []fileView) {
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 }

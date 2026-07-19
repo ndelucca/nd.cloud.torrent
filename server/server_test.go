@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/sysstat"
+	"github.com/ndelucca/nd.cloud.torrent/web"
 )
 
 // freePort returns a port that is currently unbound.
@@ -494,5 +495,39 @@ func TestSecurityHeaders(t *testing.T) {
 		if got := w.Header().Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// TestKnownRoutesResolve is the server half of the htmx contract check.
+//
+// web.KnownRoutes lists the paths the templates ask for; web's own test asserts
+// every hx-get and sse-connect attribute is on that list, and this one asserts
+// every entry on the list reaches a handler here. Together they are the missing
+// assertion: a URL in a template is a URL the server answers. Nothing tied the
+// two together before — region names, fragment URLs and swap targets were
+// string-matched across Go consts, {{define}} names and HTML attributes with no
+// test in between.
+func TestKnownRoutesResolve(t *testing.T) {
+	s := newTestServer(t)
+	mux, ok := s.routes().(*http.ServeMux)
+	if !ok {
+		t.Fatal("routes() no longer returns a *http.ServeMux; this test needs Handler()")
+	}
+
+	for _, pattern := range web.KnownRoutes {
+		t.Run(pattern, func(t *testing.T) {
+			// Substitute a concrete value for the wildcard so the pattern
+			// becomes a requestable path.
+			path := strings.ReplaceAll(pattern, "{hash}", strings.Repeat("ab", 20))
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			h, matched := mux.Handler(r)
+			if matched == "" || h == nil {
+				t.Fatalf("%s resolves to no route", path)
+			}
+			// A matched-but-empty pattern is the mux's own 404 handler.
+			if matched == "" {
+				t.Fatalf("%s falls through to the default handler", path)
+			}
+		})
 	}
 }

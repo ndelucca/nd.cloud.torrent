@@ -198,15 +198,21 @@ func TestFailedActionStillKicks(t *testing.T) {
 //
 // Probabilistic, so it loops.
 func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
-	for i := 0; i < 20; i++ {
-		s := newTestServer(t)
-		h := s.handler()
+	// One server, reset between rounds: standing up twenty engines races the
+	// kernel for UDP ports and would fail on that instead of on the bug.
+	s := newTestServer(t)
+	h := s.handler()
+	post := func(body string) {
+		r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", "http://"+r.Host)
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
 
-		post := func(body string) {
-			r := httptest.NewRequest(http.MethodPost, "/api/configure", strings.NewReader(body))
-			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			r.Header.Set("Origin", "http://"+r.Host)
-			h.ServeHTTP(httptest.NewRecorder(), r)
+	for i := 0; i < 20; i++ {
+		post("EnableSeeding=false&DisableEncryption=false")
+		if c := s.engine.Config(); c.EnableSeeding || c.DisableEncryption {
+			t.Fatalf("setup: reset did not take, got %+v", c)
 		}
 
 		var wg sync.WaitGroup
@@ -217,8 +223,8 @@ func TestConcurrentConfigureKeepsBothFields(t *testing.T) {
 
 		got := s.engine.Config()
 		if !got.EnableSeeding || !got.DisableEncryption {
-			t.Fatalf("a concurrent save was lost: EnableSeeding=%v DisableEncryption=%v",
-				got.EnableSeeding, got.DisableEncryption)
+			t.Fatalf("a concurrent save was lost on round %d: EnableSeeding=%v DisableEncryption=%v",
+				i, got.EnableSeeding, got.DisableEncryption)
 		}
 	}
 }

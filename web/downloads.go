@@ -10,12 +10,22 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
-// downloadsChangedEvent is a content-free ping. The tree itself is fetched with
-// hx-get rather than streamed: it changes on the order of minutes while torrent
-// progress changes every second, and coupling them to the same 1 Hz push would
-// re-ship the whole tree — and put every collapse state at risk — for a change
-// that did not happen.
-const downloadsChangedEvent = "downloads-changed"
+// downloadsView is the download tree as the template wants it. It exists
+// because the same anonymous struct was written out identically in four places,
+// three of them tests — which is the usual sign a shape wants a name.
+type downloadsView struct {
+	Root      fsView
+	Truncated bool
+	Limit     int
+}
+
+func newDownloadsView(root *files.Node) downloadsView {
+	return downloadsView{
+		Root:      newRootView(root),
+		Truncated: root.Truncated,
+		Limit:     files.Limit,
+	}
+}
 
 // fsView is one node of the download tree, prepared for rendering.
 //

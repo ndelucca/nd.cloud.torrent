@@ -8,7 +8,6 @@ import (
 	"html/template"
 	"math"
 	"net/url"
-	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -38,13 +37,11 @@ func parseTemplates() (*template.Template, error) {
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"bytes":    humanBytes,
-		"round":    func(f float64) string { return fmt.Sprintf("%.0f", f) },
-		"pct":      func(f float32) string { return fmt.Sprintf("%.2f", f) },
-		"percent":  percentOf,
-		"filename": path.Base,
-		"ago":      humanAgo,
-		"urlpath":  urlPath,
+		"bytes":   humanBytes,
+		"round":   func(f float64) string { return fmt.Sprintf("%.0f", f) },
+		"pct":     func(f float32) string { return fmt.Sprintf("%.2f", f) },
+		"ago":     humanAgo,
+		"urlpath": urlPath,
 	}
 }
 
@@ -126,22 +123,28 @@ func humanAgo(t time.Time) string {
 type renderer struct {
 	tmpl *template.Template
 
+	// One map, not two. Framing is a pure function of (event, body) and the
+	// event is the key, so a separate body map carried no information the
+	// framed one did not — it was two things to keep in step for nothing.
 	mu         sync.Mutex
-	body       map[string][]byte // event name -> last rendered body
 	framedBody map[string][]byte // event name -> last body, SSE-framed
 }
 
 func newRenderer(t *template.Template) *renderer {
 	return &renderer{
 		tmpl:       t,
-		body:       map[string][]byte{},
 		framedBody: map[string][]byte{},
 	}
 }
 
-// render executes the named template and returns SSE-framed bytes, or nil if
-// the output is byte-identical to the previous render of this event.
-func (r *renderer) render(event, tmplName string, data any) ([]byte, error) {
+// execute runs a template and returns its body, trimmed and checked.
+//
+// It is the only place a template is executed. ServePage and the pulled
+// fragments used to reach through to r.tmpl.ExecuteTemplate directly, which
+// meant checkFragment did not run for them: a bare-text downloads or
+// torrent-files fragment would have shipped with no error anywhere, and only
+// went unnoticed because those two use innerHTML rather than a morph swap.
+func (r *renderer) execute(tmplName string, data any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := r.tmpl.ExecuteTemplate(&buf, tmplName, data); err != nil {
 		return nil, fmt.Errorf("render %s: %w", tmplName, err)
@@ -151,6 +154,16 @@ func (r *renderer) render(event, tmplName string, data any) ([]byte, error) {
 	// line per blank line on every push.
 	body := bytes.TrimSpace(buf.Bytes())
 	if err := checkFragment(tmplName, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// render executes the named template and returns SSE-framed bytes, or nil if
+// the output is byte-identical to the previous render of this event.
+func (r *renderer) render(event, tmplName string, data any) ([]byte, error) {
+	body, err := r.execute(tmplName, data)
+	if err != nil {
 		return nil, err
 	}
 	return r.store(event, body), nil
@@ -178,13 +191,12 @@ func checkFragment(name string, body []byte) error {
 // store caches body under event and returns the framed bytes, or nil if
 // unchanged.
 func (r *renderer) store(event string, body []byte) []byte {
+	framed := frameSSE(event, body)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if prev, ok := r.body[event]; ok && bytes.Equal(prev, body) {
+	if prev, ok := r.framedBody[event]; ok && bytes.Equal(prev, framed) {
 		return nil
 	}
-	framed := frameSSE(event, body)
-	r.body[event] = bytes.Clone(body)
 	r.framedBody[event] = framed
 	return framed
 }
@@ -200,7 +212,6 @@ func (r *renderer) store(event string, body []byte) []byte {
 func (r *renderer) forget(event string) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.body, event)
 	delete(r.framedBody, event)
 	return frameSSE(event, nil)
 }

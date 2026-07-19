@@ -52,7 +52,7 @@ func (u *UI) RenderStats(d StatsData) {
 		DiskPercent:    percentOf(d.System.DiskUsed, d.System.DiskTotal),
 		DiskFree:       d.System.DiskTotal - d.System.DiskUsed,
 	}
-	frame, err := u.renderer.render("stats", "stats", view)
+	frame, err := u.renderer.render(statsEvent, "stats", view)
 	if err != nil {
 		log.Printf("render stats: %s", err)
 		return

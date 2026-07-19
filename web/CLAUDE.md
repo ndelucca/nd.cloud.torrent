@@ -8,11 +8,12 @@ models, the SSE hub, and every handler that produces HTML.
 ## Ownership
 
 - `ui.go` — `UI`, `Deps`, `New`, `Watchers`, `Close`
-- `render.go` — `parseTemplates`, the template funcs, `urlPath`, the byte formatters, and `renderer`: per-region change detection and SSE framing
+- `render.go` — `parseTemplates`, the template funcs, `urlPath`, the byte formatters, and `renderer`: `execute`, per-region change detection and SSE framing
+- `regions.go` — the SSE region names and `KnownRoutes`, the fragment paths the templates ask for
 - `events.go` — `hub` (fan-out with backpressure, `close`) and `ServeEvents`, the `/events` endpoint
 - `stats.go` — `StatsData`, `statsView` (which embeds `sysstat.Stats`), `RenderStats`
-- `torrents.go` — `torrentView`, `RenderTorrents`, and the two-tier event scheme
-- `downloads.go` — `fsView`, `treeSignature`, `RenderDownloads`
+- `torrents.go` — `torrentView`, `fileView`, `RenderTorrents`, and the two-tier event scheme
+- `downloads.go` — `downloadsView`, `fsView`, `treeSignature`, `RenderDownloads`
 - `fragments.go` — `ServePage`, `ServeDownloads`, `ServeTorrentFiles` and `WriteAPIResult`
 - `templates/` — `page`, `stats`, `torrent-list`/`torrent-row`/`torrent-files`, `downloads`/`fsnode`, `omni`/`config`
 
@@ -30,11 +31,14 @@ Templates:
 - Templates are addressed **only** by their `{{define}}` name. `template.ParseFS` names by base filename, so two files named `row.html` in different directories silently collide, and requesting a name no file provides yields an empty template that renders nothing without erroring.
 - `parseTemplates` returns its error rather than using `template.Must`: the recursive tree template can fail the contextual autoescaper with `ErrOutputContext` at *parse* time, and a package-level `Must` would turn a template edit into a startup panic. `web.New` propagates it.
 - **Any path rendered into a URL attribute must go through the `urlpath` template func.** `html/template` only normalizes attributes it recognises as URLs (`href`, `src`); an htmx attribute like `hx-delete` is plain text to it, so a file named `a#b.mkv` produced a request for `/download/a` and deleted a *different* file with a 200. File names come from torrents, so this is attacker-reachable.
-- Arithmetic happens in the view model, never the template. `html/template` has none, and doing it inline invites `100*used/total`, whose divide-by-zero produces `+Inf` before the first disk sample lands.
+- Arithmetic and comparisons happen in the view model, never the template. `fileView.Complete` and `.InProgress` exist because the file table used to test `eq .Percent 100.0` and `and (gt .Percent 0.0) (lt .Percent 100.0)` — float equality against a truncated percentage, so a file at 99.999% rendered as "100.00%" and had to *not* be ticked. `torrentView.Idle` replaced a second copy of the download rate that existed only so a template could compare it to `0.0`. `html/template` has none, and doing it inline invites `100*used/total`, whose divide-by-zero produces `+Inf` before the first disk sample lands.
 
 Rendering and the SSE stream:
 
 - **Every fragment must be wrapped in an element.** Verified in Chromium 150 with htmx 2.0.10 + idiomorph 0.7.4: a bare-text payload swapped with `hx-swap="morph:…"` lands as an *empty* target, with no error anywhere. `checkFragment` rejects it at render time; `TestFragmentsAreWrappedInElements` runs it over every shipped template.
+- **`renderer.execute` is the only place a template runs.** `ServePage`, the two pulled fragments and `WriteAPIResult` used to reach through to `r.tmpl.ExecuteTemplate`, which meant `checkFragment` did not run for them — a bare-text `downloads` or `torrent-files` fragment would have shipped with no error anywhere, unnoticed only because those two use `innerHTML` rather than a morph swap.
+- **All region names and fragment paths live in `regions.go`.** They are the wire protocol between the templates, the renderer and the browser, and were previously two consts, one bare literal used twice, and several inline strings — so a rename could be applied to three of five places and still compile. `TestTemplateURLsAreDeclared` and `TestSSESwapNamesAreEmitted` check both directions (a template asking for an undeclared path, and a region emitted that nothing listens for); `server.TestKnownRoutesResolve` closes the loop by asserting each `KnownRoutes` entry reaches a handler.
+- The renderer keeps one map, not two. Framing is a pure function of `(event, body)` and the event is the key, so a separate body map held no information the framed one did not.
 - Change detection compares rendered bytes, not source data — comparing data means maintaining an `Equal` per view model whose failure mode is a silently stale UI. Rendered bodies are retained (not just hashed) because a client connecting mid-tick must get every region's current body immediately.
 - Regions are rendered **once per tick** and the same `[]byte` is fanned out; never render per client.
 - Rendering is serialized by `UI.mu`: the server's poll and stats loops both call in, and unsynchronized they can broadcast samples in the opposite order to the one they were taken in, leaving browsers on the older one. `seen` is covered by it.

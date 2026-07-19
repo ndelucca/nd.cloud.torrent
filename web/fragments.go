@@ -1,12 +1,10 @@
 package web
 
 import (
-	"bytes"
 	"log"
 	"net/http"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
-	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // The fragment handlers answer the hx-get requests for content that is
@@ -34,23 +32,8 @@ func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (u *UI) serveDownloadsTree(w http.ResponseWriter) {
-	root := u.deps.Tree()
-	view := struct {
-		Root      fsView
-		Truncated bool
-		Limit     int
-	}{
-		Root:      newRootView(root),
-		Truncated: root.Truncated,
-		Limit:     files.Limit,
-	}
-	var buf bytes.Buffer
-	if err := u.renderer.tmpl.ExecuteTemplate(&buf, "downloads", view); err != nil {
-		log.Printf("render downloads: %s", err)
-		writeFragment(w, http.StatusInternalServerError, `<p class="muted">Could not render downloads.</p>`)
-		return
-	}
-	writeFragment(w, http.StatusOK, buf.String())
+	u.writeTemplate(w, http.StatusOK, "downloads", newDownloadsView(u.deps.Tree()),
+		"Could not render downloads.")
 }
 
 func (u *UI) serveTorrentFiles(w http.ResponseWriter, hash string) {
@@ -69,39 +52,42 @@ func (u *UI) serveTorrentFiles(w http.ResponseWriter, hash string) {
 		return
 	}
 
-	// Sorted here rather than in the browser: it costs nothing on this side and
-	// the client never has to re-sort on every update.
-	sortFilesByPath(found.Files)
-
-	var buf bytes.Buffer
-	if err := u.renderer.tmpl.ExecuteTemplate(&buf, "torrent-files", found); err != nil {
-		log.Printf("render torrent-files: %s", err)
-		writeFragment(w, http.StatusInternalServerError, `<p class="muted">Could not render files.</p>`)
-		return
-	}
-	writeFragment(w, http.StatusOK, buf.String())
+	u.writeTemplate(w, http.StatusOK, "torrent-files", found, "Could not render files.")
 }
 
 // ServePage renders the htmx shell. Unlike the fragments it is a full document,
 // so it is rendered into a buffer first: a template error halfway through would
 // otherwise ship a truncated page with a 200.
 func (u *UI) ServePage(w http.ResponseWriter, r *http.Request) {
-	view := struct {
-		Title  string
-		Config engine.Config
-	}{
-		Title:  u.deps.Title,
-		Config: u.deps.Config(),
-	}
-
-	var buf bytes.Buffer
-	if err := u.renderer.tmpl.ExecuteTemplate(&buf, "page", view); err != nil {
+	view := pageView{Title: u.deps.Title, Config: u.deps.Config()}
+	body, err := u.renderer.execute("page", view)
+	if err != nil {
 		log.Printf("render page: %s", err)
 		http.Error(w, "Template error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(buf.Bytes())
+	_, _ = w.Write(body)
+}
+
+// pageView is the htmx shell's model.
+type pageView struct {
+	Title  string
+	Config engine.Config
+}
+
+// writeTemplate renders a pulled fragment, falling back to a message rather
+// than an error page: htmx swaps whatever comes back straight into the
+// document. It goes through renderer.execute, so checkFragment covers the
+// pulled fragments too.
+func (u *UI) writeTemplate(w http.ResponseWriter, status int, name string, data any, fallback string) {
+	body, err := u.renderer.execute(name, data)
+	if err != nil {
+		log.Printf("render %s: %s", name, err)
+		writeFragment(w, http.StatusInternalServerError, `<p class="muted">`+fallback+`</p>`)
+		return
+	}
+	writeFragment(w, status, string(body))
 }
 
 func writeFragment(w http.ResponseWriter, status int, html string) {
@@ -124,11 +110,11 @@ func (u *UI) WriteAPIResult(w http.ResponseWriter, msg string) {
 	} else {
 		name = "api-error"
 	}
-	var buf bytes.Buffer
-	if rerr := u.renderer.tmpl.ExecuteTemplate(&buf, name, msg); rerr != nil {
-		log.Printf("render %s: %s", name, rerr)
+	body, err := u.renderer.execute(name, msg)
+	if err != nil {
+		log.Printf("render %s: %s", name, err)
 		writeFragment(w, http.StatusOK, `<p class="err-msg">Unexpected error.</p>`)
 		return
 	}
-	writeFragment(w, http.StatusOK, buf.String())
+	writeFragment(w, http.StatusOK, string(body))
 }
