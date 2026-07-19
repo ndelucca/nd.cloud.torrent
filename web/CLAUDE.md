@@ -66,9 +66,10 @@ Templates:
   `fileView.Complete`/`.InProgress` exist so nothing tests `eq .Percent 100.0`
   against a percentage that renders truncated.
 - **Formatting is a template func when it is generic, a view-model field when it
-  encodes a decision.** `bytes`, `pct`, `round`, `ago` and `urlpath` are funcs:
+  encodes a decision.** `bytes`, `pct`, `round` and `urlpath` are funcs:
   one value in, same meaning everywhere. `fileView.Complete`, `torrentView.Idle`,
-  `fsView.Modified` and `statsView.Uptime` are fields: each is a judgement (what
+  `fsView.Modified` (which calls `humanAgo` from Go) and `statsView.Uptime` are
+  fields: each is a judgement (what
   counts as complete, as idle, how a duration reads) belonging with the model
   rather than repeated at each call site. A field's name must say what it holds —
   `statsView` splits the process start into `StartedAt` (instant), `Started`

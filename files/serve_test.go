@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,7 +84,9 @@ func TestHandlerMethods(t *testing.T) {
 		{"head file", http.MethodHead, "/download/ok.txt", http.StatusOK},
 		{"missing file", http.MethodGet, "/download/nope.txt", http.StatusNotFound},
 		{"traversal", http.MethodGet, "/download/../../etc/passwd", http.StatusNotFound},
-		{"delete file", http.MethodDelete, "/download/ok.txt", http.StatusOK},
+		// Handler is read-only. Deleting goes through Remove, which the server
+		// routes separately so the reply is an api-ok/api-error fragment.
+		{"delete file", http.MethodDelete, "/download/ok.txt", http.StatusMethodNotAllowed},
 		{"unsupported verb", http.MethodPut, "/download/ok.txt", http.StatusMethodNotAllowed},
 	}
 	for _, c := range cases {
@@ -104,10 +107,10 @@ func TestHandlerMethods(t *testing.T) {
 	}
 }
 
-// TestDeleteRemovesTree pins that DELETE is recursive — the reason the caller
-// must gate it.
-func TestDeleteRemovesTree(t *testing.T) {
-	h, root := newTestHandler(t)
+// TestRemoveIsRecursive pins that Remove takes the whole tree — the reason the
+// caller must gate it.
+func TestRemoveIsRecursive(t *testing.T) {
+	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "dir", "sub"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -115,13 +118,34 @@ func TestDeleteRemovesTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/download/dir", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if err := Remove(root, "dir"); err != nil {
+		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "dir")); !os.IsNotExist(err) {
 		t.Fatalf("directory survived the delete: %v", err)
+	}
+}
+
+// TestRemoveRefusesToEscape is the containment rule on the destructive path.
+// ResolveWithin is what enforces it; this pins that Remove actually goes
+// through it, and that a refusal leaves the target alone.
+func TestRemoveRefusesToEscape(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(root), "secret.txt")
+	if err := os.WriteFile(outside, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, rel := range []string{"../secret.txt", "../../secret.txt", "dir/../../secret.txt"} {
+		if err := Remove(root, rel); !errors.Is(err, ErrOutsideRoot) {
+			t.Errorf("Remove(%q) = %v, want ErrOutsideRoot", rel, err)
+		}
+		if _, err := os.Stat(outside); err != nil {
+			t.Fatalf("Remove(%q) deleted a file outside the root", rel)
+		}
 	}
 }
 

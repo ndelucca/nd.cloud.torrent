@@ -141,6 +141,23 @@
     if (input) input.value = "";
   });
 
+  // htmx does not swap a non-2xx response and reports nothing at all on a
+  // transport failure, so without these a failed fragment fetch left its
+  // placeholder on screen forever with no trace anywhere. The placeholder
+  // deliberately stays: both fragment panels retry on their own — #downloads on
+  // the next ping, the file panel on the next expand — so what was wrong was the
+  // silence, not the stale text.
+  //
+  // This also surfaces a rejected cross-origin mutation, which gets a hard 403
+  // from requireSameOrigin rather than a fragment.
+  document.body.addEventListener("htmx:responseError", function (e) {
+    var status = e.detail && e.detail.xhr ? e.detail.xhr.status : 0;
+    showError("Request failed (" + status + ").");
+  });
+  document.body.addEventListener("htmx:sendError", function () {
+    showError("Could not reach the server.");
+  });
+
   // --- drag and drop .torrent files ----------------------------------------
   //
   // Files are handed to the upload form's file input and submitted through
@@ -229,7 +246,15 @@
       var inView = (rect.top >= 0 && rect.top <= height) ||
                    (rect.bottom >= 0 && rect.bottom <= height);
       if (!inView) continue;
-      if (m.paused) { m.play(); } else { m.pause(); }
+      if (m.paused) {
+        // play() rejects when autoplay policy blocks it or the source is
+        // missing. Unhandled, that is an uncaught rejection in the console on
+        // every spacebar press against a blocked element.
+        var played = m.play();
+        if (played && played.catch) played.catch(function () {});
+      } else {
+        m.pause();
+      }
       e.preventDefault();
       break;
     }

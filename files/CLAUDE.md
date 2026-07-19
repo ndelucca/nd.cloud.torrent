@@ -10,15 +10,23 @@ authorization.
 
 - `files.go` — `Node`, `Limit`, `ErrOutsideRoot`, `List`, `ResolveWithin`,
   `isWithin`, `visible`, and the bounded `list` walk
-- `serve.go` — `Handler` (GET/HEAD/DELETE over `/download/`), `sandbox`, `serveZip`
+- `serve.go` — `Handler` (GET/HEAD over `/download/`), `Remove`, `sandbox`,
+  `serveZip`
 
 ## Local Contracts
 
-- **`Handler` performs no authorization.** DELETE removes files from disk for
-  anyone who reaches it; the gate is `server.requireSameOrigin`, middleware
-  wrapping the whole mux. Any new mutating method added here inherits that
-  assumption.
-- **Every user-supplied path goes through `ResolveWithin`.** A
+- **`Handler` is read-only, and deliberately.** Deleting lives in `Remove`, a
+  plain function, so that mounting the handler cannot expose a destructive
+  operation by accident. `Handler` answers 405 to anything that is not GET or
+  HEAD. Do not add a mutating method to it.
+- **Nothing here performs authorization.** `Remove` deletes for anyone who calls
+  it; the gate is `server.requireSameOrigin`, middleware wrapping the whole mux
+  by method. The server routes `DELETE /download/{path...}` through `apiRoute`
+  so the reply is an `api-ok`/`api-error` fragment like every other mutation —
+  answering it from `Handler` meant a 200 with an empty body on success and a
+  500 on failure, neither of which htmx reports.
+- **Every user-supplied path goes through `ResolveWithin`** — `Handler` and
+  `Remove` alike. A
   `strings.HasPrefix` check is not enough — it has no separator boundary, so
   `<root>-backup/secret` passes it. `ResolveWithin` uses `filepath.Rel` *and*
   resolves symlinks and re-checks, because a link inside the download directory

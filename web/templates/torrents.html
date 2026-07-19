@@ -77,19 +77,22 @@ first render.
          answers every /api/* call with an api-ok or api-error fragment, and
          hx-swap="none" discarded it — so a failed Stop or Remove reported
          nothing at all while the error path was fully built. */}}
-    <div class="torrent-actions">
+    {{/* The target is inherited by every button below it: htmx resolves hx-*
+         attributes up the tree, so declaring it once here is the same contract
+         as three copies. All three verbs report into the status region — the
+         server answers each with an api-ok or api-error fragment, and
+         hx-swap="none" would discard it, so a failed Stop or Remove would say
+         nothing while the whole error path exists and works. */}}
+    <div class="torrent-actions" hx-target="#omni-status" hx-swap="innerHTML">
       {{if .Started}}
       <button type="button" class="btn danger"
-              hx-post="/api/torrents/{{urlpath .InfoHash}}/stop"
-              hx-target="#omni-status" hx-swap="innerHTML">Stop</button>
+              hx-post="/api/torrents/{{urlpath .InfoHash}}/stop">Stop</button>
       {{else}}
       <button type="button" class="btn primary"
-              hx-post="/api/torrents/{{urlpath .InfoHash}}/start"
-              hx-target="#omni-status" hx-swap="innerHTML">Start</button>
+              hx-post="/api/torrents/{{urlpath .InfoHash}}/start">Start</button>
       <button type="button" class="btn danger"
               hx-delete="/api/torrents/{{urlpath .InfoHash}}"
-              hx-confirm="Remove this torrent?"
-              hx-target="#omni-status" hx-swap="innerHTML">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
+              hx-confirm="Remove this torrent?">{{if .Loaded}}Remove{{else}}Cancel{{end}}</button>
       {{end}}
     </div>
     {{if .Started}}

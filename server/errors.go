@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/fetch"
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // apiError carries an HTTP status alongside the message shown to the user.
@@ -54,6 +56,13 @@ func classify(err error) (int, string) {
 		return http.StatusNotFound, sentence(err.Error())
 	case errors.Is(err, engine.ErrAlreadyStarted), errors.Is(err, engine.ErrAlreadyStopped):
 		return http.StatusConflict, sentence(err.Error())
+
+	// Caused by the request, but with a FIXED message unlike the cases above.
+	// files.ErrOutsideRoot's own text and the path EvalSymlinks attaches to
+	// fs.ErrNotExist are both filesystem-layout oracles, so a rejected probe
+	// must not be told apart from a missing file.
+	case errors.Is(err, files.ErrOutsideRoot), errors.Is(err, fs.ErrNotExist):
+		return http.StatusNotFound, "Not found."
 
 	// Not caused by the request, but the state is worth naming.
 	case errors.Is(err, engine.ErrNotConfigured), errors.Is(err, engine.ErrClosed):

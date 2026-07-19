@@ -11,15 +11,12 @@ import (
 	"strings"
 )
 
-// Handler serves and deletes files under a download root.
+// Handler serves files under a download root. It is read-only: the mutating
+// operation lives in Remove, which is a plain function so that mounting this
+// handler cannot expose one by accident.
 //
-// **It performs no authorization.** DELETE is destructive and this type will
-// happily run it for anyone who reaches it; the caller is responsible for
-// gating mutation (the server checks same-origin before delegating). Any new
-// mutating method added here inherits that assumption, so do not add one
-// without checking the caller still gates it.
-//
-// The request path is taken as relative to Root, so mount it behind
+// **It performs no authorization**, so the caller decides who reaches it. The
+// request path is taken as relative to Root, so mount it behind
 // http.StripPrefix.
 type Handler struct {
 	// Root is a func, not a string: /api/configure can move the download
@@ -56,13 +53,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer f.Close()
 		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
-	case http.MethodDelete:
-		if err := os.RemoveAll(file); err != nil {
-			http.Error(w, "Delete failed", http.StatusInternalServerError)
-		}
 	default:
 		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// Remove deletes the entry at rel, which must resolve inside root. It is
+// recursive: a torrent's download is usually a directory.
+//
+// A function rather than a method on Handler. Handler is mounted with no
+// authorization of its own, so keeping the only destructive operation off it
+// means a future mount cannot expose one by accident. **The caller gates this**
+// — the server rejects any non-GET that is not same-origin before it is reached.
+//
+// The containment rule stays here rather than at the call site because it is the
+// only thing between a user-supplied path and the rest of the filesystem.
+func Remove(root, rel string) error {
+	file, err := ResolveWithin(root, rel)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(file)
 }
 
 // sandbox puts a downloaded file in an opaque origin.

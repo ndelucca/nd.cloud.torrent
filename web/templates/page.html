@@ -17,8 +17,16 @@
 <body hx-ext="sse,morph" sse-connect="/events">
   <header class="topbar">
     <h1>{{.Title}}</h1>
-    <div id="connection" class="conn" data-state="connecting" title="Connection">
-      <span class="dot"></span><span class="label">connecting</span>
+    {{/* role="status" implies aria-live="polite", so setConn's textContent
+         write on the label is announced — a dropped stream was silent to
+         assistive tech. Polite rather than role="alert": flapping wifi would
+         otherwise interrupt the user repeatedly. No aria-label here, because on
+         a live region it can replace the announced content in some readers,
+         which is the opposite of what this needs; the sr-only span gives the
+         announcement its context instead. */}}
+    <div id="connection" class="conn" data-state="connecting" role="status" title="Connection">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="sr-only">Connection: </span><span class="label">connecting</span>
     </div>
   </header>
 

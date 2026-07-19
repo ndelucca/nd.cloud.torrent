@@ -102,9 +102,14 @@ func TestEmptyDirectoryHasNoDanglingAriaControls(t *testing.T) {
 }
 
 // TestTorrentVerbsReportTheirOutcome pins that the action buttons have somewhere
-// to put the server's reply. They used to carry hx-swap="none", which discarded
-// the api-error fragment — so a failed Stop or Remove was completely silent
-// while the whole error path existed and worked.
+// to put the server's reply. With hx-swap="none" the api-error fragment is
+// discarded, so a failed Stop or Remove is completely silent while the whole
+// error path exists and works.
+//
+// The target sits on the .torrent-actions wrapper and htmx inherits it down, so
+// this matches an ancestor attribute rather than one per button. Asserting the
+// inheritance properly would need an HTML parser, which is not worth a
+// dependency; what matters is that the rendered row carries the target at all.
 func TestTorrentVerbsReportTheirOutcome(t *testing.T) {
 	u := newTestUI(t)
 	body, err := u.renderer.execute("torrent-row", torrentView{
@@ -118,6 +123,86 @@ func TestTorrentVerbsReportTheirOutcome(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `hx-target="#omni-status"`) {
 		t.Errorf("torrent verbs must target the status region:\n%s", body)
+	}
+}
+
+// TestTreeDeleteReportsItsOutcome is the same contract for the download tree,
+// which did not have it.
+//
+// The delete targeted #downloads with hx-swap="innerHTML" against a handler
+// that answered 200 with NO body on success and 500 plain text on failure. So a
+// successful delete blanked the panel until the next ping, and a failed one was
+// completely silent — htmx does not swap a non-2xx response.
+func TestTreeDeleteReportsItsOutcome(t *testing.T) {
+	u := newTestUI(t)
+	body, err := u.renderer.execute("downloads", newDownloadsView(&files.Node{
+		Name: "root", IsDir: true,
+		Children: []*files.Node{{Name: "a.txt", Size: 1}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(body)
+
+	// Scoped to the element carrying hx-delete: #downloads appears elsewhere in
+	// the tree markup, so a document-wide search would not say which element the
+	// reply lands on.
+	i := strings.Index(out, "hx-delete=")
+	if i < 0 {
+		t.Fatalf("no delete button rendered:\n%s", out)
+	}
+	tag := out[strings.LastIndex(out[:i], "<"):]
+	tag = tag[:strings.Index(tag, ">")]
+
+	if !strings.Contains(tag, `hx-target="#omni-status"`) {
+		t.Errorf("the tree delete must report into the status region: <%s>", tag)
+	}
+	if strings.Contains(tag, `hx-target="#downloads"`) {
+		t.Errorf("the tree delete swaps the server's reply into the tree panel, "+
+			"which blanks it on success: <%s>", tag)
+	}
+}
+
+// TestIconButtonsHaveAccessibleNames pins that no icon-only button ships without
+// one. The glyphs are the whole text content, so a screen reader announces
+// "▶ button" and "× button" — and one of them deletes files. title is a mouse
+// tooltip and is not exposed as an accessible name.
+func TestIconButtonsHaveAccessibleNames(t *testing.T) {
+	u := newTestUI(t)
+	body, err := u.renderer.execute("downloads", newDownloadsView(&files.Node{
+		Name: "root", IsDir: true,
+		Children: []*files.Node{{Name: "clip.mp4", Size: 1}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(body)
+
+	var tags []string
+	for i := 0; ; {
+		j := strings.Index(out[i:], `class="icon-btn`)
+		if j < 0 {
+			break
+		}
+		j += i
+		start := strings.LastIndex(out[:j], "<")
+		end := j + strings.Index(out[j:], ">")
+		tags = append(tags, out[start:end])
+		i = end
+	}
+
+	// The fixture renders exactly one previewable file, so it must produce
+	// exactly three icon buttons: preview, delete, confirm-delete. Asserting the
+	// count is what stops this passing because the scan stopped matching, which
+	// is otherwise indistinguishable from passing clean.
+	if len(tags) != 3 {
+		t.Fatalf("found %d icon-btn elements, want 3 — the scan has stopped "+
+			"matching:\n%s", len(tags), out)
+	}
+	for _, tag := range tags {
+		if !strings.Contains(tag, "aria-label=") {
+			t.Errorf("icon-only button has no accessible name: <%s>", tag)
+		}
 	}
 }
 

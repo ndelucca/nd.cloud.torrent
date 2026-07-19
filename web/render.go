@@ -40,7 +40,6 @@ func templateFuncs() template.FuncMap {
 		"bytes":   humanBytes,
 		"round":   func(f float64) string { return fmt.Sprintf("%.0f", f) },
 		"pct":     func(f float32) string { return fmt.Sprintf("%.2f", f) },
-		"ago":     humanAgo,
 		"urlpath": urlPath,
 	}
 }
@@ -96,7 +95,9 @@ func percentOf(n, total int64) float64 {
 	return float64(n) / float64(total) * 100
 }
 
-// humanAgo renders a past instant as elapsed time ("3 hours ago").
+// humanAgo renders a past instant as elapsed time ("3 hours ago"). Called from
+// Go, not from a template: fsView.Modified holds the formatted form, because how
+// a timestamp reads is a decision that belongs with the view model.
 func humanAgo(t time.Time) string {
 	if t.IsZero() {
 		return "never"

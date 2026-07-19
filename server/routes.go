@@ -33,6 +33,19 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/torrents/{hash}/start", s.apiRoute(s.handleStart))
 	mux.Handle("POST /api/torrents/{hash}/stop", s.apiRoute(s.handleStop))
 	mux.Handle("DELETE /api/torrents/{hash}", s.apiRoute(s.handleDelete))
+	// Deleting a download goes through apiRoute like every other mutation, so it
+	// gets the render kick, classify's status mapping and an api-ok/api-error
+	// fragment for htmx. Answering it from files.Handler instead meant a 200
+	// with an empty body on success — which htmx swapped, blanking the panel —
+	// and a 500 on failure, which htmx does not swap at all, so a failed delete
+	// reported nothing.
+	//
+	// Authorization is unchanged: requireSameOrigin wraps the whole mux by
+	// method, so this was gated before it was its own route and still is.
+	//
+	// Most-specific-wins, and a method-bearing pattern beats a method-less
+	// prefix, so GET and HEAD still reach files.Handler below.
+	mux.Handle("DELETE /download/{path...}", s.apiRoute(s.handleDeleteFile))
 	// StripPrefix because files.Handler reads the request path as relative to
 	// the download root.
 	mux.Handle("/download/", http.StripPrefix("/download/",

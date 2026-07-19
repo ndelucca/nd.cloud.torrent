@@ -312,6 +312,101 @@ func TestAPIStatusCodes(t *testing.T) {
 	}
 }
 
+// TestDeleteDownloadReportsOutcomeAsFragment covers a delete that reported
+// nothing.
+//
+// It was answered by files.Handler, which returns 200 with an EMPTY body on
+// success and 500 plain text on failure, while the button swapped the reply into
+// #downloads. So a success blanked the panel and a failure was silent, because
+// htmx does not swap a non-2xx response. Routing it through apiRoute gives it
+// the same api-ok/api-error fragment every other verb gets.
+func TestDeleteDownloadReportsOutcomeAsFragment(t *testing.T) {
+	s := newTestServer(t)
+	h := s.handler()
+
+	root := s.downloadDir()
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Written outside the download root: nothing the server does may reach it.
+	outside := filepath.Join(filepath.Dir(root), "secret.txt")
+	if err := os.WriteFile(outside, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	del := func(t *testing.T, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodDelete, path, nil)
+		r.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	t.Run("success reports ok and removes the file", func(t *testing.T) {
+		target := filepath.Join(root, "gone.txt")
+		if err := os.WriteFile(target, []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		w := del(t, "/download/gone.txt")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 — htmx will not swap a non-2xx", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "ok-msg") {
+			t.Errorf("body = %q, want an api-ok fragment", w.Body.String())
+		}
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Errorf("file survived the delete: %v", err)
+		}
+	})
+
+	t.Run("missing file reports an error rather than nothing", func(t *testing.T) {
+		w := del(t, "/download/never-existed.txt")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 so htmx swaps the message", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "err-msg") {
+			t.Errorf("body = %q, want an api-error fragment", w.Body.String())
+		}
+	})
+
+	// The two spellings are stopped by different things, and the distinction is
+	// the point: a literal ".." never reaches this package, so only the encoded
+	// form actually exercises ResolveWithin.
+	t.Run("a literal .. is cleaned away by the mux", func(t *testing.T) {
+		w := del(t, "/download/../secret.txt")
+		if w.Code != http.StatusTemporaryRedirect {
+			t.Errorf("status = %d, want 307 — ServeMux cleans the path and "+
+				"redirects, so the handler never sees this form", w.Code)
+		}
+		if _, err := os.Stat(outside); err != nil {
+			t.Fatalf("the file outside the download directory was deleted")
+		}
+	})
+
+	t.Run("an encoded .. reaches the handler and is refused", func(t *testing.T) {
+		// %2e%2e survives the mux and arrives at r.PathValue already decoded, so
+		// this is the form a check written against the raw path would miss.
+		// files.Remove is what stops it.
+		w := del(t, "/download/%2e%2e/secret.txt")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "err-msg") {
+			t.Errorf("status = %d body = %q, want a 200 api-error fragment",
+				w.Code, w.Body.String())
+		}
+		if _, err := os.Stat(outside); err != nil {
+			t.Fatalf("an encoded traversal deleted a file outside the download directory")
+		}
+	})
+
+	t.Run("the message never names the resolved path", func(t *testing.T) {
+		w := del(t, "/download/never-existed.txt")
+		if strings.Contains(w.Body.String(), root) {
+			t.Errorf("body leaked the download root, which is a layout oracle: %q",
+				w.Body.String())
+		}
+	})
+}
+
 // TestSSRFGuard checks that the remote-torrent fetch refuses to reach into the
 // host's own network. Previously it was an unauthenticated fetch of any URL
 // with no timeout, no size limit, and a leaked response body.
@@ -391,13 +486,9 @@ func TestRouting(t *testing.T) {
 }
 
 // TestSameOriginIsEnforcedByMethod pins that the cross-origin gate is a
-// property of the method, not of a route someone remembered to wrap.
-//
-// checkSameOrigin used to be called from two places — inside api() and again in
-// serveDownload's DELETE branch — so the invariant held by convention, and the
-// package doc had to warn that adding a mutating route which bypassed it was
-// how that became a bug. As middleware it covers a route before that route is
-// written.
+// property of the method, not of a route someone remembered to wrap. As
+// middleware over the whole mux it covers a mutating route before that route is
+// written — including DELETE /download/, which is its own route now.
 func TestSameOriginIsEnforcedByMethod(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()

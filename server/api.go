@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
 // maxAPIBody caps request bodies. A .torrent file is comfortably under this.
@@ -138,6 +140,13 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) error {
 	return s.engine.StopTorrent(r.PathValue("hash"))
+}
+
+// handleDeleteFile removes a download. The path is the {path...} remainder, so
+// it arrives already decoded; files.Remove is what proves it stays inside the
+// download directory.
+func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) error {
+	return files.Remove(s.downloadDir(), r.PathValue("path"))
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) error {

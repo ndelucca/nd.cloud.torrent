@@ -19,10 +19,13 @@ what keeps html/template's contextual autoescaper able to reach a fixed point �
 recursing from inside an attribute or a <script> fails with ErrOutputContext at
 parse time.
 
-x-data is a constant literal on purpose. Alpine skips re-initialisation when an
-already-initialised element's x-data value changes (it leaves _x_marker set), so
-interpolating server data into it breaks silently and permanently. The path
-arrives via data-path instead and treeNode() reads it from $el.
+x-data is a constant literal on purpose, and this is a security property as much
+as a correctness one: the expression is evaluated, so interpolating a
+torrent-supplied filename into it is a script-injection sink that
+html/template's escaper cannot see. It also breaks silently — Alpine skips
+re-initialisation when an already-initialised element's x-data value changes,
+leaving _x_marker set. Per-node data arrives via data-id, which carries the
+hashed path from pathID, and treeNode() reads it from $el.
 */}}
 {{define "fsnode"}}
 <li class="tree-item{{if .IsDir}} is-dir{{end}}" id="n-{{.ID}}" data-id="{{.ID}}"
@@ -44,17 +47,31 @@ arrives via data-path instead and treeNode() reads it from $el.
 
     <span class="tree-meta">{{bytes .Size}} &middot; {{.Modified}}</span>
 
+    {{/* The accessible name is aria-label, not title: title is a mouse tooltip
+         and is not exposed as a name, so a button whose whole text content is a
+         glyph announces as "▶ button" or "× button" — one of which deletes
+         files. The glyph is aria-hidden so it does not join the name. */}}
     <span class="tree-actions">
       {{if .Preview}}
       <button type="button" class="icon-btn" @click="preview = !preview"
-              :aria-pressed="preview" title="Preview">&#9654;</button>
+              :aria-pressed="preview" aria-label="Preview {{.Name}}" title="Preview">
+        <span aria-hidden="true">&#9654;</span>
+      </button>
       {{end}}
       {{/* Two-step delete, so a stray click cannot remove a download. */}}
-      <button type="button" class="icon-btn danger" x-show="!confirm" @click="ask()" title="Delete">&times;</button>
+      <button type="button" class="icon-btn danger" x-show="!confirm" @click="ask()"
+              aria-label="Delete {{.Name}}" title="Delete">
+        <span aria-hidden="true">&times;</span>
+      </button>
+      {{/* Targets #omni-status like the torrent verbs, and the server answers
+           with an api-ok or api-error fragment. Swapping the reply into
+           #downloads blanks the panel on success, because a successful delete
+           has no body to swap. */}}
       <button type="button" class="icon-btn danger" x-show="confirm" x-cloak
               hx-delete="/download/{{urlpath .Path}}"
-              hx-target="#downloads" hx-swap="innerHTML"
-              @click="confirm = false" title="Confirm delete">Delete?</button>
+              hx-target="#omni-status" hx-swap="innerHTML"
+              @click="confirm = false"
+              aria-label="Confirm delete of {{.Name}}">Delete?</button>
     </span>
   </div>
 

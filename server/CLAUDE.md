@@ -53,8 +53,14 @@ Authorization:
   must be same-origin.** Bodies may be `text/plain`, form-encoded or multipart, and browsers send the
   first two cross-origin without a preflight. As middleware it covers a mutating route *before* it is
   written. A rejected `/api/*` call gets a hard 403, not a fragment, so htmx will not swap it.
-- **This package is the only place authorization is decided.** `files.Handler` performs no checks and
-  will delete for anyone who reaches it.
+- **This package is the only place authorization is decided.** Nothing in `files` performs a check;
+  `files.Remove` deletes for anyone who calls it.
+- **`DELETE /download/{path...}` is its own route through `apiRoute`**, ahead of the method-less
+  `/download/` prefix — most-specific-wins, and a method-bearing pattern beats one without, so GET
+  and HEAD still reach `files.Handler`. It exists so a delete gets the render kick, `classify`'s
+  status mapping and an `api-ok`/`api-error` fragment. `files.Handler` answered it with a 200 and an
+  empty body on success, which htmx swapped into the tree panel and blanked it, and a 500 on
+  failure, which htmx does not swap at all.
 
 The API:
 
@@ -73,6 +79,9 @@ The API:
     useful information and is bounded parser prose, so it is shown. → 400/404/409.
   - *Operational* (disk, bind, upstream, closed): the detail is a syscall string and a
     filesystem-layout oracle, so a fixed message is shown and the chain is logged. → 500/502/503.
+  - *Path* (`files.ErrOutsideRoot`, `fs.ErrNotExist`): caller-caused, so 404 — but with a **fixed**
+    message unlike the other input cases. `ErrOutsideRoot`'s own text and the path `EvalSymlinks`
+    attaches are layout oracles, so a refused traversal must not be tellable from a missing file.
   - **The default is 500**, so an unclassified failure is never reported to the user as their own
     mistake. `engine.ErrInvalidInput` keeps genuine caller mistakes on the 400 side of it.
 - **Error strings stay ordinary lowercase Go.** `classify` owns presentation; `sentence` capitalises
