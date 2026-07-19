@@ -74,18 +74,56 @@ go mod tidy && git diff --exit-code go.mod go.sum
 
 ### Manual checks
 
-Some behaviour only fails in a browser, so it is worth 30 seconds after any UI
-change:
+**A large part of this UI cannot fail in CI.** A CSP violation, a lost morph, a
+bad SRI hash — none of them break the build or a test. They break the page, in
+silence. So the browser pass is not optional after a UI change, and the console
+is part of it.
 
 ```sh
-go run . --port 3000
+go build -o nd-cloud-torrent . && ./nd-cloud-torrent --port 3000
 ```
 
+Remember the assets are `go:embed`ed: without the rebuild you are testing the
+last binary, not your change.
+
+**With the console open, and zero errors in it:**
+
 - The connection dot turns green.
+- **No CSP violation reports.** The app serves `script-src 'self'` with no
+  `unsafe-inline` and no `unsafe-eval`; anything that needs either shows up here
+  and nowhere else. A blocked script usually reads as "the page loaded but
+  nothing works".
+- **No SRI failures.** A stale `integrity=` makes the browser refuse the script
+  outright — the symptom is identical to the above, so read the message.
+
+**Then, with a real download running** (the state-preservation checks are
+meaningless on an idle server, because nothing is re-rendering):
+
 - Add a magnet; progress advances **without reloading the page**.
 - Expand a torrent's Files panel and a download folder. Wait a minute. Both must
   still be open — if either snaps shut, an Alpine-owned element has ended up
   inside a swap target.
+- Open a video preview and press play. Wait a minute. **It must still be
+  playing.** The downloads tree is morphed rather than replaced specifically so
+  that this survives; if the video restarts or disappears, the morph is not
+  holding and the reduced `localStorage` in `ct.js` rests on a false premise.
+- Reload the page. Folders you opened stay open, folders you closed stay closed.
+  That is the one case a morph cannot cover and the only reason the stored state
+  exists.
+
+**And the things with no automated cover at all:**
+
+- Delete a file from the tree: the panel must **not** go blank, and the outcome
+  is reported in the status region above. Delete something that no longer exists
+  (delete it twice) — the failure must be reported, not silent.
+- Tab to the `×` on a tree row and press Enter. Focus should land somewhere
+  usable, not on `<body>` — the button hides itself via `x-show`, so a keyboard
+  user can be dumped back to the top of the document. **This is a known open
+  defect**; confirm whether it still reproduces before fixing it.
+- With more than `files.Limit` (1000) entries in the download directory, a
+  folder below the cut loses its remembered open/closed state on each swap. That
+  is the accepted cost of pruning stored state against the rendered tree, but it
+  has never been confirmed in a browser.
 - `curl -sN localhost:3000/events` shows named events, and **falls silent** on an
   idle server. Continuous output means change detection is broken.
 

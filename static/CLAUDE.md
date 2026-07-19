@@ -134,9 +134,14 @@ Client behaviour:
 ## Verification
 
 - `go build ./...`
-- Rebuild, load `http://localhost:3000`, and confirm the connection dot turns green
-- Expand a torrent's Files panel and a download folder, wait a minute, and confirm both stay open
-- Check the browser console for errors after touching any script
+- **The browser pass in CONTRIBUTING.md is the real verification for this
+  package.** Nothing here has automated cover: a CSP violation, a failed SRI
+  hash, a lost morph and a broken Alpine binding all leave the build and the
+  test suite green and the page dead. Rebuild first — these files are
+  `go:embed`ed, so without it you are testing the previous binary.
+- The console must be empty. A blocked script and a stale `integrity=` both
+  present as "the page loads and nothing works", so read the message rather than
+  guessing.
 
 ## Child DOX Index
 
