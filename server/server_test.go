@@ -643,3 +643,79 @@ func TestStaticAssetsAreServed(t *testing.T) {
 		})
 	}
 }
+
+// TestContentSecurityPolicy pins the app's own policy and, just as importantly,
+// that it does not displace the stricter one on downloaded content.
+//
+// The directive that matters is script-src without 'unsafe-inline'. Every script
+// this app loads is a same-origin file, so the policy is not about them — it is
+// about a script an attacker gets into the page, and this app renders
+// torrent-supplied file names into markup that includes an Alpine x-data sink
+// the html/template escaper cannot see.
+func TestContentSecurityPolicy(t *testing.T) {
+	s := newTestServer(t)
+	h := s.handler()
+
+	get := func(t *testing.T, path string) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w.Header().Get("Content-Security-Policy")
+	}
+
+	t.Run("app pages", func(t *testing.T) {
+		csp := get(t, "/")
+		if csp == "" {
+			t.Fatal("no CSP on the app's own pages")
+		}
+		// 'unsafe-inline' is the whole point; asserting its absence explicitly
+		// rather than trusting the directive string to stay right.
+		if strings.Contains(csp, "unsafe-inline") {
+			t.Errorf("script-src allows unsafe-inline, which is the directive "+
+				"that stops an injected script running: %q", csp)
+		}
+		for _, want := range []string{
+			"default-src 'self'",
+			"script-src 'self' 'unsafe-eval'",
+			"style-src 'self'",
+			"frame-ancestors 'none'",
+			"object-src 'none'",
+			"base-uri 'none'",
+			"form-action 'self'",
+		} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("CSP is missing %q: %q", want, csp)
+			}
+		}
+	})
+
+	// Static assets travel through the same middleware, so they must carry it
+	// too — a policy that only covers the document is not a policy.
+	t.Run("static assets", func(t *testing.T) {
+		if csp := get(t, "/js/ct.js"); csp == "" {
+			t.Error("no CSP on a static asset")
+		}
+	})
+
+	// files.sandbox puts downloaded content in an opaque origin. That is
+	// stricter and must win: a torrent containing an index.html is served as
+	// text/html from this origin, and 'self' would let it run.
+	t.Run("downloaded files keep the sandbox policy", func(t *testing.T) {
+		root := s.downloadDir()
+		if err := os.MkdirAll(root, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "evil.html"),
+			[]byte(`<script>fetch("/api/torrents/x", {method:"DELETE"})</script>`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		csp := get(t, "/download/evil.html")
+		if !strings.Contains(csp, "sandbox") {
+			t.Errorf("downloaded content lost its sandbox policy: %q", csp)
+		}
+		if strings.Contains(csp, "script-src 'self'") {
+			t.Errorf("the app policy displaced the sandbox on downloaded "+
+				"content, which would let it run same-origin: %q", csp)
+		}
+	})
+}

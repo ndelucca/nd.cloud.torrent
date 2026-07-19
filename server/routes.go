@@ -113,12 +113,53 @@ func requireSameOrigin(h http.Handler) http.Handler {
 
 // securityHeaders applies defaults that cost nothing and close off sniffing and
 // framing.
+// appCSP is the policy for the app's own pages.
+//
+// The load-bearing directive is script-src without 'unsafe-inline'. That is not
+// about our own scripts — every one of them is a same-origin file — it is about
+// a script an attacker gets into the page. This app renders torrent-supplied
+// file names, and web/templates/downloads.html documents an injection sink that
+// html/template's escaper cannot see (a name interpolated into x-data would be
+// evaluated). The escaper is the primary defence; this is the second layer for
+// when it is bypassed.
+//
+// 'unsafe-eval' remains, and buys an attacker much less: it only matters once
+// they can already reach eval with their own data. Removing it means swapping
+// Alpine for its CSP build and rewriting every inline binding — worth doing, not
+// what stands between this app and a policy that helps. htmx's own eval paths
+// are off (ct.js sets allowEval false).
+//
+// style-src 'self' works because no template carries a style attribute and htmx's
+// indicator <style> injection is disabled in ct.js. x-show writes
+// element.style.display as a DOM property, which CSP does not govern.
+//
+// Downloaded files get a different, stricter policy — see files.sandbox. This one
+// must not be applied to them.
+const appCSP = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-eval'; " +
+	"style-src 'self'; " +
+	"img-src 'self'; " +
+	"media-src 'self'; " +
+	"connect-src 'self'; " +
+	"form-action 'self'; " +
+	"frame-src 'none'; " +
+	"frame-ancestors 'none'; " +
+	"object-src 'none'; " +
+	"base-uri 'none'"
+
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		head := w.Header()
 		head.Set("X-Content-Type-Options", "nosniff")
+		// Kept alongside frame-ancestors, which supersedes it: the header is
+		// what older browsers understand.
 		head.Set("X-Frame-Options", "DENY")
 		head.Set("Referrer-Policy", "no-referrer")
+		// Downloaded content gets files.sandbox's stricter policy instead. This
+		// middleware wraps the mux, so it runs first and files.Handler's later
+		// Set overwrites this one — which is the intended order, not a
+		// coincidence to leave unstated.
+		head.Set("Content-Security-Policy", appCSP)
 		h.ServeHTTP(w, r)
 	})
 }

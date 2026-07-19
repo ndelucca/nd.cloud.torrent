@@ -4,6 +4,20 @@
 (function () {
   "use strict";
 
+  // htmx's two eval paths, both off. allowEval governs hx-on:: and the js:
+  // prefixes on hx-vals/hx-vars/hx-headers; none of them are used, and turning
+  // it off means unsafe-eval is not needed on htmx's account.
+  //
+  // includeIndicatorStyles is not about eval: htmx injects a <style> element at
+  // boot for .htmx-indicator, which style-src 'self' would refuse. Nothing here
+  // defines or uses that class.
+  //
+  // Set before htmx boots — this file loads before it in page.html.
+  if (window.htmx) {
+    window.htmx.config.allowEval = false;
+    window.htmx.config.includeIndicatorStyles = false;
+  }
+
   // --- idiomorph guards -----------------------------------------------------
   //
   // A morph reverts attributes to whatever the server rendered, including ones
@@ -176,7 +190,22 @@
     bar.value = (e.detail.loaded / e.detail.total) * 100;
   });
 
+  // Moved out of the templates so no markup carries executable script: htmx
+  // compiles hx-on:: with new Function and a bare onchange is inline script, and
+  // both need script-src 'unsafe-inline' — the directive that actually stops an
+  // injected script from running.
+  //
+  // requestSubmit rather than submit: it runs validation and fires the submit
+  // event, which is what htmx listens for.
+  document.body.addEventListener("change", function (e) {
+    if (!e.target || e.target.id !== "torrent-file") return;
+    if (e.target.form) e.target.form.requestSubmit();
+  });
+
   document.body.addEventListener("htmx:afterRequest", function (e) {
+    if (e.target && e.target.id === "omni-form" && e.detail && e.detail.successful) {
+      e.target.reset();
+    }
     if (!e.target || e.target.id !== "upload-form") return;
     var bar = document.getElementById("upload-progress");
     if (bar) { bar.hidden = true; bar.value = 0; }

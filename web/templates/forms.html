@@ -6,9 +6,11 @@ parsing rules duplicated in the client.
 */}}
 {{define "omni"}}
 <div class="omni">
-  <form class="omni-form"
-        hx-post="/api/add" hx-target="#omni-status" hx-swap="innerHTML"
-        hx-on::after-request="if(event.detail.successful) this.reset()">
+  {{/* No hx-on:: and no onchange in this form or the one below: both are
+       compiled with new Function, so they need script-src 'unsafe-inline'.
+       The equivalent listeners live in ct.js, already scoped by element id. */}}
+  <form class="omni-form" id="omni-form"
+        hx-post="/api/add" hx-target="#omni-status" hx-swap="innerHTML">
     <input class="omni-input" type="text" name="uri" required
            placeholder="magnet:?xt=… or https://…/file.torrent"
            aria-label="Magnet URI or torrent URL"
@@ -23,7 +25,7 @@ parsing rules duplicated in the client.
         hx-target="#omni-status" hx-swap="innerHTML">
     <label class="btn" for="torrent-file">Upload .torrent</label>
     <input id="torrent-file" type="file" name="torrent" accept=".torrent" multiple
-           hidden onchange="this.form.requestSubmit()">
+           hidden>
     <progress id="upload-progress" value="0" max="100" hidden aria-label="Upload progress"></progress>
   </form>
 

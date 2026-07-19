@@ -38,8 +38,19 @@ Routing and middleware:
   directory.
 - Chain, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` →
   `requireSameOrigin` → the mux.
-- **Authentication sits inside the security headers**, so a 401 still carries `nosniff`, `DENY` and
-  `no-referrer`.
+- **Authentication sits inside the security headers**, so a 401 still carries `nosniff`, `DENY`,
+  `no-referrer` and the CSP.
+- **`appCSP` is the policy for this app's own pages.** The directive that earns its keep is
+  `script-src` *without* `'unsafe-inline'` — not about our scripts, which are all same-origin files,
+  but about one an attacker gets into the page, and `web/templates/downloads.html` documents an
+  Alpine `x-data` sink the `html/template` escaper cannot see. `'unsafe-eval'` stays: the vendored
+  Alpine build compiles attribute expressions with the AsyncFunction constructor. It buys an
+  attacker far less, since it only matters once they can already reach `eval` with their own data.
+  htmx's eval paths are off — `ct.js` sets `allowEval` false — as is its indicator `<style>`
+  injection, which `style-src 'self'` would otherwise refuse.
+- **The middleware sets the CSP; `files.Handler` overwrites it** with the stricter `sandbox` for
+  downloaded content. That ordering is the intent, not a coincidence: this wraps the mux, so it runs
+  first and the handler's later `Set` wins.
 - **The SSE stream must be excluded from gzip.** `gzhttp` buffers until 1 KiB before deciding whether
   to compress and an SSE frame is smaller, so without the `text/event-stream` exception the first
   event never reaches the browser.

@@ -74,6 +74,19 @@ Client behaviour:
   collapse state. Deriving depth by walking `parentElement` breaks on any markup
   change and throws on a null parent.
 - `ct.js` installs the idiomorph guards and must therefore load *before* Alpine.
+- **`ct.js` sets two htmx config flags, and the timing is load-bearing.**
+  `allowEval = false` (nothing uses `hx-on::` or the `js:` prefixes, so htmx
+  needs no eval) and `includeIndicatorStyles = false` (htmx injects a `<style>`
+  for `.htmx-indicator` at boot, which `style-src 'self'` refuses; nothing here
+  defines or uses that class). Both must be set before htmx boots — its boot is
+  wrapped in a `DOMContentLoaded` deferral and every script here is `defer`, so
+  document order gives `ct.js` its chance. Do not move it after Alpine.
+- **No inline event handlers in any template.** `hx-on::` is compiled with
+  `new Function` and a bare `onchange` is inline script; both would need
+  `script-src 'unsafe-inline'`, which is the directive that actually stops an
+  injected script from running. The two that existed — the omni form's reset and
+  the file input's auto-submit — are delegated listeners in `ct.js`, scoped by
+  element id like the others.
 - An event dispatched by Alpine bubbles *up*, so an `hx-trigger` on a sibling
   never sees it — use `from:closest <ancestor>`.
 - **The tree's collapse state lives in the DOM, and `localStorage` covers only a
