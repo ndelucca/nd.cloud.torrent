@@ -42,11 +42,20 @@ go build -o nd-cloud-torrent .
 
 ```sh
 docker build -f .github/Dockerfile -t nd-cloud-torrent .
-docker run -d -p 3000:3000 -v /path/to/downloads:/downloads nd-cloud-torrent
+docker run -d -p 3000:3000 \
+  -v /path/to/downloads:/app/downloads \
+  -v /path/to/config.json:/app/cloud-torrent.json \
+  nd-cloud-torrent
 ```
 
-The image runs as a non-root user; make sure the mounted directory is writable
-by it.
+The paths matter. The image's working directory is `/app` and the default
+download directory is the relative `./downloads`, so downloads land in
+`/app/downloads` — mounting `/downloads` instead leaves them inside the
+container, where they vanish on restart. The config mount is optional but
+without it the settings you save do not survive one either.
+
+The image runs as a non-root user (65534); make sure the mounted directory is
+writable by it.
 
 ## Usage
 

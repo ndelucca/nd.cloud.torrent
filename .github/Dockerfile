@@ -19,6 +19,10 @@ FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /app
 COPY --from=build /tmp/bin /app/bin
+# Declared so the paths are discoverable from the image itself rather than only
+# from the README: the default download directory is the relative ./downloads,
+# which resolves under this WORKDIR.
+VOLUME ["/app/downloads"]
 # Run unprivileged: the process only needs to read/write the mounted download dir.
 USER 65534:65534
 EXPOSE 3000

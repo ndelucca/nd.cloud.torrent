@@ -3,3 +3,12 @@ cloud-torrent.json
 tmp/
 dev.sh
 dist/
+
+# TLS material. --cert-path and --key-path are first-class flags, so these are
+# easy to leave next to the binary and easier to commit by accident.
+*.pem
+*.key
+*.crt
+
+# Coverage output.
+coverage.out
