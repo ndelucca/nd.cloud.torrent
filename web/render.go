@@ -224,19 +224,36 @@ func (r *renderer) framed(event string) []byte {
 	return r.framedBody[event]
 }
 
-// snapshot returns the current framed body of every region, in a stable order,
-// for a newly connected subscriber.
-func (r *renderer) snapshot() [][]byte {
+// snapshot returns every region's current framed body as one buffer, for a
+// newly connected subscriber, with first's region ahead of the rest.
+//
+// The ordering is explicit because it is load-bearing and used to be accidental.
+// A membership region has to arrive before the item regions it creates
+// elements for — an element cannot listen for torrent-<hash> before it exists,
+// so those frames are silently discarded. It happened to work only because
+// infohashes are lowercase hex and 'l' sorts after 'f', which inverts the day
+// anything changes how hashes are encoded.
+//
+// One buffer rather than a slice of frames: SSE frames are self-delimiting, so
+// the caller can make a single Write and a single Flush instead of one syscall
+// pair per region.
+func (r *renderer) snapshot(first string) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.framedBody))
 	for name := range r.framedBody {
-		names = append(names, name)
+		if name != first {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
-	out := make([][]byte, 0, len(names))
+
+	var out []byte
+	if frame, ok := r.framedBody[first]; ok {
+		out = append(out, frame...)
+	}
 	for _, name := range names {
-		out = append(out, r.framedBody[name])
+		out = append(out, r.framedBody[name]...)
 	}
 	return out
 }

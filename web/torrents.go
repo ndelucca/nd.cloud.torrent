@@ -173,12 +173,25 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 		log.Printf("render torrent-list: %s", err)
 		return
 	}
+
+	// A tick is one write. SSE frames are self-delimiting, so everything this
+	// pass produces is concatenated and broadcast once.
+	//
+	// This is what makes subBuffer meaningful. Broadcasting per torrent meant a
+	// subscriber's buffer measured *changed rows*, not lag: eight rows moving in
+	// one tick could stall a perfectly healthy client — each frame is its own
+	// Write and Flush, so a reader descheduled for a few milliseconds fell
+	// behind — and broadcast disconnects a subscriber it cannot deliver to. It
+	// reconnected, got the snapshot, kicked the render loop, and produced
+	// another burst. With one frame per tick the buffer measures ticks of lag,
+	// which is a real stall.
+	var out []byte
 	if membershipChanged {
 		if listFrame == nil {
 			// Bytes unchanged but membership moved: send the cached framing.
 			listFrame = u.renderer.framed(torrentListEvent)
 		}
-		u.hub.broadcast(listFrame)
+		out = append(out, listFrame...)
 	}
 
 	// Tier 2. Torrents whose row arrived with this tick's skeleton are skipped:
@@ -194,11 +207,15 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 			log.Printf("render torrent %s: %s", v.InfoHash, err)
 			continue
 		}
-		u.hub.broadcast(frame)
+		out = append(out, frame...)
 	}
 
 	for _, name := range removed {
-		u.hub.broadcast(u.renderer.forget(name))
+		out = append(out, u.renderer.forget(name)...)
+	}
+
+	if len(out) > 0 {
+		u.hub.broadcast(out)
 	}
 
 	// Last, and deliberately not deferred. seen is "what the browsers have been

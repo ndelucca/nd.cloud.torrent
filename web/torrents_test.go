@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +8,30 @@ import (
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
+
+// splitFrames breaks one broadcast into its individual SSE events.
+//
+// A tick is delivered as a single concatenated buffer, so a channel receive
+// carries many frames. SSE frames are self-delimiting — a blank line ends one —
+// which is what makes the concatenation valid in the first place.
+func splitFrames(buf []byte) []string {
+	var out []string
+	for _, raw := range strings.Split(string(buf), "\n\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		line, rest, _ := strings.Cut(raw, "\n")
+		name := strings.TrimPrefix(line, "event: ")
+		body := strings.TrimSpace(strings.ReplaceAll(rest, "data:", ""))
+		if body == "" {
+			out = append(out, name+" [EMPTY]")
+		} else {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // collect drains everything the hub broadcast during fn, as event names, with
 // " [EMPTY]" appended for content-free events.
@@ -33,15 +56,8 @@ func collect(t *testing.T, u *UI, fn func()) []string {
 				if !ok {
 					return
 				}
-				line, rest, _ := bytes.Cut(frame, []byte("\n"))
-				name := strings.TrimPrefix(string(line), "event: ")
-				body := strings.TrimSpace(strings.ReplaceAll(string(rest), "data:", ""))
 				mu.Lock()
-				if body == "" {
-					out = append(out, name+" [EMPTY]")
-				} else {
-					out = append(out, name)
-				}
+				out = append(out, splitFrames(frame)...)
 				mu.Unlock()
 			case <-sub.done:
 				return
@@ -254,4 +270,60 @@ func TestForgetSurvivesARenderFailure(t *testing.T) {
 		}
 	}
 	t.Fatalf("torrent bb was never forgotten; sent: %v", got)
+}
+
+// TestOneBroadcastPerTick pins the invariant that makes subBuffer mean
+// something.
+//
+// RenderTorrents used to broadcast once per torrent, so a subscriber's buffer
+// measured *changed rows* rather than lag: with subBuffer at 8, eight rows
+// moving in one tick could stall a perfectly healthy client. Each frame was its
+// own Write and Flush, so a reader descheduled for a few milliseconds fell
+// behind, and broadcast disconnects a subscriber it cannot deliver to — which
+// reconnected, took the snapshot, kicked the render loop, and produced another
+// burst. With one broadcast per tick the buffer measures ticks, which is a real
+// stall.
+func TestOneBroadcastPerTick(t *testing.T) {
+	u := newTestUI(t)
+
+	// Comfortably more torrents than subBuffer.
+	torrents := map[string]*engine.Torrent{}
+	for i := 0; i < subBuffer*3; i++ {
+		h := string(rune('a'+i%26)) + string(rune('a'+i/26))
+		torrents[h] = torrent(h, "T"+h, float32(i))
+	}
+
+	// First tick creates the rows. Their content events are deliberately held
+	// back to the next tick — emitting an item event in the same flush as the
+	// event that creates its element races htmx's listener registration — so
+	// the interesting tick is the second one.
+	u.RenderTorrents(torrents)
+
+	sub := u.hub.subscribe()
+	defer u.hub.unsubscribe(sub)
+	for _, tor := range torrents {
+		tor.Percent += 1
+		tor.Downloaded += 10
+	}
+	u.RenderTorrents(torrents)
+
+	var receives, events int
+	for draining := true; draining; {
+		select {
+		case frame := <-sub.ch:
+			receives++
+			events += len(splitFrames(frame))
+		default:
+			draining = false
+		}
+	}
+
+	if receives != 1 {
+		t.Fatalf("a tick produced %d broadcasts for %d torrents; want exactly 1",
+			receives, len(torrents))
+	}
+	// The single buffer must carry every changed row.
+	if events < len(torrents) {
+		t.Errorf("the coalesced frame carried %d events, want at least %d", events, len(torrents))
+	}
 }

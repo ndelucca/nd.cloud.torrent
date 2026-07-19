@@ -142,14 +142,46 @@ func TestRendererForget(t *testing.T) {
 	r := newRenderer(tmpl)
 	r.store("torrent-abc", []byte("<div>x</div>"))
 
-	if len(r.snapshot()) != 1 {
+	if !bytes.Contains(r.snapshot(torrentListEvent), []byte("torrent-abc")) {
 		t.Fatal("expected the region in the snapshot")
 	}
 	frame := r.forget("torrent-abc")
 	if string(frame) != "event: torrent-abc\ndata:\n\n" {
 		t.Errorf("forget frame = %q, want an empty data event", frame)
 	}
-	if len(r.snapshot()) != 0 {
+	if len(r.snapshot(torrentListEvent)) != 0 {
 		t.Error("forgotten region must leave the snapshot")
+	}
+}
+
+// TestSnapshotLeadsWithMembership pins an ordering that used to be accidental.
+//
+// A new subscriber receives every region's current body at once. The membership
+// skeleton has to come first: an element cannot listen for torrent-<hash>
+// before it exists, so a row frame that arrives ahead of the skeleton is
+// silently discarded. That happened to hold only because infohashes are
+// lowercase hex and 'l' sorts after 'f' — it inverts the day hashes are encoded
+// any other way.
+func TestSnapshotLeadsWithMembership(t *testing.T) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRenderer(tmpl)
+	// Deliberately stored out of order, and with a hash that sorts *before*
+	// "torrent-list" so alphabetical order alone would put the row first.
+	r.store(torrentEventPrefix+"aaaa", []byte("<div>row</div>"))
+	r.store(torrentListEvent, []byte("<ul>list</ul>"))
+	r.store(statsEvent, []byte("<div>stats</div>"))
+
+	snap := r.snapshot(torrentListEvent)
+	if !bytes.HasPrefix(snap, []byte("event: "+torrentListEvent+"\n")) {
+		t.Fatalf("snapshot must lead with %q, got:\n%s", torrentListEvent, snap)
+	}
+	// And it is one buffer, not one frame: every region is present.
+	for _, want := range []string{torrentEventPrefix + "aaaa", statsEvent} {
+		if !bytes.Contains(snap, []byte("event: "+want+"\n")) {
+			t.Errorf("snapshot is missing region %q", want)
+		}
 	}
 }
