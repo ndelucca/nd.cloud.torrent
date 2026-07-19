@@ -1,6 +1,9 @@
 package files
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -119,5 +122,95 @@ func TestDeleteRemovesTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "dir")); !os.IsNotExist(err) {
 		t.Fatalf("directory survived the delete: %v", err)
+	}
+}
+
+// TestZipMatchesTheListing pins that the archive and the tree agree on what
+// exists. serveZip walked everything while List filters hidden entries, so a
+// download folder's zip carried dotfiles the UI said were not there.
+func TestZipMatchesTheListing(t *testing.T) {
+	h, root := newTestHandler(t)
+	dir := filepath.Join(root, "dir")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"visible.txt", ".hidden", filepath.Join(".git", "config")} {
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/download/dir", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip does not parse: %v", err)
+	}
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	if len(names) != 1 || !strings.HasSuffix(names[0], "visible.txt") {
+		t.Fatalf("archive = %v, want only visible.txt — hidden entries must not be included", names)
+	}
+}
+
+// TestZipOfHiddenDirectoryStillWorks is the other half: the visibility rule
+// applies to entries, never to the directory the user asked for. Applying it to
+// the walk root would return an empty archive, which is the same mistake the
+// listing walk had.
+func TestZipOfHiddenDirectoryStillWorks(t *testing.T) {
+	h, root := newTestHandler(t)
+	dir := filepath.Join(root, ".config")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/download/.config", nil))
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip does not parse: %v", err)
+	}
+	if len(zr.File) != 1 {
+		t.Fatalf("archive has %d entries, want 1", len(zr.File))
+	}
+}
+
+// TestZipStopsWhenTheClientLeaves pins that an abandoned download does not keep
+// walking the tree with nowhere to write.
+func TestZipStopsWhenTheClientLeaves(t *testing.T) {
+	h, root := newTestHandler(t)
+	dir := filepath.Join(root, "dir")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		p := filepath.Join(dir, "f"+string(rune('a'+i%26))+string(rune('a'+i/26))+".txt")
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is already gone
+	req := httptest.NewRequest(http.MethodGet, "/download/dir", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		return // a truncated archive is the expected outcome
+	}
+	if len(zr.File) >= 50 {
+		t.Fatalf("walk produced %d entries for a cancelled request; it should have stopped", len(zr.File))
 	}
 }

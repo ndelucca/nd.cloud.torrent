@@ -94,6 +94,29 @@ func serveZip(w http.ResponseWriter, r *http.Request, dir, name string) {
 		if err != nil {
 			return err
 		}
+		// A zip of a large download directory reads the whole tree. Without
+		// this, a client that navigated away kept the walk and its file reads
+		// running to completion with nowhere to write them.
+		if ctxErr := r.Context().Err(); ctxErr != nil {
+			return ctxErr
+		}
+		// The same visibility rule the listing walk uses, and applied the same
+		// way: to entries, never to the root. Without it the archive carried
+		// dotfiles the UI says are not there — the tree and its zip must agree
+		// on what exists. Testing the root instead would make a directory the
+		// user explicitly asked for zip up empty.
+		if path != dir {
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			if !visible(info) {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+		}
 		if d.IsDir() || !d.Type().IsRegular() {
 			return nil
 		}
