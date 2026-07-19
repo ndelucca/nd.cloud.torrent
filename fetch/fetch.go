@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -97,9 +98,16 @@ func (c *Client) Torrent(ctx context.Context, raw string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: remote returned HTTP %d", ErrUpstream, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxSize))
+	// MaxSize+1: reading exactly MaxSize cannot tell "this is the whole file"
+	// from "there is more". Truncating silently handed the parser a valid-
+	// looking prefix, which then failed as "Invalid torrent file" and sent the
+	// user hunting in the wrong place.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrUpstream, err)
+	}
+	if len(body) > MaxSize {
+		return nil, fmt.Errorf("%w: remote torrent is larger than %d bytes", ErrUpstream, MaxSize)
 	}
 	return body, nil
 }
@@ -119,17 +127,38 @@ func guardedDialContext(ctx context.Context, network, addr string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
+
+	// Partition before dialling, so "we refused" and "it did not answer" stay
+	// distinguishable. Returning ErrBlocked for any dial failure told a user
+	// whose host was simply down that we were refusing to connect to a
+	// non-public address — a lie, in a string shown to them verbatim, on the
+	// most common failure there is.
+	allowed := allowedIPs(ips)
+	if len(allowed) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrBlocked, host)
+	}
+
 	d := &net.Dialer{Timeout: dialTimeout}
-	for _, ip := range ips {
-		if isDisallowedIP(ip.IP) {
-			continue
-		}
-		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+	var lastErr error
+	for _, ip := range allowed {
+		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		if err == nil {
 			return conn, nil
 		}
+		lastErr = err
 	}
-	return nil, fmt.Errorf("%w: %s", ErrBlocked, host)
+	return nil, lastErr
+}
+
+// allowedIPs returns the addresses that are safe to dial.
+func allowedIPs(ips []net.IPAddr) []net.IP {
+	var out []net.IP
+	for _, ip := range ips {
+		if !isDisallowedIP(ip.IP) {
+			out = append(out, ip.IP)
+		}
+	}
+	return out
 }
 
 // dial returns the configured dialer, defaulting to the guarded one. A nil Dial
@@ -142,12 +171,38 @@ func (c *Client) dial() func(context.Context, string, string) (net.Conn, error) 
 	return guardedDialContext
 }
 
+// reservedPrefixes are ranges the stdlib predicates below do not cover. Each is
+// reachable from a public-looking hostname and each lands somewhere that is not
+// the public internet.
+var reservedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"), // CGNAT — the internal network on many hosted setups
+	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),   // reserved; also covers 255.255.255.255, which IsMulticast misses
+	netip.MustParsePrefix("64:ff9b::/96"),  // NAT64 — encodes an arbitrary v4 target
+	netip.MustParsePrefix("2002::/16"),     // 6to4 — likewise
+}
+
 func isDisallowedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
+	if ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsMulticast()
+		ip.IsMulticast() {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true // unparseable: refuse rather than guess
+	}
+	// Unmap first, or ::ffff:100.64.0.1 would miss every v4 prefix below.
+	addr = addr.Unmap()
+	for _, p := range reservedPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
