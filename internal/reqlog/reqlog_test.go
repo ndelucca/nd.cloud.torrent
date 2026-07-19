@@ -20,6 +20,25 @@ func capture(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+// TestLogLineIsOneLine covers log injection. r.URL.Path is already
+// percent-decoded, so logging it raw let a caller embed a newline and forge
+// entries in a line-oriented log.
+func TestLogLineIsOneLine(t *testing.T) {
+	buf := capture(t)
+	h := Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/a%0A2026/01/01%20GET%20/forged", nil))
+
+	out := strings.TrimSuffix(buf.String(), "\n")
+	if strings.ContainsAny(out, "\r\n") {
+		t.Fatalf("log entry spans multiple lines:\n%s", out)
+	}
+	if !strings.Contains(out, "%0A") {
+		t.Fatalf("newline was not escaped in %q", out)
+	}
+}
+
 // TestWriteDeadlineReachesRealWriter is the regression test for the bug this
 // package was written to fix.
 //

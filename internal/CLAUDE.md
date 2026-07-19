@@ -28,6 +28,7 @@ Small stdlib-only replacements for third-party helpers that cost far more than t
 
 - The `ResponseWriter` wrapper **must** implement `Unwrap`. `serveEvents` sets the SSE write deadline through an `http.ResponseController`, which reaches the real writer by walking `Unwrap`; without it the deadline silently does not apply, and the caller has no way to react because it discards that error. `TestWriteDeadlineReachesRealWriter` pins this.
 - It must also implement `Flush` explicitly. `serveEvents` type-asserts the writer to `http.Flusher` and returns 500 if that fails, and an embedded `ResponseWriter` does not promote `Flush`.
+- The path is logged as `r.URL.EscapedPath()`, never `r.URL.Path`. `Path` is already percent-decoded, so logging it raw let any caller embed a newline and forge entries in a line-oriented log. `TestLogLineIsOneLine` pins it.
 
 `cli`:
 

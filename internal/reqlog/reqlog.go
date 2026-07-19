@@ -29,7 +29,10 @@ func Wrap(h http.Handler) http.Handler {
 		logger.Printf("%s %s %s %d %s%s%s",
 			start.Format(timeFormat),
 			r.Method,
-			r.URL.Path,
+			// EscapedPath, not Path: Path is already percent-decoded, so a
+			// request for "/a%0A..." would write a newline into a line-oriented
+			// log and let a caller forge entries.
+			r.URL.EscapedPath(),
 			rec.status(),
 			fmtDuration(time.Since(start)),
 			optional(" ", byteSize(rec.size)),
