@@ -9,7 +9,7 @@ authorization.
 ## Ownership
 
 - `files.go` — `Node`, `Limit`, `List`, `ResolveWithin`, `isWithin`, and the bounded `list` walk
-- `serve.go` — `Handler` (GET/HEAD/DELETE over `/download/`) and `serveZip`
+- `serve.go` — `Handler` (GET/HEAD/DELETE over `/download/`), `sandbox` and `serveZip`
 
 ## Local Contracts
 
@@ -20,17 +20,19 @@ authorization.
 - `Handler` reads the request path as relative to the root, so it is mounted behind `http.StripPrefix`.
 - The walk is bounded by `Limit`. Hitting it sets `Truncated` rather than failing, so the UI can say the listing is partial instead of presenting it as complete.
 - `List` returns an empty `Node` for a missing or unreadable root. A download directory that does not exist yet is a normal state, not an error.
-- Dotfiles and non-regular files are skipped by the walk.
+- **`visible` is applied to a directory's *entries*, never to the walk root.** Dotfiles and non-regular entries are skipped. Testing the root itself made a download directory named `.torrents` abort the entire walk — logging a failure once per poll tick and rendering an empty tree, for a directory the operator deliberately chose.
+- **Everything served over GET/HEAD carries `Content-Security-Policy: sandbox`.** Content-Type is derived from the file extension, so a torrent containing an `index.html` is served as `text/html` from the app's own origin, and `nosniff` does not help when the declared type *is* `text/html` — that script would run same-origin and could drive every `/api/*` mutation and `DELETE /download/*`. The header lives here rather than in the server's middleware so it travels with the bytes and cannot be lost by a future mount; it is ignored for non-document responses, so image, audio and video previews are unaffected. This does not cover the app's own pages, which is a separate problem (Alpine needs `unsafe-eval`).
 
 ## Work Guidance
 
 - Keep this package free of `engine`, `server` and rendering concerns. Presentation over the tree (`fsView`, the change-detection signature) belongs to the rendering layer, not here — a `Node` is a filesystem fact.
-- Path-containment changes are security-relevant: add the case to `TestResolveWithin` and watch it fail before fixing it.
+- Path-containment changes are security-relevant: add the case to `TestResolveWithin` and watch it fail before fixing it. The same applies to the sandbox header — `TestServedContentIsSandboxed` was verified to fail without it.
 
 ## Verification
 
 - `go test -race ./files/`
 - Manual, against a running server: a nested file downloads, a directory returns a zip, `Range` requests answer 206, `../../etc/passwd` answers 404, and a cross-origin `DELETE` answers 403 while a same-origin one succeeds.
+- Manual: drop an `index.html` containing a `<script>` into the download directory, open it under `/download/`, and confirm the browser console reports the script blocked by CSP.
 
 ## Child DOX Index
 

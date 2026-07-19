@@ -44,6 +44,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
+		sandbox(w)
 		if info.IsDir() {
 			serveZip(w, r, file, info.Name())
 			return
@@ -62,6 +63,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// sandbox puts a downloaded file in an opaque origin.
+//
+// Content-Type is derived from the file extension, so a torrent containing an
+// index.html is served as text/html from the app's own origin — and nosniff does
+// not help when the declared type *is* text/html. Without this, that script runs
+// same-origin and can drive every /api/* mutation and DELETE /download/*.
+//
+// The header lives here rather than in the server's middleware so it travels
+// with the bytes and cannot be lost by a future mount. It is ignored for
+// non-document responses, so image, audio and video previews are unaffected.
+func sandbox(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", "sandbox")
 }
 
 // serveZip streams a directory as a zip archive. The status is committed as soon
