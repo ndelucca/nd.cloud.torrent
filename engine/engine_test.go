@@ -130,6 +130,9 @@ func TestTorrentCloneIsDeep(t *testing.T) {
 // startLocked must now notice t.t == nil and re-add from the retained spec.
 func TestStartAfterStopReAdds(t *testing.T) {
 	e := New()
+	// Close even though nothing was configured: New starts the sampler, so an
+	// engine that is never closed leaks a ticker goroutine per test.
+	defer e.Close()
 
 	// A stopped torrent: flags cleared, handle dropped, spec retained.
 	stopped := &Torrent{InfoHash: "ih", Started: false, t: nil, spec: nil}
@@ -150,6 +153,7 @@ func TestStartAfterStopReAdds(t *testing.T) {
 // TestStopTorrentClearsHandle pins the invariant startLocked relies on.
 func TestStopTorrentClearsHandle(t *testing.T) {
 	e := New()
+	defer e.Close()
 	tor := &Torrent{InfoHash: "ih", Started: true, Files: []File{{Path: "a"}}}
 	e.ts["ih"] = tor
 
@@ -669,53 +673,6 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 			t.Fatal("a torrent whose handle moved must not be resurrected")
 		}
 	})
-}
-
-// TestExtraReadsDoNotDisturbTheRate covers a rate that got quieter the more
-// people looked at it.
-//
-// GetTorrents refreshes the cache on read, so every caller — the 1s poll loop,
-// but also GET /api/state and opening a torrent's Files panel — produced a
-// reading. Downloaded and updatedAt were advanced by all of them while the rate
-// was only recomputed when the interval happened to be positive, so an extra
-// read microseconds after the poll's consumed the interval the next real sample
-// needed. Two clients polling once a second roughly halved every rate shown.
-//
-// The three fields are one sample: they move together or not at all.
-func TestExtraReadsDoNotDisturbTheRate(t *testing.T) {
-	t0 := time.Now()
-	tor := &Torrent{Size: 10_000}
-
-	// First reading: no interval yet, so no rate.
-	tor.sample(0, t0)
-	if tor.DownloadRate != 0 {
-		t.Fatalf("first sample produced a rate of %v, want 0", tor.DownloadRate)
-	}
-
-	// One second later, 1000 bytes in: 1000 B/s.
-	tor.sample(1000, t0.Add(time.Second))
-	if tor.DownloadRate != 1000 {
-		t.Fatalf("DownloadRate = %v, want 1000", tor.DownloadRate)
-	}
-
-	// Two extra readers arrive right behind the poll. Each must be dropped
-	// whole — not applied to Downloaded while skipping the rate.
-	tor.sample(1001, t0.Add(time.Second+time.Millisecond))
-	tor.sample(1002, t0.Add(time.Second+2*time.Millisecond))
-	if tor.DownloadRate != 1000 {
-		t.Fatalf("an extra read changed the rate to %v", tor.DownloadRate)
-	}
-	if tor.Downloaded != 1000 {
-		t.Fatalf("an extra read advanced Downloaded to %d, stealing the next "+
-			"sample's interval", tor.Downloaded)
-	}
-
-	// The next real poll must still measure against t0+1s, not against the
-	// readers. 1000 more bytes over 1s is still 1000 B/s.
-	tor.sample(2000, t0.Add(2*time.Second))
-	if tor.DownloadRate != 1000 {
-		t.Fatalf("DownloadRate = %v after a real sample, want 1000", tor.DownloadRate)
-	}
 }
 
 // TestSampleHandlesBytesGoingBackwards pins the re-add case: the old rate is

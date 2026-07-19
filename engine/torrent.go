@@ -51,16 +51,20 @@ func (t *Torrent) clone() *Torrent {
 
 // update copies live state out of the underlying torrent. Callers must hold the
 // engine mutex.
-func (t *Torrent) update(tt *torrent.Torrent) {
+//
+// now is passed in rather than read here so one pass shares a single timestamp,
+// and so a test can drive a deterministic two-sample sequence without a real
+// clock or a real download.
+func (t *Torrent) update(tt *torrent.Torrent, now time.Time) {
 	t.Name = tt.Name()
 	t.Loaded = tt.Info() != nil
 	if t.Loaded {
-		t.updateLoaded(tt)
+		t.updateLoaded(tt, now)
 	}
 	t.t = tt
 }
 
-func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
+func (t *Torrent) updateLoaded(tt *torrent.Torrent, now time.Time) {
 	// Rebuilt each pass rather than patched in place: keeping entries by index
 	// assumes index i is the same file across ticks, which stops being true once
 	// a torrent is re-added. Every field is read from the live torrent anyway, so
@@ -76,25 +80,20 @@ func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
 	}
 
 	t.Size = tt.Length()
-	t.sample(tt.BytesCompleted(), time.Now())
+	t.sample(tt.BytesCompleted(), now)
 }
-
-// minRateInterval is the shortest gap that may be used to compute a rate. The
-// poll loop runs at 1s; anything much below that is a second reader, not a new
-// measurement.
-const minRateInterval = 250 * time.Millisecond
 
 // sample records a progress reading and derives the download rate from it.
 //
 // Downloaded, updatedAt and DownloadRate are one sample: they move together or
-// not at all, and a reading that arrives sooner than minRateInterval is dropped
-// whole rather than half-applied.
+// not at all.
 //
-// This matters because GetTorrents refreshes on read, so any extra reader —
-// /api/state, or opening a torrent's Files panel — inserts a reading. Advancing
-// Downloaded and updatedAt without recomputing the rate consumed the interval
-// the next real sample needed and drove displayed rates toward zero; two clients
-// polling once a second roughly halved every rate on the page.
+// Only Engine.refresh calls this, on a fixed cadence, so the interval between
+// readings *is* the measurement window. Readers cannot produce a reading, which
+// is what removed the debounce this used to need: when GetTorrents sampled on
+// read, an extra reader inserted a reading microseconds after the poll loop's,
+// consumed the interval the next real sample needed, and drove displayed rates
+// toward zero.
 func (t *Torrent) sample(bytes int64, now time.Time) {
 	t.Percent = percent(bytes, t.Size)
 
@@ -107,14 +106,18 @@ func (t *Torrent) sample(bytes int64, now time.Time) {
 		return
 	}
 	dt := now.Sub(t.updatedAt)
-	if dt < minRateInterval {
+	// Arithmetic safety, not debouncing: dt == 0 divides by zero and yields
+	// +Inf. Two readings can share a timestamp — the whole pass uses one.
+	if dt <= 0 {
 		return
 	}
 	if db := bytes - t.Downloaded; db >= 0 {
 		t.DownloadRate = float32(float64(db) * float64(time.Second) / float64(dt))
 	} else {
-		// Bytes went backwards (the torrent was re-added); the old rate is
-		// meaningless now.
+		// Bytes went backwards. The usual cause is Configure re-adding the
+		// torrent to a fresh client that has not re-verified yet, so this is the
+		// normal path across a rebind rather than an oddity. The old rate is
+		// meaningless either way.
 		t.DownloadRate = 0
 	}
 	t.Downloaded = bytes

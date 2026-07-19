@@ -59,12 +59,51 @@ type Engine struct {
 	wg     sync.WaitGroup
 }
 
+// sampleInterval is the engine's sampling cadence, and therefore the window
+// DownloadRate is measured over. It is a constant rather than a Config field: a
+// user-tunable window is a rate whose meaning changes under the user.
+const sampleInterval = 1 * time.Second
+
 func New() *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Engine{
+	e := &Engine{
 		ts:     map[string]*Torrent{},
 		ctx:    ctx,
 		cancel: cancel,
+	}
+	// Safe without a lock, unlike watchInfoLocked's Add: New has not returned
+	// the pointer, so no other goroutine can hold the engine and no Close — and
+	// therefore no wg.Wait — can be in flight. The Add strictly happens-before
+	// every possible Wait.
+	e.wg.Add(1)
+	go e.sampleLoop()
+	return e
+}
+
+// sampleLoop takes a reading on a fixed cadence for the engine's whole life.
+//
+// It is started here rather than by Configure so a rebind needs no sampler
+// lifecycle at all: the loop keeps ticking, refresh finds client == nil during
+// the evict window and returns, and picks up the replacement on the next tick.
+// The cost is that the first tick after a rebind spans ~2s rather than ~1s,
+// which stays correct because the rate is computed from timestamps rather than
+// assumed from the cadence.
+//
+// Sampling is not gated on whether anyone is watching. cpu.Percent-style
+// reasoning applies: the interval between readings defines the measurement
+// window, so skipping ticks would make the first reading after an idle spell an
+// average over however long nobody was connected.
+func (e *Engine) sampleLoop() {
+	defer e.wg.Done()
+	t := time.NewTicker(sampleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case now := <-t.C:
+			e.refresh(now)
+		}
 	}
 }
 
@@ -266,11 +305,17 @@ func (e *Engine) Close() error {
 	clear(e.ts)
 	e.mu.Unlock()
 
-	// Ordering, not luck: every wg.Add happens under mu after an e.ctx.Err()
-	// check, and cancel ran before mu was taken above. So a watcher is either
-	// already counted, or registers after mu is released and sees the cancelled
-	// context. Waiting without that guarantee is the documented "Add called
-	// concurrently with Wait" misuse, which panics at a zero counter.
+	// mu must be released before this Wait, and that is load-bearing rather than
+	// incidental: the sampler takes mu on every tick, so waiting while holding it
+	// deadlocks immediately.
+	//
+	// The counter is safe against concurrent Add for two separate reasons. The
+	// sampler's Add happens in New, before the engine is reachable. Every
+	// watcher's Add happens under mu after an e.ctx.Err() check, and cancel ran
+	// before mu was taken above — so a watcher is either already counted, or
+	// registers after mu is released and sees the cancelled context. Waiting
+	// without that is the documented "Add called concurrently with Wait" misuse,
+	// which panics at a zero counter.
 	e.wg.Wait()
 
 	if client == nil {
@@ -320,7 +365,7 @@ func (e *Engine) addSpec(spec *torrent.TorrentSpec) error {
 	if err != nil {
 		return fmt.Errorf("torrent error: %w", err)
 	}
-	t := e.upsertLocked(tt)
+	t := e.upsertLocked(tt, time.Now())
 	t.spec = spec
 	// Unconditional, not gated on AutoStart: the watcher is also what resumes a
 	// torrent the user starts before its metadata lands. When the info is
@@ -380,17 +425,20 @@ func (e *Engine) infoArrived(ih string, tt *torrent.Torrent) {
 	}
 }
 
-// GetTorrents refreshes the cache from the client and returns a deep copy. The
-// copy matters: the caller marshals this concurrently with engine mutations.
+// GetTorrents returns a deep copy of the last sample.
+//
+// It is a pure read: it does not touch the client and does not advance any
+// torrent's reading. Sampling belongs to refresh alone — see sampleLoop — and
+// there is deliberately no exported way to force one. A Refresh method looks
+// like an obvious convenience and would reintroduce the whole bug class: when
+// reads sampled, every extra reader (/api/state, opening a Files panel) stole
+// the interval the next real sample needed, and two clients polling at 1 Hz
+// roughly halved every rate on the page.
+//
+// The copy matters: the caller marshals this concurrently with engine mutations.
 func (e *Engine) GetTorrents() map[string]*Torrent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	if e.client != nil {
-		for _, tt := range e.client.Torrents() {
-			e.upsertLocked(tt)
-		}
-	}
 	out := make(map[string]*Torrent, len(e.ts))
 	for ih, t := range e.ts {
 		out[ih] = t.clone()
@@ -398,14 +446,27 @@ func (e *Engine) GetTorrents() map[string]*Torrent {
 	return out
 }
 
-func (e *Engine) upsertLocked(tt *torrent.Torrent) *Torrent {
+// refresh takes one progress reading for every torrent the client holds. It is
+// the only thing that samples.
+func (e *Engine) refresh(now time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.client == nil {
+		return
+	}
+	for _, tt := range e.client.Torrents() {
+		e.upsertLocked(tt, now)
+	}
+}
+
+func (e *Engine) upsertLocked(tt *torrent.Torrent, now time.Time) *Torrent {
 	ih := tt.InfoHash().HexString()
 	t, ok := e.ts[ih]
 	if !ok {
 		t = &Torrent{InfoHash: ih}
 		e.ts[ih] = t
 	}
-	t.update(tt)
+	t.update(tt, now)
 	return t
 }
 

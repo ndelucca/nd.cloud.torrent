@@ -293,8 +293,15 @@ func (s *Server) pollLoop(ctx context.Context) {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {
-		// listFiles walks the download directory with up to fileNumberLimit stat
-		// calls, so with nobody connected it is pure waste.
+		// Gated on watchers because files.List walks the download directory with
+		// up to files.Limit stat calls, and rendering for nobody is waste.
+		//
+		// Torrent *freshness* does not ride on this gate: the engine samples on
+		// its own cadence, so GetTorrents here is a pure read of the latest
+		// sample. When reads sampled, this gate silently doubled as the sampling
+		// schedule — with nobody connected nothing sampled, and the first
+		// reading after a browser connected computed its rate over however long
+		// that was.
 		if s.watchers() > 0 {
 			s.renderStats()
 			s.ui.RenderTorrents(s.engine.GetTorrents())
