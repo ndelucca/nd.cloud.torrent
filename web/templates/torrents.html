@@ -17,14 +17,14 @@ first render.
   {{template "placeholder" "No torrents. Add a magnet link or upload a .torrent file above."}}
   {{end}}
   {{range .}}
-  <article class="torrent" id="t-{{.InfoHash}}" x-data="{files:false}">
+  <article class="torrent" id="t-{{.InfoHash}}" x-data="torrentRow()">
     {{template "torrent-row" .}}
     <div class="torrent-files-row">
       <button type="button" class="btn"
               :class="files && 'active'"
               :aria-expanded="files"
               aria-controls="tf-{{.InfoHash}}"
-              @click="files = !files; if (files) $dispatch('load-files')">
+              @click="toggleFiles()">
         Files
       </button>
     </div>

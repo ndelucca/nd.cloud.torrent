@@ -11,7 +11,7 @@ Compiles the web UI's client-side assets into the binary and exposes them as an
 - `static.go` — package `ctstatic`: `//go:embed files/*`, and `FileSystemHandler()` which serves the `files/` subtree rooted at `/`
 - `files/css/ct.css` — the whole stylesheet, hand-written, no framework
 - `files/js/ct.js` — the client behaviour htmx and Alpine do not cover: idiomorph guards, tree collapse persistence, two-step delete, drag-and-drop upload, upload progress, the connection indicator, and the spacebar media toggle
-- `files/js/vendor/` — pinned third-party bundles: htmx 2.0.10 (`htmx.min.js`), its SSE extension (`sse.js`), idiomorph (`idiomorph-ext.min.js`), Alpine 3.15.0 (`alpine.min.js`)
+- `files/js/vendor/` — pinned third-party bundles: htmx 2.0.10 (`htmx.min.js`), its SSE extension (`sse.js`, patched), idiomorph 0.7.4 (`idiomorph-ext.min.js`), Alpine 3.15.0 **CSP build** (`alpine.min.js`). Provenance and hashes: `static/VENDOR`
 - `files/cloud-favicon.png`
 
 ## Local Contracts
@@ -66,9 +66,22 @@ Client behaviour:
   morph reverts the fetched content back to it. The per-torrent file panel and
   the media preview are the two cases.
 - **`x-data` must always be a constant literal — never interpolate server data
-  into it.** Alpine leaves `_x_marker` set on an initialised element, so a changed
-  `x-data` value is silently ignored forever. Pass data via `data-*` attributes
-  and read it from `$el.dataset`.
+  into it.** Two independent reasons: the value is *evaluated*, so a
+  torrent-supplied file name there is a script-injection sink the
+  `html/template` escaper cannot see; and Alpine leaves `_x_marker` set on an
+  initialised element, so a changed `x-data` value is silently ignored forever.
+  Pass data via `data-*` attributes and read it from `$el.dataset`.
+- **Alpine is the CSP build (`@alpinejs/csp`), and that is load-bearing.** It
+  parses attribute expressions into an AST and interprets them instead of
+  compiling them with the AsyncFunction constructor, which is what lets the
+  app's CSP drop `'unsafe-eval'`. Swapping back to the standard build breaks
+  nothing at build time and every binding at runtime.
+- **Its parser accepts expressions only.** Identifiers, literals, member and
+  call expressions, binary and unary operators, conditionals, assignments,
+  updates, array and object literals — all fine, and all fourteen of the
+  existing bindings parse unchanged. Statements and sequences do not: `if (x) y()`
+  and `a; b` are parse errors. That is the whole reason `torrentRow` exists,
+  and a test scans the templates for both.
 - Server-rendered `data-*` attributes, not DOM structure, carry per-node facts:
   `data-id` for the stored-state key, `data-top` for a tree node's default
   collapse state. Deriving depth by walking `parentElement` breaks on any markup

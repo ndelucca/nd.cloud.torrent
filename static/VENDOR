@@ -34,10 +34,27 @@ htmx.min.js
     verified: byte-identical to upstream
 
 alpine.min.js
-    alpinejs@3.15.0
-    https://unpkg.com/alpinejs@3.15.0/dist/cdn.min.js
-    sha384-ZzplbkDNw4d2hjWc+D9EcDIgXEUybwPr2Slhix4BTtvQO3JbK60Av543BvQT9gTu
-    verified: byte-identical to upstream
+    @alpinejs/csp@3.15.0   — the CSP build, not the standard one
+    https://unpkg.com/@alpinejs/csp@3.15.0/dist/cdn.min.js
+    sha384-/RME6pSq0zKJyBifgNWPb3I8kZckbbyQzvFaUqSyfcw3anF1SmYxV5XUPlkZxTBZ
+    verified: byte-identical to upstream.
+
+    THE BUILD MATTERS. The standard alpinejs build compiles attribute
+    expressions with the AsyncFunction constructor, which needs
+    script-src 'unsafe-eval'. This one ships a tokenizer, parser and AST
+    interpreter instead and installs it with setEvaluator, so no eval happens
+    and the app's CSP can omit 'unsafe-eval' entirely.
+
+    It is ~15 KB larger for that reason. Swapping back to the standard build
+    silently reintroduces the eval requirement: nothing fails at build time —
+    every binding simply stops working in the browser, because the CSP refuses
+    the constructor.
+
+    What it accepts: identifiers, literals, member and call expressions, binary
+    and unary operators, conditionals, assignments, updates, array and object
+    literals. What it does NOT accept: statements and sequences. `if (x) y()`
+    and `a; b` are parse errors, which is why torrentRow exists in ct.js — one
+    click handler had both.
 
 idiomorph-ext.min.js
     idiomorph@0.7.4

@@ -668,15 +668,19 @@ func TestContentSecurityPolicy(t *testing.T) {
 		if csp == "" {
 			t.Fatal("no CSP on the app's own pages")
 		}
-		// 'unsafe-inline' is the whole point; asserting its absence explicitly
-		// rather than trusting the directive string to stay right.
-		if strings.Contains(csp, "unsafe-inline") {
-			t.Errorf("script-src allows unsafe-inline, which is the directive "+
-				"that stops an injected script running: %q", csp)
+		// Both escapes asserted absent explicitly rather than trusting the
+		// directive string to stay right. unsafe-inline is what stops an
+		// injected script running at all; unsafe-eval is gone because Alpine
+		// ships as its CSP build, so reintroducing it would mean someone swapped
+		// the bundle back.
+		for _, escape := range []string{"unsafe-inline", "unsafe-eval"} {
+			if strings.Contains(csp, escape) {
+				t.Errorf("script-src allows %s: %q", escape, csp)
+			}
 		}
 		for _, want := range []string{
 			"default-src 'self'",
-			"script-src 'self' 'unsafe-eval'",
+			"script-src 'self'",
 			"style-src 'self'",
 			"frame-ancestors 'none'",
 			"object-src 'none'",

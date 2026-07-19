@@ -1,6 +1,7 @@
 package web
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -394,5 +395,54 @@ func TestVendoredScriptsCarryIntegrity(t *testing.T) {
 	if want := 4; vendored != want {
 		t.Fatalf("found %d vendored scripts, want %d — the scan has stopped "+
 			"matching:\n%s", vendored, want, out)
+	}
+}
+
+// TestAlpineExpressionsAreCSPParseable guards the failure mode the CSP build
+// introduces.
+//
+// Alpine ships as @alpinejs/csp, which parses attribute expressions into an AST
+// and interprets them instead of compiling with the AsyncFunction constructor —
+// that is what lets the app's CSP omit 'unsafe-eval'. The parser accepts
+// expressions and only expressions: statements and sequences are parse errors.
+// `files = !files; if (files) $dispatch('x')` is the one that had to move into
+// ct.js.
+//
+// A binding that reintroduces one fails at runtime, in the browser, with nothing
+// in Go noticing. This is a heuristic — a real check would mean running the
+// parser — but it catches the two constructs that actually tempt people.
+func TestAlpineExpressionsAreCSPParseable(t *testing.T) {
+	sources, err := templateFS.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attribute prefixes whose value Alpine evaluates.
+	evaluated := regexp.MustCompile(`(?:x-data|x-show|x-if|x-effect|@[\w.:-]+|:[\w.:-]+)="([^"]*)"`)
+	var checked int
+	for _, entry := range sources {
+		raw, err := templateFS.ReadFile("templates/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range evaluated.FindAllStringSubmatch(string(raw), -1) {
+			expr := m[1]
+			checked++
+			if strings.Contains(expr, ";") {
+				t.Errorf("%s: Alpine expression contains a sequence, which the CSP "+
+					"parser rejects — move it into a component method in ct.js: %q",
+					entry.Name(), expr)
+			}
+			for _, kw := range []string{"if ", "if(", "for ", "for(", "let ", "const ", "var ", "return "} {
+				if strings.Contains(expr, kw) {
+					t.Errorf("%s: Alpine expression contains the statement %q, which "+
+						"the CSP parser rejects: %q", entry.Name(), strings.TrimSpace(kw), expr)
+				}
+			}
+		}
+	}
+	// The scan must actually be finding bindings.
+	if checked < 10 {
+		t.Fatalf("only %d Alpine expressions found; the scan has stopped matching", checked)
 	}
 }

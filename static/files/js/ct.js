@@ -166,6 +166,24 @@
     });
   };
 
+  // torrentRow exists only because its click handler cannot be an attribute
+  // expression: the CSP evaluator parses expressions, not statements, and
+  // `files = !files; if (files) $dispatch('load-files')` has both a sequence and
+  // an if. Every other binding in the templates parses unchanged.
+  //
+  // The dispatch has to happen here rather than in the template for the same
+  // reason, and it still bubbles from the button to the hx-trigger
+  // "load-files from:closest article" on the panel.
+  window.torrentRow = function () {
+    return {
+      files: false,
+      toggleFiles: function () {
+        this.files = !this.files;
+        if (this.files) this.$dispatch("load-files");
+      },
+    };
+  };
+
   window.treeLeaf = function () {
     return confirmable({
       // No `open` here, and no `preview` in treeNode: a directory is never

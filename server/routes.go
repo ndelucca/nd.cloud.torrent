@@ -111,8 +111,6 @@ func requireSameOrigin(h http.Handler) http.Handler {
 	})
 }
 
-// securityHeaders applies defaults that cost nothing and close off sniffing and
-// framing.
 // appCSP is the policy for the app's own pages.
 //
 // The load-bearing directive is script-src without 'unsafe-inline'. That is not
@@ -123,11 +121,10 @@ func requireSameOrigin(h http.Handler) http.Handler {
 // evaluated). The escaper is the primary defence; this is the second layer for
 // when it is bypassed.
 //
-// 'unsafe-eval' remains, and buys an attacker much less: it only matters once
-// they can already reach eval with their own data. Removing it means swapping
-// Alpine for its CSP build and rewriting every inline binding — worth doing, not
-// what stands between this app and a policy that helps. htmx's own eval paths
-// are off (ct.js sets allowEval false).
+// There is no 'unsafe-eval' either. Alpine ships as its CSP build, which parses
+// attribute expressions into an AST and interprets them rather than compiling
+// them with the AsyncFunction constructor, and htmx's eval paths are off (ct.js
+// sets allowEval false). Nothing left needs it.
 //
 // style-src 'self' works because no template carries a style attribute and htmx's
 // indicator <style> injection is disabled in ct.js. x-show writes
@@ -136,7 +133,7 @@ func requireSameOrigin(h http.Handler) http.Handler {
 // Downloaded files get a different, stricter policy — see files.sandbox. This one
 // must not be applied to them.
 const appCSP = "default-src 'self'; " +
-	"script-src 'self' 'unsafe-eval'; " +
+	"script-src 'self'; " +
 	"style-src 'self'; " +
 	"img-src 'self'; " +
 	"media-src 'self'; " +
@@ -147,6 +144,8 @@ const appCSP = "default-src 'self'; " +
 	"object-src 'none'; " +
 	"base-uri 'none'"
 
+// securityHeaders applies defaults that cost nothing and close off sniffing,
+// framing and script injection.
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		head := w.Header()
