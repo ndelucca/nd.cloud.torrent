@@ -135,13 +135,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
 		return apiError{http.StatusMethodNotAllowed, errors.New("invalid request method (expecting POST)")}
 	}
-	// The API accepts text/plain bodies, which browsers send cross-origin without
-	// a preflight. Without this check any page could reconfigure the server.
-	if err := checkSameOrigin(r); err != nil {
-		return err
-	}
-
-	action := strings.TrimPrefix(r.URL.Path, "/api/")
+	action := r.PathValue("action")
 
 	// Multipart is handled before the body is drained: it is the only encoding
 	// that must be parsed by the stdlib rather than read whole.

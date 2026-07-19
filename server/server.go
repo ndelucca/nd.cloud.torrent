@@ -84,8 +84,7 @@ type Server struct {
 	ui     *web.UI
 	kickCh chan struct{}
 
-	static    http.Handler
-	downloads http.Handler
+	static http.Handler
 }
 
 // downloadDir reads the live directory from the engine, which owns the config.
@@ -93,20 +92,6 @@ type Server struct {
 // this func rather than a string.
 func (s *Server) downloadDir() string {
 	return s.engine.Config().DownloadDirectory
-}
-
-// serveDownload gates mutation, then delegates.
-//
-// The authorization decision stays in this package: files.Handler performs no
-// checks of its own and will delete for anyone who reaches it.
-func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
-		if err := checkSameOrigin(r); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-	}
-	s.downloads.ServeHTTP(w, r)
 }
 
 // New builds a server from options, reads the config file and applies it to the
@@ -145,9 +130,6 @@ func New(o Options, version string) (*Server, error) {
 	}
 	s.ui = ui
 	s.static = ctstatic.FileSystemHandler()
-	// StripPrefix because files.Handler reads the request path as relative to
-	// the download root.
-	s.downloads = http.StripPrefix("/download/", &files.Handler{Root: s.downloadDir})
 
 	c, err := s.loadConfig()
 	if err != nil {
@@ -439,9 +421,42 @@ func (s *Server) saveConfig(c engine.Config) error {
 	return nil
 }
 
+// routes declares the HTTP surface.
+//
+// Hand-rolled prefix dispatch used to live here, with a comment warning that
+// order mattered. ServeMux patterns make the order irrelevant — most specific
+// wins — so that warning is deleted rather than restated. "/{$}" is the exact
+// root, which is precisely what the old switch's `r.URL.Path == "/"` arm faked
+// while sitting above the prefix arms. GET patterns match HEAD, and anything
+// unmatched by method gets a 405 with an Allow header, which replaces three
+// hand-written method guards.
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", s.ui.ServeEvents)
+	mux.HandleFunc("GET /api/state", s.serveState)
+	mux.HandleFunc("GET /{$}", s.ui.ServePage)
+	mux.HandleFunc("GET /fragments/downloads", s.ui.ServeDownloads)
+	mux.HandleFunc("GET /fragments/torrent/{hash}/files", s.ui.ServeTorrentFiles)
+	mux.HandleFunc("POST /api/{action}", s.serveAPI)
+	// StripPrefix because files.Handler reads the request path as relative to
+	// the download root.
+	mux.Handle("/download/", http.StripPrefix("/download/",
+		&files.Handler{Root: s.downloadDir}))
+	// The embedded assets are mounted at the three prefixes they actually
+	// occupy rather than behind a catch-all "/". A catch-all matches every
+	// unrouted path, which means ServeMux can never answer 405 — a GET to
+	// /api/add would reach the file server and 404 instead. The cost is a line
+	// here when a new asset directory appears; static/ is deliberately four
+	// files, so that is a trade worth making.
+	mux.Handle("GET /css/", s.static)
+	mux.Handle("GET /js/", s.static)
+	mux.Handle("GET /cloud-favicon.png", s.static)
+	return mux
+}
+
 // handler assembles the middleware chain, outermost first.
 func (s *Server) handler() http.Handler {
-	var h http.Handler = http.HandlerFunc(s.route)
+	h := requireSameOrigin(s.routes())
 	// gzhttp skips already-compressed content types, so /download/ no longer
 	// burns CPU re-compressing media and zip archives.
 	//
@@ -475,24 +490,29 @@ func (s *Server) gzip(h http.Handler) http.Handler {
 	return wrapper(h)
 }
 
-// route dispatches by path prefix; order matters.
-func (s *Server) route(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.URL.Path == "/events":
-		s.ui.ServeEvents(w, r)
-	case r.URL.Path == "/api/state":
-		s.serveState(w, r)
-	case r.URL.Path == "/":
-		s.ui.ServePage(w, r)
-	case strings.HasPrefix(r.URL.Path, "/fragments/"):
-		s.ui.ServeFragment(w, r)
-	case strings.HasPrefix(r.URL.Path, "/api/"):
-		s.serveAPI(w, r)
-	case strings.HasPrefix(r.URL.Path, "/download/"):
-		s.serveDownload(w, r)
-	default:
-		s.static.ServeHTTP(w, r)
-	}
+// requireSameOrigin rejects every cross-site write, by method rather than by
+// route.
+//
+// The check used to be called from two places — inside api() and again in
+// serveDownload's DELETE branch — which meant the invariant held by convention,
+// and server/CLAUDE.md had to warn that "adding a mutating route that bypasses
+// this is how that becomes a bug". As middleware over the whole mux it covers a
+// mutating route before that route is written, which is strictly stronger and
+// lets both call sites (and serveDownload itself) go away.
+//
+// GET and HEAD are exempt: they are not writes, and /download/ links must work
+// from anywhere.
+func requireSameOrigin(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if err := checkSameOrigin(r); err != nil {
+				_, msg := classify(err)
+				http.Error(w, msg, http.StatusForbidden)
+				return
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // securityHeaders applies defaults that cost nothing and close off sniffing and

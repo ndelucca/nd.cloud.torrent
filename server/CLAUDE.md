@@ -9,7 +9,7 @@ delegated to `web`, `files`, `fetch` and `sysstat`.
 
 ## Ownership
 
-- `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `reconfigure`, `renderStats`, the `route` dispatcher and the middleware chain
+- `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `applyConfig`/`saveConfig`/`reconfigure`, `renderStats`, the `routes()` table and the middleware chain (`requireSameOrigin`, `securityHeaders`, `gzip`)
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
 - `server_api.go` — `/api/*` actions (`add`, `torrentfile`, `configure`, `torrent`), `apiError`/`classify`/`sentence`, `checkSameOrigin`
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
@@ -20,15 +20,17 @@ delegated to `web`, `files`, `fetch` and `sysstat`.
 
 Routing and middleware:
 
-- Routing in `route` is prefix-based and order-sensitive: `/events` → `/api/state` → `/` (the page) → `/fragments/` → `/api/` → `/download/` → static files as fallback. A prefix route must not swallow paths that merely begin with the same characters (`/nextdoor` is not `/next`); `TestRouting` pins this.
+- **Routing is a `ServeMux` pattern table in `routes()`.** Order is irrelevant — most specific wins — so the old warning about order-sensitive prefix dispatch is gone rather than restated. `GET /{$}` is the exact root, which is what the old switch faked by placing `r.URL.Path == "/"` above the prefix arms; `GET` patterns match `HEAD`; and a wrong method on a declared path yields 405 with an `Allow` header, which replaced three hand-written method guards.
+- **The embedded assets are mounted at `/css/`, `/js/` and `/cloud-favicon.png`, not behind a catch-all `/`.** A catch-all matches every unrouted path, which means `ServeMux` can never answer 405 — a `GET /api/add` would reach the file server and 404. The cost is a line in `routes()` when a new asset directory appears.
 - The handler chain is, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` → `route`. Authentication sits inside the security headers and outside gzip so a 401 is never compressed and never misses its headers.
 - The SSE stream must be excluded from gzip. `gzhttp` buffers until 1 KiB before deciding whether to compress, so without the `text/event-stream` exception the first event never reaches the browser. `TestEventsArriveImmediately` pins this.
 - Any middleware wrapping the `ResponseWriter` must implement `Unwrap`, and any a streaming path passes through must implement `Flush`. See `web/CLAUDE.md` for why a missing `Unwrap` fails silently.
 
 Authorization:
 
-- All `/api/*` writes and `DELETE /download/` require a same-origin request (`checkSameOrigin`). Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight, which is what makes the check necessary.
-- **This package is the only place authorization is decided.** `files.Handler` performs no checks and will delete for anyone who reaches it, so `serveDownload` gates `DELETE` before delegating. Adding a mutating route that bypasses this is how that becomes a bug.
+- **`requireSameOrigin` wraps the whole mux and gates by method: anything that is not GET or HEAD must be same-origin.** Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight, which is what makes the check necessary. It was previously called from two places — inside `api()` and again in a `serveDownload` DELETE branch — so the invariant held by convention and this doc had to warn that a mutating route bypassing it was how that became a bug. As middleware it covers such a route *before* it is written, and both call sites plus `serveDownload` itself were deleted.
+- **This package is still the only place authorization is decided.** `files.Handler` performs no checks and will delete for anyone who reaches it.
+- One consequence worth knowing: a cross-origin `/api/*` call from htmx now gets a hard 403 rather than a 200 fragment explaining the rejection, so htmx will not swap it. That is better security ergonomics and worse UX for a request that should not be happening.
 
 The API:
 
@@ -42,7 +44,7 @@ The API:
 - `web.WriteAPIResult` takes the *message*, not the error. Deciding what a failure says — and what it must not say — is the server's job.
 - Each action accepts exactly one encoding, and adding a second means a second parser to keep in step with the same struct. `add` takes a bare string (or a `uri` form field), `configure` and `torrent` take a form, `torrentfile` takes raw bytes or multipart.
 - When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
-- All API calls must be `POST`; the action is the path suffix after `/api/`.
+- All API calls must be `POST`; the action is the `{action}` path segment, read with `r.PathValue`. The method is enforced by the route pattern, not by a guard inside the handler.
 - Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 
 State:

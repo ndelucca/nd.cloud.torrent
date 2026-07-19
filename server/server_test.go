@@ -390,29 +390,90 @@ func TestSSRFGuard(t *testing.T) {
 	}
 }
 
-// TestRouting pins the prefix dispatch, including the "/search" bug that used to
-// swallow any path merely starting with those seven characters.
+// TestRouting asserts that every declared route reaches the handler that owns
+// it.
+//
+// It used to assert only the opposite — that "/nextdoor" does not match "/next"
+// — because dispatch was a hand-rolled, order-sensitive prefix switch and
+// swallowing a neighbouring path was the live hazard. ServeMux patterns make
+// that impossible by construction, so the useful assertions are the positive
+// ones, which nothing covered before.
 func TestRouting(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()
 
-	cases := []struct{ path, wantNot string }{
-		// Prefix routes must not swallow paths that merely start with the same
-		// characters: "/nextdoor" is not "/next", "/eventsomething" is not
-		// "/events". Both must fall through to the static handler.
-		{"/nextdoor", "next"},
-		{"/eventsomething", "events"},
-		{"/fragmentsfoo", "fragments"},
+	cases := []struct {
+		method, path string
+		wantNot      int // a status that would mean the route did not resolve
+		want         int // 0 means "anything but wantNot"
+	}{
+		{method: http.MethodGet, path: "/", want: http.StatusOK},
+		{method: http.MethodGet, path: "/api/state", want: http.StatusOK},
+		{method: http.MethodGet, path: "/fragments/downloads", want: http.StatusOK},
+		{method: http.MethodGet, path: "/js/ct.js", want: http.StatusOK},
+		{method: http.MethodGet, path: "/css/ct.css", want: http.StatusOK},
+		{method: http.MethodGet, path: "/cloud-favicon.png", want: http.StatusOK},
+		// Resolves to the fragment handler, which reports the torrent is gone —
+		// not to the mux's 404, which is what the old string surgery produced
+		// for a hash containing a slash.
+		{method: http.MethodGet, path: "/fragments/torrent/deadbeef/files", want: http.StatusNotFound},
+		// Neighbouring paths still must not be swallowed.
+		{method: http.MethodGet, path: "/nextdoor", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/eventsomething", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/fragmentsfoo", want: http.StatusNotFound},
+		// A wrong method on a declared path is 405, not 404. ServeMux only
+		// manages that because the static assets are mounted at their real
+		// prefixes rather than behind a catch-all.
+		{method: http.MethodGet, path: "/api/add", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/", want: http.StatusMethodNotAllowed},
 	}
 	for _, c := range cases {
-		r := httptest.NewRequest(http.MethodGet, c.path, nil)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		// The static handler answers 404 for unknown paths; the scraper answers
-		// differently. A 404 confirms it fell through correctly.
-		if w.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404 from the static handler", c.path, w.Code)
-		}
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			r := httptest.NewRequest(c.method, c.path, nil)
+			r.Header.Set("Origin", "http://"+r.Host)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != c.want {
+				t.Errorf("%s %s = %d, want %d (body %q)", c.method, c.path, w.Code, c.want,
+					strings.TrimSpace(w.Body.String()))
+			}
+		})
+	}
+}
+
+// TestSameOriginIsEnforcedByMethod pins that the cross-origin gate is a
+// property of the method, not of a route someone remembered to wrap.
+//
+// checkSameOrigin used to be called from two places — inside api() and again in
+// serveDownload's DELETE branch — so the invariant held by convention, and the
+// package doc had to warn that adding a mutating route which bypassed it was
+// how that became a bug. As middleware it covers a route before that route is
+// written.
+func TestSameOriginIsEnforcedByMethod(t *testing.T) {
+	s := newTestServer(t)
+	h := s.handler()
+
+	cases := []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodPost, "/api/add", http.StatusForbidden},
+		{http.MethodPost, "/api/configure", http.StatusForbidden},
+		{http.MethodDelete, "/download/anything", http.StatusForbidden},
+		// Reads are exempt: they are not writes, and /download/ links have to
+		// work from anywhere.
+		{http.MethodGet, "/api/state", http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			r := httptest.NewRequest(c.method, c.path, strings.NewReader(""))
+			r.Header.Set("Origin", "http://evil.example")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != c.want {
+				t.Errorf("cross-origin %s %s = %d, want %d", c.method, c.path, w.Code, c.want)
+			}
+		})
 	}
 }
 

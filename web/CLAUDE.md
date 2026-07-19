@@ -13,7 +13,7 @@ models, the SSE hub, and every handler that produces HTML.
 - `stats.go` — `StatsData`, `statsView` (which embeds `sysstat.Stats`), `RenderStats`
 - `torrents.go` — `torrentView`, `RenderTorrents`, and the two-tier event scheme
 - `downloads.go` — `fsView`, `treeSignature`, `RenderDownloads`
-- `fragments.go` — `ServePage`, `ServeFragment` (`/fragments/downloads`, per-torrent file tables) and `WriteAPIResult`
+- `fragments.go` — `ServePage`, `ServeDownloads`, `ServeTorrentFiles` and `WriteAPIResult`
 - `templates/` — `page`, `stats`, `torrent-list`/`torrent-row`/`torrent-files`, `downloads`/`fsnode`, `omni`/`config`
 
 ## Local Contracts
@@ -46,6 +46,8 @@ Rendering and the SSE stream:
 - `hub.close` reuses that disconnect mechanism for shutdown, but means something different and must stay distinct. It also **evicts** (the reader may already be gone, so nobody will call `unsubscribe`) and it **latches**, so a request arriving after it subscribes to an already-released subscriber. Nothing self-corrects here — the server is going away — and there is deliberately no farewell event: htmx owns the `EventSource`, so telling the page to stop retrying means driving unexported internals, whose failure mode is a permanently dead UI.
 - The SSE stream sets a per-write deadline through an `http.ResponseController`, so **every middleware wrapping the `ResponseWriter` must implement `Unwrap`**, and any a streaming path passes through must implement `Flush`. `ServeEvents` type-asserts `http.Flusher` and 500s if it fails, while a missing `Unwrap` fails silently: `SetWriteDeadline` returns `ErrNotSupported` and the stream runs with no timeout. This is exactly what `--log` did before `internal/reqlog`.
 - The stream must be excluded from gzip. That exception lives in the server's middleware chain, but the reason is here: `gzhttp` buffers until 1 KiB before deciding whether to compress, and an SSE frame is usually smaller, so the first event would never arrive.
+
+- **The fragment handlers do no method checking and no path parsing.** Both belong to the server's route table: doing them here produced a hand-rolled prefix-and-suffix match that read `torrent/a/b/files` as the infohash `a/b`. `ServeTorrentFiles` takes its hash from `r.PathValue`, so it is one path segment by construction.
 
 ## Work Guidance
 

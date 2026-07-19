@@ -4,36 +4,33 @@ import (
 	"bytes"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
-// ServeFragment answers the hx-get requests for content that is deliberately
-// not streamed.
+// The fragment handlers answer the hx-get requests for content that is
+// deliberately not streamed.
 //
 // Anything expensive or bulky whose visibility the server cannot know belongs
 // here rather than in the SSE stream: per-torrent file tables (only meaningful
 // when a row is expanded) and the download tree (changes on the order of
 // minutes, while torrent progress changes every second — coupling them to the
 // same 1 Hz push is the mistake this avoids).
-func (u *UI) ServeFragment(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	rest := strings.TrimPrefix(r.URL.Path, "/fragments/")
+//
+// They take no method guard and do no path parsing of their own: both are the
+// routing table's job, and doing them here is what produced a hand-rolled
+// prefix-and-suffix match that read "torrent/a/b/files" as the infohash "a/b".
 
-	switch {
-	case strings.HasPrefix(rest, "torrent/") && strings.HasSuffix(rest, "/files"):
-		hash := strings.TrimSuffix(strings.TrimPrefix(rest, "torrent/"), "/files")
-		u.serveTorrentFiles(w, hash)
-	case rest == "downloads":
-		u.serveDownloadsTree(w)
-	default:
-		http.Error(w, "Not found", http.StatusNotFound)
-	}
+// ServeDownloads renders the download tree.
+func (u *UI) ServeDownloads(w http.ResponseWriter, r *http.Request) {
+	u.serveDownloadsTree(w)
+}
+
+// ServeTorrentFiles renders one torrent's file table. The infohash comes from
+// the route pattern, so it is a single path segment by construction.
+func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
+	u.serveTorrentFiles(w, r.PathValue("hash"))
 }
 
 func (u *UI) serveDownloadsTree(w http.ResponseWriter) {
@@ -89,10 +86,6 @@ func (u *UI) serveTorrentFiles(w http.ResponseWriter, hash string) {
 // so it is rendered into a buffer first: a template error halfway through would
 // otherwise ship a truncated page with a 200.
 func (u *UI) ServePage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "Not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	view := struct {
 		Title  string
 		Config engine.Config
