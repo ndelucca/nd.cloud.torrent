@@ -27,6 +27,17 @@ run where; this doc owns the details behind them.
 - **`goreleaser.yml` and the `Dockerfile` have no consumer except the release
   jobs**, which is why `release_build` exercises both on every non-tag run. It is
   amd64-only and never pushes; the multi-arch matrix stays with the tagged job.
+- **`release_build` also *runs* the image, with no mounts.** Building only proves
+  it compiles. The run stage is `scratch` under `USER 65534`, so `/app` and
+  `/app/downloads` must be created and chowned in the build stage — and a
+  container with no mounts is exactly the case that was broken. The step asserts
+  the declared user, the ownership of both paths, that `POST /api/configure`
+  answers 200, and that the config really landed on disk. That last one matters:
+  a 200 with no file is what a silent write failure looks like.
+- Ownership is read with `docker cp … | tar --numeric-owner -tvf -`, because
+  `scratch` has no shell to `exec` into. `--numeric-owner` is not optional —
+  without it GNU tar prints the local name for 65534 (`nobody`) and the check
+  passes vacuously.
 - Version is stamped through `-ldflags "-X main.version=..."`. goreleaser uses
   `{{.Version}}`; the Dockerfile takes `ARG VERSION` (default `0.0.0-src`) and CI
   supplies `github.ref_name` on a tag, `0.0.0-ci` in the dry run. The Dockerfile

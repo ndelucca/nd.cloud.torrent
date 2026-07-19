@@ -261,10 +261,69 @@ jobs:
           file: .github/Dockerfile
           platforms: linux/amd64
           push: false
+          # Loaded into the local daemon so the next step can actually run it.
+          load: true
+          tags: nd-cloud-torrent:ci
           build-args: |
             VERSION=0.0.0-ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Building the image only proves it compiles. This proves it *runs* — and
+      # specifically that it runs with NO mounts, which is the case that was
+      # broken: the run stage is `scratch` and `USER 65534`, so /app and
+      # /app/downloads have to be created and chowned in the build stage or the
+      # process cannot write either one. configfile.Save writes a temp file
+      # beside the config and renames, so /app itself must be writable, not just
+      # the file.
+      #
+      # No --user here: the point is to exercise the USER the image declares.
+      - name: docker run (no mounts, as the published image runs)
+        run: |
+          set -euo pipefail
+          trap 'docker logs ct 2>&1 | tail -40; docker rm -f ct >/dev/null 2>&1 || true' EXIT
+          docker run -d --name ct -p 3000:3000 nd-cloud-torrent:ci
+
+          # Wait for it to serve rather than sleeping a guessed interval.
+          for i in $(seq 1 60); do
+            curl -fsS -o /dev/null http://127.0.0.1:3000/ && break
+            [ "$i" = 60 ] && { echo "the container never served a page"; exit 1; }
+            sleep 0.5
+          done
+
+          # Exercise the USER the image declares, not one passed at run time.
+          got=$(docker inspect -f '{{.Config.User}}' ct)
+          [ "$got" = "65534:65534" ] || { echo "runs as '$got', want 65534:65534"; exit 1; }
+
+          # /app must be owned by that UID, and so must /app/downloads. `docker
+          # cp` streams a tar with ownership intact, which is the only way to
+          # read it: the run stage is `scratch`, so there is no shell to exec.
+          # --numeric-owner is required: without it GNU tar resolves 65534 to
+          # the local name (nobody) and the check below never matches, even when
+          # the ownership is exactly right.
+          docker cp ct:/app - | tar --numeric-owner -tvf - | awk '{print $2, $6}' > /tmp/own.txt
+          cat /tmp/own.txt
+          grep -q '65534/65534 app/downloads/' /tmp/own.txt || {
+            echo "/app/downloads is missing or not owned by 65534"; exit 1; }
+
+          # The write that was broken. configfile.Save writes a temp file beside
+          # the config and renames it, so this needs /app itself writable — not
+          # just a writable file. Same-origin because requireSameOrigin gates it.
+          code=$(curl -s -o /tmp/body -w '%{http_code}' -X POST \
+            -H 'Origin: http://127.0.0.1:3000' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data 'AutoStart=false&AutoStart=true' \
+            http://127.0.0.1:3000/api/configure)
+          [ "$code" = "200" ] || { echo "POST /api/configure = $code"; cat /tmp/body; exit 1; }
+
+          # And it really landed on disk, rather than being reported OK. A 200
+          # with no file is exactly what a silent write failure would look like.
+          docker cp ct:/app/cloud-torrent.json /tmp/saved.json
+          grep -q '"AutoStart": true' /tmp/saved.json || {
+            echo "the saved config does not contain what was posted:"; cat /tmp/saved.json; exit 1; }
+
+          # A permission failure anywhere else shows up here.
+          docker logs ct 2>&1 | grep -i 'permission denied' && {
+            echo "the container reported a permission error"; exit 1; } || true
 
   # ================
   # RELEASE BINARIES (on push "v*" tag)
