@@ -24,9 +24,7 @@ type torrentView struct {
 	Downloaded int64
 	Size       int64
 	// Rate is int64 so the `bytes` template func can format it; the engine
-	// reports a float32 of bytes per second. There used to be a DownloadRate
-	// alongside it holding the same number as a float, purely so the template
-	// could compare it to 0.0.
+	// reports a float32 of bytes per second.
 	Rate  int64
 	Idle  bool
 	Files []fileView
@@ -35,10 +33,9 @@ type torrentView struct {
 // fileView is one file's progress row.
 //
 // Complete and InProgress are decided here rather than by comparing Percent to
-// 0.0 and 100.0 in the template. web/CLAUDE.md already required arithmetic to
-// live in the view model, and float equality against a truncated percentage is
-// exactly the sort of thing that rule exists for: a file at 99.999% renders as
-// "100.00%" yet must not be marked done.
+// 0.0 and 100.0 in the template: float equality against a truncated percentage
+// is exactly what the "arithmetic lives in the view model" rule exists for. A
+// file at 99.999% renders as "100.00%" yet must not be marked done.
 type fileView struct {
 	Name       string
 	Size       int64
@@ -78,13 +75,9 @@ func newTorrentViewWithFiles(t *engine.Torrent) torrentView {
 	for _, f := range t.Files {
 		v.Files = append(v.Files, newFileView(f))
 	}
-	// Sorted by the constructor, not by the handler. It was the handler's job
-	// once and was silently dropped when that handler was collapsed into a
-	// helper — nothing failed, because nothing asserted the order. Building an
-	// unsorted view is now unrepresentable.
-	//
-	// Sorted here rather than in the browser: it costs nothing on this side and
-	// the client never has to re-sort on every update.
+	// Sorted by the constructor, not the handler, so an unsorted view is
+	// unrepresentable. Sorted here rather than in the browser: it costs nothing
+	// on this side and the client never has to re-sort on every update.
 	sortFilesByName(v.Files)
 	return v
 }
@@ -101,26 +94,14 @@ func displayName(t *engine.Torrent) string {
 // RenderTorrents renders the whole list as one region and broadcasts it if the
 // bytes changed.
 //
-// One region, not two tiers. The previous scheme emitted a membership skeleton
-// plus a per-torrent region, which needed cross-tick state (`seen`), a rule for
-// not emitting an item event in the same flush as the element that hosts it, a
-// final empty event per disappearing region so htmx's SSE extension would
-// collect its listener, and a snapshot ordering that put membership first.
-// About 110 lines, all of it compensating for the lifecycle of *dynamic region
-// names*.
+// One region rather than a per-torrent region each: a dynamic region name means
+// the browser must create an element before its frames arrive, and htmx's SSE
+// extension unregisters per-element listeners lazily, from inside the listener.
+// With three fixed names, all present from the first frame, none of that
+// bookkeeping is part of this program's correctness argument.
 //
-// The argument for that complexity was frame size, and it does not hold: the
-// SSE stream is excluded from gzip outright (an SSE frame is below gzhttp's
-// 1 KiB threshold, so compressing buffers the first event forever), so there was
-// never a persistent deflate window for small frames to fit inside. What it cost
-// was real — three live bugs and a permanent coupling to one library's
-// listener bookkeeping.
-//
-// With three fixed region names, all present from the first frame, that
-// bookkeeping stops being part of this program's correctness argument. The price
-// is the full list on every tick that changes: ~2 KB per torrent, so ~42 KB/s
-// with 20 active torrents versus ~21 KB/s before. An idle server still sends
-// nothing, because the whole region is byte-gated by renderer.store.
+// The price is the full list on every tick that changes — ~2 KB per torrent. An
+// idle server still sends nothing: the region is byte-gated by renderer.store.
 func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -131,9 +112,7 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 	}
 	// Stable order, or the list churns on every map iteration. Sorting by name
 	// also means a magnet moves from its "Fetching metadata…" position to its
-	// real one as soon as the name lands — the old scheme could not, because it
-	// gated the skeleton on the infohash *set*, which does not change when a
-	// name arrives.
+	// real one as soon as the name lands.
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Name != views[j].Name {
 			return views[i].Name < views[j].Name

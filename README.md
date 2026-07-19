@@ -12,8 +12,8 @@ rewritten around a server-rendered UI.
 - **Single binary.** No runtime dependencies, no build step, no `node_modules`.
   The UI, its assets and the torrent engine are all embedded.
 - **Server-rendered UI.** `html/template` + [htmx](https://htmx.org) +
-  [Alpine](https://alpinejs.dev), pushed over Server-Sent Events. ~150 KB of
-  assets, of which most is the four pinned vendor bundles.
+  [Alpine](https://alpinejs.dev), pushed over Server-Sent Events. ~138 KB of
+  assets, of which 112 KB is the four pinned vendor bundles.
 - **Live updates** without polling the whole state: only the regions that
   actually changed are re-sent.
 - **Streamable downloads** through Go's `ServeContent`, so seeking works in the
@@ -24,7 +24,8 @@ rewritten around a server-rendered UI.
 
 ### From source
 
-Go 1.25 or newer:
+Go 1.25.4 or newer (the `go` directive in `go.mod`; an older toolchain will
+fetch it):
 
 ```sh
 go install github.com/ndelucca/nd.cloud.torrent@latest

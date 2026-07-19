@@ -2,50 +2,110 @@
 
 ## Purpose
 
-Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Client`, a mutable `Config`, and a cache of `*Torrent` view models keyed by hex infohash.
+Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Client`, a mutable
+`Config`, and a cache of `*Torrent` view models keyed by hex infohash. It knows nothing about HTTP.
 
 ## Ownership
 
-- `engine.go` — `Engine` type: client lifecycle (`Configure` and its steps `clientConfig`/`evictForRebind`/`buildClient`/`installClient`/`closeClient`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents
-- `torrent.go` — `Torrent` and `File` view models, `update`/`updateLoaded` (copy live state out of the underlying torrent), `sample` (the atomic progress reading) and `clone` (deep copy for callers)
-- `config.go` — the `Config` struct persisted by the server as JSON, plus `Validate`
+- `engine.go` — the `Engine` type: client lifecycle (`Configure` and its steps `clientConfig`,
+  `evictForRebind`, `buildClient`, `installClient`, `closeClient`), adding torrents (`NewMagnet`,
+  `NewTorrentFile`, `addSpec`), the metadata watchers (`watchInfoLocked`, `infoArrived`), the `ts`
+  cache and its sampler (`GetTorrents`, `refresh`, `sampleLoop`), and start/stop/delete
+- `torrent.go` — the `Torrent` and `File` view models, `update`, `sample`, `clone`, `percent`
+- `config.go` — the `Config` struct the server persists as JSON, plus `Validate`
 
 ## Local Contracts
 
-- `Engine` must not import `server` or `static`; it is the bottom of the dependency chain
-- Public methods take a hex infohash string; `str2ih` checks the length *before* decoding — `hex.Decode` is bounded by `len(src)`, not `len(dst)`, so an over-long input writes past the array and panics
-- `Configure` is serialized end to end by `configureMu`. `mu` alone is not enough: the same-port path releases `mu` between dropping the old client and installing the replacement, and a second caller in that window saw `client == nil`, took the non-retrying branch and stole the port. `TestConcurrentConfigure` pins it, and fails five times out of five when `configureMu` is removed — burning the full `rebindTimeout` each time, which is exactly the failure this describes.
-- `Close` clears `ts`. Without it, `GetTorrents` on a closed engine kept returning torrents that no longer existed anywhere.
-- **`Close` is a one-way door and takes `configureMu`.** Without that lock it observed `client == nil` mid-rebind — the same-port path having already evicted it — reported a clean shutdown, and the `Configure` still in flight then installed a live client, with its listening socket, goroutines and DHT, into an engine everyone believed was down. `Configure` after `Close` returns `ErrClosed` rather than building a client nothing would release. `TestConfigureAfterCloseDoesNotLeak` and `TestCloseDuringConfigure` pin both halves and fail without the fix.
-- **A rebind must never be cancellable by the request that triggered it.** `Configure` takes no context and must not grow one: aborting between evicting the old client and installing the replacement leaves the engine with none, so a user navigating away mid-save would take their own torrent client down. The only cancellation wired in is `e.ctx`, which only `Close` cancels, so shutdown does not have to wait out a retrying rebind.
-- `Configure` is a sequence of four named steps — `clientConfig`, `evictForRebind`, `buildClient`, `installClient` — and the order between them is the contract, not an implementation detail. Keep them separate: the ordering is the part that was historically wrong, and it is only reviewable when each step is small enough to read on its own.
-- `Configure` picks its teardown order by whether the listen port changes. Different port: build the replacement first, so a failure leaves the running client untouched. Same port: the old client holds the port, so it must be closed and waited on first — building first fails with "address already in use" every time, which is the common case since any other settings change keeps the port. Waiting on `Closed()` is necessary but not sufficient (the kernel releases the socket slightly later), hence the bounded rebind retry.
-- **Every torrent without metadata has exactly one watcher, registered under `mu` by `watchInfoLocked`, and `infoArrived` is the only place the post-metadata decision is made.** Registration is unconditional, not gated on `AutoStart`: the watcher is also what calls `DownloadAll` for a torrent the user started before its metadata landed — `startLocked` cannot, and the old `AutoStart`-only registration plus a watcher body that bailed out whenever `Started` was set left that torrent flagged as running while downloading nothing, permanently. Re-added magnets need a fresh watcher for the same reason: the original is parked on the old handle and correctly declines to act.
-- Registering under `mu` is also what makes `wg.Add` safe against `Close`'s `wg.Wait`. `Close` cancels, then takes `mu` before waiting, so a watcher is either already counted or never registered; `addSpec` previously called `wg.Add` under no lock `Close` held, which is the documented "Add called concurrently with Wait" misuse and panics when the counter is at zero.
-- If `installClient` fails to re-add a torrent it clears `Started`. Leaving it set showed the torrent as running against a client that never accepted it, with `t.t` nil, so nothing would ever move it again.
-- `Torrent`/`File` fields are read by the server and marshalled straight to the browser; treat exported field names as part of the UI contract
-- Stopping is destructive: `StopTorrent` drops the underlying torrent rather than pausing it, and clears `t.t`. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
-- **`GetTorrents` is a pure read: it returns a deep copy of the last sample and touches neither the client nor any torrent's reading.** The internal `ts` map and its `*Torrent` values never escape the engine.
-- **The engine owns its sampling cadence.** `refresh` is the only thing that samples, and `sampleLoop` — started in `New`, ticking at `sampleInterval` — is the only thing that calls it. The interval between readings therefore *is* the window `DownloadRate` is measured over, the same argument that fixes `statsInterval` in the server.
-- **There is deliberately no exported way to force a refresh, and adding one would reintroduce a whole bug class.** When reads sampled, every extra reader (`GET /api/state`, opening a Files panel) inserted a reading microseconds after the poll loop's, consumed the interval the next real sample needed, and drove displayed rates toward zero — two clients at 1 Hz roughly halved every rate on the page. The mitigation was a 250 ms debounce inside `sample`; the fix is that readers cannot produce a reading at all. `TestGetTorrentsDoesNotSample` pins it and fails the moment `GetTorrents` samples again.
-- **Sampling is not gated on whether anyone is watching**, and must not be. The server's poll loop skips *rendering* with nobody connected; when reads sampled, that gate silently doubled as the sampling schedule, so the first reading after an idle spell computed its rate over however long nobody was watching. `TestSamplerRunsWithoutWatchers` pins it.
-- `Downloaded`, `updatedAt` and `DownloadRate` are one sample: `Torrent.sample` moves all three or none. Its only guard is `dt <= 0`, which is arithmetic safety rather than debouncing — one `refresh` pass shares a single timestamp, and a zero interval yields `+Inf`, which fails `json.Marshal` and freezes the UI.
-- **`Close` must release `mu` before `wg.Wait()`.** The sampler takes `mu` on every tick, so waiting while holding it deadlocks immediately. This ordering was incidental when only the metadata watchers existed; it is now load-bearing.
-- The sampler's `wg.Add` happens in `New`, before the engine pointer is reachable, so no `Wait` can be in flight — a different safety argument from `watchInfoLocked`'s, which needs `mu` precisely because it runs at arbitrary later times.
-- Across a `Configure` rebind the sampler skips the ticks where `client == nil`, so the first tick afterwards spans ~2s. That stays correct because the rate comes from real timestamps; do not "optimise" `sample` into `db / sampleInterval`.
-- `Torrent.Files` is rebuilt from the live torrent on every pass, not patched in place. Patching assumed index *i* is the same file across ticks, which is untrue once a torrent is re-added and was written down nowhere. `File` is a value, so a nil entry — and the nil check every consumer carried — is unrepresentable.
-- `percent` truncates rather than rounds, and that is load-bearing: `torrents.html` tests `eq .Percent 100.0` to decide whether a file is complete, so rounding would mark a file done at 99.999%.
-- Errors are sentinels (`ErrMissingTorrent`, `ErrAlreadyStarted`, …) wrapped with `%w`; `server.classify` maps them to HTTP status codes and decides what the user is shown. **They are ordinary lowercase Go error strings**, not UI copy — that was the old convention and it welded the engine to an HTML caller, put raw syscall errors in front of users, and cost a `staticcheck` suppression.
-- **Anything the caller caused wraps `ErrInvalidInput`**: a malformed magnet URI, unparseable `.torrent` bytes, a bad infohash, an invalid config value. It is what lets the server show the wrapped detail — useful, bounded parser prose — while everything else gets a fixed message and a log line. Forgetting it turns a caller mistake into a 500.
-- Start/stop is per torrent, never per file. `anacrolix/torrent` has no per-file pause that composes with `DownloadAll`, and the engine tracks no per-file priorities, so a per-file API could only ever be a lie. `File` is a read-only progress view.
-- Torrent parsing lives here, not in `server`: `anacrolix/torrent` types must not appear in exported signatures
+Boundaries:
+
+- Bottom of the dependency chain: must not import `server` or `static`, and `anacrolix/torrent`
+  types must not appear in exported signatures. Torrent parsing lives here for that reason.
+- `Torrent`, `File` and `Config` exported field names are marshalled straight to the browser and
+  round-trip through the settings form — they are the UI and wire contract.
+- Errors are sentinels (`ErrMissingTorrent`, `ErrAlreadyStarted`, …) wrapped with `%w`, in ordinary
+  lowercase Go; `server.classify` decides status and presentation.
+- **Anything the caller caused wraps `ErrInvalidInput`** — bad magnet URI, unparseable `.torrent`
+  bytes, bad infohash, invalid config value. It is what lets the server show the wrapped detail while
+  everything else gets a fixed message. Forgetting it turns a caller mistake into a 500.
+- `str2ih` checks the infohash length *before* decoding: `hex.Decode` is bounded by `len(src)`, not
+  `len(dst)`, so an over-long input writes past the array and panics.
+- `addSpec` rejects a spec with no infohash. `AddTorrentSpec` *panics* on one, and the magnet parser
+  produces one from input like `magnet:?nonsense`, so anyone reaching `/api/add` could otherwise
+  take down a request handler.
+
+Locking and lifecycle:
+
+- Every exported method takes `e.mu`; helpers suffixed `Locked` assume the caller holds it.
+- **`Configure` is serialized end to end by `configureMu`.** `mu` alone is not enough: the same-port
+  path releases `mu` between dropping the old client and installing the replacement, and a second
+  caller in that window sees `client == nil`, takes the non-retrying branch and steals the port.
+- **`Close` is a one-way door and takes `configureMu`.** Without that lock it observes
+  `client == nil` mid-rebind, reports a clean shutdown, and the in-flight `Configure` then installs a
+  live client — socket, goroutines, DHT — into an engine everyone believes is down. `Configure` after
+  `Close` returns `ErrClosed`. `Close` also clears `ts`, so a closed engine reports no torrents.
+- **`Close` must release `mu` before `wg.Wait()`**: the sampler takes `mu` every tick, so waiting
+  under it deadlocks.
+- `wg.Add` is safe against that `Wait` because watchers register under `mu` after an `e.ctx.Err()`
+  check and `Close` cancels before taking `mu`, and because the sampler's `Add` is in `New`, before
+  the pointer is reachable. Unsynchronized `Add` is the documented "Add called concurrently with
+  Wait" misuse and panics at a zero counter.
+- **A rebind must never be cancellable by the request that triggered it.** `Configure` takes no
+  context and must not grow one: aborting between evicting the old client and installing the
+  replacement leaves the engine with none, so a user navigating away mid-save takes their own client
+  down. The only cancellation is `e.ctx`, cancelled only by `Close`, so shutdown does not wait out a
+  retrying rebind.
+- The order of `Configure`'s four steps is the contract, not an implementation detail. Keep them
+  separate — the ordering is only reviewable when each step reads on its own.
+- Teardown order depends on whether the listen port changes. Different port: build the replacement
+  first, so a failure leaves the running client untouched. Same port (the common case, since any
+  other settings change keeps the port): close and wait on the old client first, or the bind fails
+  with "address already in use". `Closed()` is necessary but not sufficient — the kernel releases the
+  socket slightly later — hence the bounded `rebindTimeout` retry.
+
+Torrents:
+
+- **Every torrent without metadata has exactly one watcher, registered under `mu` by
+  `watchInfoLocked`, and `infoArrived` is the only place the post-metadata decision is made.**
+  Registration is unconditional, not gated on `AutoStart`: the watcher is also what calls
+  `DownloadAll` for a torrent started before its metadata landed, which `startLocked` cannot do.
+  Re-added magnets need a fresh watcher — the original is parked on the previous handle.
+- If `installClient` fails to re-add a torrent it clears `Started`. Left set, the torrent shows as
+  running against a client that never accepted it, with `t.t` nil, so nothing would ever move it.
+- Stopping is destructive: `StopTorrent` drops the underlying torrent and clears `t.t` rather than
+  pausing. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
+- Start/stop is per torrent, never per file: `anacrolix/torrent` has no per-file pause that composes
+  with `DownloadAll` and the engine tracks no per-file priorities, so a per-file API could only be a
+  lie. `File` is a read-only progress view.
+
+Sampling:
+
+- **`GetTorrents` is a pure read**: a deep copy of the last sample, touching neither the client nor
+  any torrent's reading. The `ts` map and its `*Torrent` values never escape the engine.
+- **The engine owns its cadence.** `refresh` is the only thing that samples and `sampleLoop` (started
+  in `New`, ticking at `sampleInterval`) the only thing that calls it, so the interval between
+  readings *is* the window `DownloadRate` is measured over.
+- **There is deliberately no exported way to force a refresh.** If readers could sample, every extra
+  reader (`/api/state`, opening a Files panel) would insert a reading just after the loop's, consume
+  the interval the next real sample needed, and drive displayed rates toward zero.
+- **Sampling is not gated on whether anyone is watching**, and must not be: the first reading after
+  an idle spell would be an average over however long nobody was connected.
+- `Downloaded`, `updatedAt` and `DownloadRate` are one sample — `Torrent.sample` moves all three or
+  none. Its `dt <= 0` guard is arithmetic safety, not debouncing: one `refresh` pass shares a
+  timestamp, and a zero interval yields `+Inf`, which fails `json.Marshal` and freezes the UI.
+- Across a rebind the sampler skips ticks where `client == nil`, so the next tick spans ~2s. That
+  stays correct because the rate comes from real timestamps; do not "optimise" `sample` into
+  `db / sampleInterval`.
+- `Torrent.Files` is rebuilt from the live torrent every pass. Patching in place assumes index *i* is
+  the same file across ticks, which stops being true once a torrent is re-added. `File` is a value,
+  so a nil entry is unrepresentable.
+- `percent` truncates rather than rounds, and that is load-bearing: `torrents.html` tests
+  `eq .Percent 100.0` for completeness, so rounding would mark a file done at 99.999%.
 
 ## Work Guidance
 
-- Every exported method takes `e.mu`; helpers suffixed `Locked` assume the caller already holds it
-- `Close` cancels the metadata watchers, clears the cache and releases the client; the server calls it on shutdown
-- `infoArrived`'s `DownloadAll` call has no test: anacrolix exposes no effect of it (piece priorities read back unchanged), so every available assertion passes with the branch removed. It ships verified by inspection, and `TestStartedWithoutMetadataDownloadsOnArrival` says so rather than implying coverage it does not have.
-- Return `error` for invalid input rather than panicking — the server surfaces these directly as HTTP 400 text
+- Return `error` for invalid input rather than panicking — the server surfaces these as HTTP 4xx.
+- `infoArrived`'s `DownloadAll` call ships verified by inspection, not by test: anacrolix exposes no
+  observable effect of it, so every available assertion passes with the branch removed.
 
 ## Verification
 

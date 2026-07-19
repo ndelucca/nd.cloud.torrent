@@ -16,10 +16,10 @@ import (
 //
 // Everything else the UI and /api/state show is derived — torrents from the
 // engine, the tree from the filesystem, the config from the engine, the viewer
-// count from the hub — so it is read from its owner at the moment it is needed
-// rather than copied into a shared snapshot. The snapshot this replaces was
-// written by the poll loop and read by nothing but the JSON encoder, which is
-// how /api/state came to serve nulls whenever no browser was connected.
+// count from the hub — so it is read from its owner at the moment it is needed.
+// Copying any of it into a shared snapshot written by the poll loop makes
+// /api/state serve whatever that loop last wrote, which is nothing at all while
+// no browser is connected.
 type sampledStats struct {
 	mu     sync.Mutex
 	system sysstat.Stats
@@ -65,13 +65,12 @@ type statsDocument struct {
 // so without it there is no way to see what the server actually believes.
 //
 // Every field is gathered at request time. That costs a directory walk per
-// request — bounded by fileNumberLimit, the same walk the poll loop does every
+// request — bounded by files.Limit, the same walk the poll loop does every
 // second while anyone is watching — and buys a document that is correct for a
 // caller who is not a browser.
 func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
 	// No method guard: the route is registered as "GET /api/state", so ServeMux
-	// answers 405 with an Allow header before this runs. server/CLAUDE.md states
-	// that the method is enforced by the pattern; the guard here contradicted it.
+	// answers 405 with an Allow header before this runs.
 	doc := stateDocument{
 		Torrents:       s.engine.GetTorrents(),
 		Downloads:      files.List(s.downloadDir()),

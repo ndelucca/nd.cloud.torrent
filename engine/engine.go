@@ -430,10 +430,10 @@ func (e *Engine) infoArrived(ih string, tt *torrent.Torrent) {
 // It is a pure read: it does not touch the client and does not advance any
 // torrent's reading. Sampling belongs to refresh alone — see sampleLoop — and
 // there is deliberately no exported way to force one. A Refresh method looks
-// like an obvious convenience and would reintroduce the whole bug class: when
-// reads sampled, every extra reader (/api/state, opening a Files panel) stole
-// the interval the next real sample needed, and two clients polling at 1 Hz
-// roughly halved every rate on the page.
+// like an obvious convenience and is not: if reads sampled, every extra reader
+// (/api/state, opening a Files panel) would steal the interval the next real
+// sample needs, and two clients polling at 1 Hz would roughly halve every rate
+// on the page.
 //
 // The copy matters: the caller marshals this concurrently with engine mutations.
 func (e *Engine) GetTorrents() map[string]*Torrent {
@@ -497,7 +497,7 @@ func (e *Engine) StartTorrent(infohash string) error {
 
 func (e *Engine) startLocked(t *Torrent) error {
 	// Stopping drops the underlying torrent, so restarting means re-adding it.
-	// Without this, start-after-stop flipped the flag and downloaded nothing.
+	// Without this, start-after-stop flips the flag and downloads nothing.
 	if t.t == nil {
 		if e.client == nil {
 			return ErrNotConfigured
@@ -552,9 +552,9 @@ func (e *Engine) DeleteTorrent(infohash string) error {
 	return nil
 }
 
-// str2ih parses a hex infohash. The length is checked before decoding: hex.Decode
-// is bounded by len(src), not len(dst), so an over-long input used to write past
-// the end of the array and panic.
+// str2ih parses a hex infohash. The length is checked before decoding:
+// hex.Decode is bounded by len(src), not len(dst), so an over-long input writes
+// past the end of the array and panics.
 func str2ih(str string) (metainfo.Hash, error) {
 	var ih metainfo.Hash
 	if len(str) != infoHashHexLen {

@@ -11,10 +11,9 @@ import (
 // the one number that is not a property of the host.
 //
 // The sample is passed through as sysstat.Stats rather than copied into a view
-// shape of its own. An earlier version did copy it, to keep the JSON tags on
-// the server's side of the boundary — but that meant a dozen field assignments
-// that had to be updated in lockstep with a struct in another package, whose
-// failure mode is a stat that silently renders as zero.
+// shape of its own: a copy means a dozen field assignments kept in lockstep
+// with a struct in another package, whose failure mode is a stat that silently
+// renders as zero.
 type StatsData struct {
 	System         sysstat.Stats
 	ConnectedUsers int
@@ -29,10 +28,10 @@ type statsView struct {
 	ConnectedUsers int
 	Version        string
 	Runtime        string
-	// StartedAt is the process start instant. It was named Uptime, which is the
-	// opposite of what it holds, and the template rendered it raw into a
-	// tooltip — producing "Started 2026-07-19 10:00:00.123456789 +0000 UTC
-	// m=+3.14". Started is the formatted form the template shows.
+	// StartedAt is the process start instant; Started is the formatted form the
+	// template shows. A time.Time rendered raw into markup produces
+	// "2026-07-19 10:00:00.123456789 +0000 UTC m=+3.14", so the template must
+	// never reach for StartedAt directly.
 	StartedAt   time.Time
 	Started     string
 	Uptime      string

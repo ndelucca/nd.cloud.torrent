@@ -17,8 +17,8 @@ import (
 // same 1 Hz push is the mistake this avoids).
 //
 // They take no method guard and do no path parsing of their own: both are the
-// routing table's job, and doing them here is what produced a hand-rolled
-// prefix-and-suffix match that read "torrent/a/b/files" as the infohash "a/b".
+// routing table's job. A hand-rolled prefix-and-suffix match reads
+// "torrent/a/b/files" as the infohash "a/b".
 
 // ServeDownloads renders the download tree.
 func (u *UI) ServeDownloads(w http.ResponseWriter, r *http.Request) {
@@ -28,10 +28,6 @@ func (u *UI) ServeDownloads(w http.ResponseWriter, r *http.Request) {
 
 // ServeTorrentFiles renders one torrent's file table. The infohash comes from
 // the route pattern, so it is a single path segment by construction.
-//
-// The lookup is by key: Torrents() deep-copies every torrent and every file, so
-// scanning the map for one hash copied the whole world to answer a question
-// about a single row — once per panel expansion, per client.
 func (u *UI) ServeTorrentFiles(w http.ResponseWriter, r *http.Request) {
 	t, ok := u.deps.Torrents()[r.PathValue("hash")]
 	if !ok || t == nil {

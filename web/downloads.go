@@ -10,9 +10,7 @@ import (
 	"github.com/ndelucca/nd.cloud.torrent/files"
 )
 
-// downloadsView is the download tree as the template wants it. It exists
-// because the same anonymous struct was written out identically in four places,
-// three of them tests — which is the usual sign a shape wants a name.
+// downloadsView is the download tree as the template wants it.
 type downloadsView struct {
 	Root      fsView
 	Truncated bool

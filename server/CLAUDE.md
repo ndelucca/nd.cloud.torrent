@@ -2,91 +2,160 @@
 
 ## Purpose
 
-The process shell and the HTTP surface: flags, the middleware chain, the
-route dispatcher, the `/api/*` command endpoints, `/api/state`, host stats, and
-the two background loops. Rendering, file serving and the remote fetch are
-delegated to `web`, `files`, `fetch` and `sysstat`.
+The process shell and the HTTP surface: flags, the middleware chain, the route dispatcher, the
+`/api/*` command endpoints, `/api/state`, host stats, and the two background loops. Rendering, file
+serving and the remote fetch are delegated to `web`, `files`, `fetch` and `sysstat`.
 
 ## Ownership
 
-- `server.go` — the package doc, the interval consts, `Options` (CLI flags), the `Server` runtime, `downloadDir`, `New` and `Close`
+- `server.go` — package doc, interval consts, `Options`/`DefaultOptions`, the `Server` runtime,
+  `downloadDir`, `New`, `Close`
 - `run.go` — `Run` and its shutdown sequence
 - `loops.go` — `kick`, `pollLoop`, `statsLoop`, `watchers`, `renderStats`
-- `routes.go` — the `routes()` table and the middleware chain (`handler`, `gzip`, `requireSameOrigin`, `securityHeaders`)
+- `routes.go` — the `routes()` table and the middleware chain (`handler`, `gzip`,
+  `requireSameOrigin`, `securityHeaders`)
 - `config.go` — `applyConfig` and `reconfigure`, the two that face the engine
-- `api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`, `handleStart`/`handleStop`/`handleDelete`), `apiHandler`/`apiRoute`/`finishAPI`/`readBody`, `isForm`
+- `api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`,
+  `handleStart`/`handleStop`/`handleDelete`) plus `apiHandler`, `apiRoute`, `finishAPI`, `readBody`
 - `errors.go` — `apiError`, `badRequest`, `classify`, `sentence`, `checkSameOrigin`
-- `forms.go` — form-encoded and multipart request handling for the htmx UI
-- `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
-- `open.go` — `openBrowser`, replacing the abandoned skratchdot/open-golang
-- Not owned here: rendering and the SSE stream (`web`), the download tree and file serving (`files`), the remote `.torrent` fetch (`fetch`), host sampling (`sysstat`), authentication and request logging (`internal/auth`, `internal/reqlog`)
+- `forms.go` — `addURI`, `addUploadedTorrents`, `parseConfig`: form and multipart handling for htmx
+- `state.go` — `sampledStats`, the `stateDocument`/`statsDocument` wire types, `GET /api/state`
+- `open.go` — `openBrowser`
+- Not owned here: rendering and SSE (`web`), the download tree and file serving (`files`), the remote
+  `.torrent` fetch (`fetch`), host sampling (`sysstat`), auth and request logging (`internal/`)
 
 ## Local Contracts
 
 Routing and middleware:
 
-- **Routing is a `ServeMux` pattern table in `routes()`.** Order is irrelevant — most specific wins — so the old warning about order-sensitive prefix dispatch is gone rather than restated. `GET /{$}` is the exact root, which is what the old switch faked by placing `r.URL.Path == "/"` above the prefix arms; `GET` patterns match `HEAD`; and a wrong method on a declared path yields 405 with an `Allow` header, which replaced three hand-written method guards.
-- **The embedded assets are mounted at `/css/`, `/js/` and `/cloud-favicon.png`, not behind a catch-all `/`.** A catch-all matches every unrouted path, which means `ServeMux` can never answer 405 — a `GET /api/add` would reach the file server and 404. The cost is a line in `routes()` when a new asset directory appears.
-- The handler chain is, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` → `route`.
-- **Authentication sits inside the security headers**, so a 401 — the response an unauthenticated caller sees most — still carries `nosniff`, `DENY` and `no-referrer`. `TestUnauthorizedKeepsSecurityHeaders` fails when the two are swapped.
-- Authentication also sits outside gzip, but do not credit that with keeping the 401 uncompressed: `gzhttp` does not compress below `DefaultMinSize` (1 KiB) and the challenge body is a few dozen bytes, so moving `auth` inside `gzip` produces a byte-identical response. This was verified by making the swap and watching `TestUnauthorizedIsNotCompressed` still pass; that test asserts the property, not the ordering, and says so.
-- The SSE stream must be excluded from gzip. `gzhttp` buffers until 1 KiB before deciding whether to compress, so without the `text/event-stream` exception the first event never reaches the browser. `TestEventsArriveImmediately` pins this.
-- Any middleware wrapping the `ResponseWriter` must implement `Unwrap`, and any a streaming path passes through must implement `Flush`. See `web/CLAUDE.md` for why a missing `Unwrap` fails silently.
+- **Routing is a `ServeMux` pattern table in `routes()`.** Order is irrelevant — most specific wins.
+  `GET /{$}` is the exact root, `GET` patterns also match `HEAD`, and a wrong method on a declared
+  path yields 405 with an `Allow` header, so handlers carry no method guards and path parameters are
+  read with `r.PathValue`.
+- **Embedded assets are mounted at `/css/`, `/js/` and `/cloud-favicon.png`, not behind a catch-all
+  `/`.** A catch-all matches every unrouted path, so `ServeMux` could never answer 405 — a
+  `GET /api/add` would reach the file server and 404. The cost is a line in `routes()` per new asset
+  directory.
+- Chain, outermost first: `reqlog` (if `--log`) → `securityHeaders` → `auth` (if `--auth`) → `gzip` →
+  `requireSameOrigin` → the mux.
+- **Authentication sits inside the security headers**, so a 401 still carries `nosniff`, `DENY` and
+  `no-referrer`.
+- **The SSE stream must be excluded from gzip.** `gzhttp` buffers until 1 KiB before deciding whether
+  to compress and an SSE frame is smaller, so without the `text/event-stream` exception the first
+  event never reaches the browser.
+- Any middleware wrapping the `ResponseWriter` must implement `Unwrap`, and any a streaming path
+  passes through must implement `Flush`. See `web/CLAUDE.md` for why a missing `Unwrap` fails
+  silently.
 
 Authorization:
 
-- **`requireSameOrigin` wraps the whole mux and gates by method: anything that is not GET or HEAD must be same-origin.** Bodies may be `text/plain`, form-encoded or multipart; browsers send the first two cross-origin without a preflight, which is what makes the check necessary. It was previously called from two places — inside `api()` and again in a `serveDownload` DELETE branch — so the invariant held by convention and this doc had to warn that a mutating route bypassing it was how that became a bug. As middleware it covers such a route *before* it is written, and both call sites plus `serveDownload` itself were deleted.
-- **This package is still the only place authorization is decided.** `files.Handler` performs no checks and will delete for anyone who reaches it.
-- One consequence worth knowing: a cross-origin `/api/*` call from htmx now gets a hard 403 rather than a 200 fragment explaining the rejection, so htmx will not swap it. That is better security ergonomics and worse UX for a request that should not be happening.
+- **`requireSameOrigin` wraps the whole mux and gates by method: anything that is not GET or HEAD
+  must be same-origin.** Bodies may be `text/plain`, form-encoded or multipart, and browsers send the
+  first two cross-origin without a preflight. As middleware it covers a mutating route *before* it is
+  written. A rejected `/api/*` call gets a hard 403, not a fragment, so htmx will not swap it.
+- **This package is the only place authorization is decided.** `files.Handler` performs no checks and
+  will delete for anyone who reaches it.
 
 The API:
 
-- The render loop is kicked after **every** API call, not only successful ones. An action can apply partially and still report an error — an upload of five torrents where two are malformed adds three and returns 400 — and gating the kick on success left those three invisible until the next tick. `kick` is coalesced and floored, so the cost of an unnecessary one is at most a single extra render.
-- API handlers take only `*http.Request` and return `error`: nil renders `200 OK`. Non-nil goes to `classify`.
-- **`classify` decides both the status and the message, and its axis is "did what the caller sent cause this?"** — not which package the error came from.
-  - *Input* (magnet URI, remote URL, `.torrent` bytes, a config value): the wrapped detail is the only useful information and is bounded parser prose, so it is shown. → 400/404/409.
-  - *Operational* (disk, bind, upstream, closed): the wrapped detail is a syscall string and a filesystem-layout oracle, so a fixed message is shown and the chain goes to the log. → 500/502/503.
-  - **The default is 500.** It was 400, which reported a disk-full or permission failure to the user as their own mistake — exactly what the function existed to prevent. `engine.ErrInvalidInput` is what keeps genuine caller mistakes on the 400 side of that default.
-- **Error strings are ordinary lowercase Go, everywhere.** `classify` owns presentation: `sentence` capitalises what it decides to show. That is what let `-ST1005` come out of `staticcheck.conf` — the suppression existed because error strings doubled as UI copy, and they no longer do.
-- `web.WriteAPIResult` takes the *message*, not the error. Deciding what a failure says — and what it must not say — is the server's job.
-- **Each action is its own route with its own handler**, typed `apiHandler` so the contract is compiler-checked rather than documented. `apiRoute` wraps one into an `http.Handler`, applying the kick, the htmx fragment rendering and the status mapping in exactly one place.
-- The torrent verbs are `POST /api/torrents/{hash}/start`, `.../stop` and `DELETE /api/torrents/{hash}`. They were one `torrent` action dispatching on an `action` *form field* inside a nested switch — three routes wearing a trenchcoat, and the reason the body had to be drained before the encoding was known. With the hash in the path they have no body at all, which deleted `formValues` and let `parseConfig` take `url.Values` from `r.ParseForm` instead of re-parsing bytes.
-- `add` takes a bare string or a `uri` form field; `configure` takes a form; `torrentfile` takes raw bytes or multipart. Adding a second encoding to any of them means a second parser to keep in step with the same struct.
-- **`/api/configure` holds `configMu` across read-merge-apply.** The engine's `configureMu` serializes the apply but not the read the merge starts from, so two concurrent saves each began from the same config and the second silently undid the first. `TestConcurrentConfigureKeepsBothFields` pins it.
-- When `HX-Request` is set, API responses are HTML fragments with status 200 — htmx does not swap non-2xx. Status codes stay intact for every other client.
-- The method is enforced by the route pattern, not by a guard inside a handler. Path parameters are read with `r.PathValue`.
-- Multipart uploads are capped with `http.MaxBytesReader`. `ParseMultipartForm` bounds only what is buffered in RAM; the rest spills to temp files with no limit.
+- Handlers have the type `apiHandler func(http.ResponseWriter, *http.Request) error`. The
+  `ResponseWriter` is there for the multipart path, which needs it for `http.MaxBytesReader`. nil
+  renders `200 OK`; non-nil goes to `classify`.
+- **Each action is its own route with its own handler.** `apiRoute` adapts one to an `http.Handler`;
+  `finishAPI` applies the kick, the htmx fragment rendering and the status mapping in one place.
+- The render loop is kicked after **every** API call, not only successful ones: an action can apply
+  partially and still report an error — five uploaded torrents where two are malformed adds three and
+  returns 400 — and gating on success leaves those three invisible until the next tick. `kick` is
+  coalesced and floored, so a needless one costs at most one extra render.
+- **`classify` decides both status and message, and its axis is "did what the caller sent cause
+  this?"** — not which package produced the error.
+  - *Input* (magnet URI, remote URL, `.torrent` bytes, config value): the wrapped detail is the only
+    useful information and is bounded parser prose, so it is shown. → 400/404/409.
+  - *Operational* (disk, bind, upstream, closed): the detail is a syscall string and a
+    filesystem-layout oracle, so a fixed message is shown and the chain is logged. → 500/502/503.
+  - **The default is 500**, so an unclassified failure is never reported to the user as their own
+    mistake. `engine.ErrInvalidInput` keeps genuine caller mistakes on the 400 side of it.
+- **Error strings stay ordinary lowercase Go.** `classify` owns presentation; `sentence` capitalises
+  what it shows. `web.WriteAPIResult` takes the *message*, not the error — deciding what a failure
+  says, and what it must not say, is the server's job.
+- Torrent verbs are `POST /api/torrents/{hash}/start`, `.../stop` and `DELETE /api/torrents/{hash}`;
+  the hash is a path parameter, so none of them takes a body.
+- `add` takes a bare string or a `uri` form field, `configure` a form, `torrentfile` raw bytes or
+  multipart. A second encoding on any of them means a second parser to keep in step with one struct.
+- **`/api/configure` holds `configMu` across read-merge-apply.** `engine.configureMu` serializes the
+  apply but not the read the merge starts from, so two concurrent saves would each begin from the
+  same config and the second would silently undo the first.
+- When `HX-Request` is set, responses are HTML fragments with status 200 — htmx does not swap
+  non-2xx. Status codes stay intact for every other client.
+- Multipart uploads are capped with `http.MaxBytesReader` (`maxUploadBody`). `ParseMultipartForm`
+  bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 
 State:
 
-- **The server stores one thing: the latest host sample (`sampledStats`).** Everything else the UI and `/api/state` show is derived and read from its owner at the moment it is needed — torrents from `engine.GetTorrents`, the tree from `files.List`, the config from `engine.Config`, the viewer count from `web.UI.Watchers`. Do not reintroduce a shared snapshot: the previous one was written by the poll loop and read by nothing but the JSON encoder, so because polling is gated on `watchers() > 0`, `/api/state` served `null` torrents whenever no browser was connected. `TestStateIsLiveWithoutWatchers` pins this.
-- The config lives in the engine and nowhere else. The server persists it to `ConfigPath` but keeps no copy — two copies can disagree, and the one the settings form renders would be the stale one.
-- `stateDocument`/`statsDocument` are the JSON contract of `/api/state`, declared explicitly so that rearranging the server's own fields cannot silently change the wire format. Exported field names are the contract; renaming one breaks any script consuming it. `Config` is deliberately absent — it is the engine's, and republishing it here is what created the second copy.
-- `/api/state` costs one bounded directory walk per request (`files.Limit`), the same one the poll loop does each second while anyone is watching. That is the price of a document that is correct for a caller who is not a browser.
-- The server owns *when* the host is sampled, not the sample's shape: it stores the latest `sysstat.Stats` and passes it through to both `/api/state` and the UI unchanged. It keeps no copy of its own — that copy existed once and had to be updated in lockstep by hand.
+- **The server stores one thing: the latest host sample (`sampledStats`).** Everything else the UI
+  and `/api/state` show is read from its owner when needed — torrents from `engine.GetTorrents`, the
+  tree from `files.List`, the config from `engine.Config`, viewers from `web.UI.Watchers`. Do not
+  reintroduce a shared snapshot: written by the watcher-gated poll loop, it makes `/api/state` serve
+  `null` torrents whenever no browser is connected.
+- The config lives in the engine and nowhere else. The server persists it to `ConfigPath` but keeps
+  no copy — two copies can disagree, and the settings form would render the stale one.
+- `stateDocument`/`statsDocument` are the JSON contract of `/api/state`, declared explicitly so
+  rearranging the server's own fields cannot change the wire format. Exported field names are the
+  contract. `Config` is deliberately absent — it is the engine's.
+- `/api/state` costs one bounded directory walk per request (`files.Limit`), the same one the poll
+  loop does each second while anyone is watching. That buys a document correct for a non-browser
+  caller.
+- The server owns *when* the host is sampled, not the sample's shape: `sysstat.Stats` passes through
+  unchanged.
 
 Lifecycle:
 
-- Two background goroutines run until the `Run` context is cancelled: torrent/file polling (1s) and stats sampling (5s). Polling is gated on `watchers() > 0` **because of `files.List`** — the walk costs up to `files.Limit` stat calls per second and is waste with nobody connected — and because rendering for nobody is waste. Torrent freshness does not ride on that gate: the engine samples on its own cadence and `GetTorrents` is a pure read. When engine reads sampled, this gate silently doubled as the sampling schedule.
-- **The host is sampled unconditionally; only the *render* is gated on watchers.** `cpu.Percent` measures since the previous call anywhere in the process, so gating the sample meant the first one after an idle spell reported the average since the last browser disconnected — possibly hours — while `Set` claimed it was trustworthy. Keeping the sample on a fixed cadence is what makes `statsInterval` actually be the measurement window. `Run` joins both before returning, so no engine call is in flight when `Close` releases the engine.
-- Shutdown order is load-bearing: cancel the context → `ui.Close()` → `srv.Shutdown` → join the loops → (`main`) `engine.Close`. **`ui.Close` must come before `srv.Shutdown`.** `Shutdown` waits for connections to become idle and does not cancel request contexts, so an `/events` handler parked in its select is never released by it — with one browser connected that burned the entire shutdown budget and exited non-zero. `TestRunShutsDownPromptlyWithSSEClients` pins it end to end, `web.TestHubCloseReleasesSubscribers` pins the mechanism.
-- `Run` returns nil for any *completed* shutdown, including one that overran its drain budget: a requested stop is not a failed run, and `main` calls `log.Fatal` on a non-nil error. Only a genuine serving failure (bind, TLS) returns one. If the drain does overrun, `srv.Close` stops waiting.
-- `Run` is one-shot — the hub latches closed, so a second call would serve no events. `Close` releases the engine.
-- `reconfigure` is `applyConfig` then `configfile.Save`. `applyConfig` absolutizes the download directory and hands the config to the engine. The engine restart happens first, so a failed restart persists nothing.
-- **Startup applies but never saves.** `New` calls `applyConfig` alone. Rewriting the config on every boot was a chance to corrupt it that bought nothing, and it made `New`'s own doc comment false. `TestNewDoesNotWriteConfig` and `TestNewWithNoConfigCreatesNone` pin it.
-- **Reading and writing the config file belongs to `configfile`**, including the atomic-write guarantee; see `configfile/CLAUDE.md`. This package decides *when* to load and save, not how.
-- **`configMu` stays here, not in `configfile` or `engine`.** It serializes a four-step transaction — read the engine's config, merge an HTML form over it, apply, persist — and a lock belongs with the widest thing it serializes. `configfile` never reads the engine, so it could not cover the read that caused the lost update; `engine.configureMu` already covers the apply, and the read-merge sits outside it because "overlay a form onto the current config" is an HTTP-layer transaction, not an engine one.
-- **Port validity is `engine.Config.Validate`'s call and nowhere else.** `configfile.Load` does not clamp; an earlier version silently clamped an out-of-range port to the default while `Validate` rejected the identical value. Since `Load` unmarshals over a defaults struct, an absent port already keeps the default — the clamp could only fire on a value someone explicitly wrote. Two policies for one rule is how they end up disagreeing.
+- Two goroutines run until the `Run` context is cancelled: polling (`pollInterval`, 1s) and stats
+  (`statsInterval`, 5s). Polling is gated on `watchers() > 0` **because of `files.List`** — up to
+  `files.Limit` stat calls per second — and because rendering for nobody is waste. Torrent freshness
+  does not ride on that gate: the engine samples on its own cadence and `GetTorrents` is a pure read.
+- **The host is sampled unconditionally; only the *render* is gated on watchers.** `cpu.Percent(0, …)`
+  measures since the previous call anywhere in the process, so the interval *is* the measurement
+  window — which is also why `statsInterval` must stay fixed. Gating the sample would make the first
+  reading after an idle spell an average over however long nobody was connected, reported as
+  trustworthy.
+- Shutdown order is load-bearing: cancel the context → `ui.Close()` → `srv.Shutdown` → join the loops
+  → (`main`) `engine.Close`. **`ui.Close` must come first.** `Shutdown` waits for connections to go
+  idle and does not cancel request contexts, so an `/events` handler parked in its select is never
+  released by it and one connected browser burns the whole budget. Joining the loops means no engine
+  call is in flight when `Close` releases the engine.
+- `Run` returns nil for any *completed* shutdown, including one that overran its drain budget — a
+  requested stop is not a failed run, and `main` calls `log.Fatal` on a non-nil error. Only a genuine
+  serving failure (bind, TLS) returns one; if the drain overruns, `srv.Close` stops waiting.
+- `Run` is one-shot: the hub latches closed, so a second call would serve no events.
+- `reconfigure` is `applyConfig` then `configfile.Save`. `applyConfig` absolutizes the download
+  directory and hands the config to the engine. The restart happens first, so a failed one persists
+  nothing.
+- **Startup applies but never saves.** `New` calls `applyConfig` alone; rewriting the config on every
+  boot is a chance to corrupt it that buys nothing.
+- **Reading and writing the config file belongs to `configfile`**, atomic write included. This
+  package decides *when* to load and save, not how.
+- **`configMu` stays here, not in `configfile` or `engine`.** It serializes a four-step transaction —
+  read the engine's config, merge a form over it, apply, persist — and a lock belongs with the widest
+  thing it serializes. `configfile` never reads the engine so it cannot cover the read;
+  `engine.configureMu` covers only the apply, and "overlay a form onto the current config" is an
+  HTTP-layer transaction.
+- **Port validity is `engine.Config.Validate`'s call and nowhere else.** `configfile.Load` does not
+  clamp: it unmarshals over a defaults struct, so an absent port already keeps the default and a
+  clamp could only fire on a value someone explicitly wrote. Two policies for one rule end up
+  disagreeing.
 - TLS requires both `CertPath` and `KeyPath` or startup fails.
 
 ## Work Guidance
 
-- A new CLI option is a field on `Options` plus a registration line in `main`, using `internal/cli`. Defaults live in `DefaultOptions`, not in `main`. `Options` carries no struct tags — the flag names, shorthands and env vars are declared at the registration site.
-- Anything that produces HTML belongs in `web`, not here. `grep -rn "html/template" server/*.go` returning nothing is the check.
-- `statsInterval` must stay fixed: `cpu.Percent(0, …)` measures since the previous call, so the interval *is* the measurement window.
-
-- `TestKnownRoutesResolve` asserts every `web.KnownRoutes` entry reaches a handler on the mux. Together with `web`'s template scan it is the only thing tying an `hx-get` attribute to a route that answers it.
-- `TestStaticAssetsAreServed` does the same for `web.StaticAssets`, but with a real request rather than a mux lookup: the assets are mounted at prefixes, so resolution matches `/css/anything` and would pass for a stylesheet that is no longer in the binary.
+- A new CLI option is a field on `Options` plus a registration line in `main`, via `internal/cli`.
+  Defaults live in `DefaultOptions`. `Options` carries no struct tags — flag names, shorthands and
+  env vars are declared at the registration site.
+- Anything that produces HTML belongs in `web`. `grep -rn "html/template" server/*.go` returning
+  nothing is the check.
+- `web.KnownRoutes` and `web.StaticAssets` are asserted against the real mux here. With `web`'s
+  template scan they are the only thing tying an `hx-get` attribute to a route that answers it, so
+  keep both lists in step when a route or asset moves.
 
 ## Verification
 

@@ -48,17 +48,17 @@ func templateFuncs() template.FuncMap {
 // urlPath percent-encodes each segment of a slash-separated path for use in a
 // URL.
 //
-// Every URL attribute needs this, including the ones html/template recognises.
-// An htmx attribute like hx-delete is plain text to the escaper, so a file named
-// "a#b.mkv" produced hx-delete="/download/a#b.mkv"; the browser dropped
-// everything from the "#" and the server deleted a *different* file named "a",
-// answering 200. "?" truncated the same way and "%" made the request fail
-// outright. But href and src are no better: they get the URL *normalizer*, and
-// urlProcessor in html/template/url.go passes '#', '?' and '&' through
-// unescaped by design, because it normalizes a URL rather than escaping a path.
-// File names come from torrents, so all of this is attacker-reachable.
+// Every URL attribute needs this, including the ones html/template recognises,
+// and CI gates it rather than leaving it a convention.
 //
-// TestURLAttributesUseURLPath is what keeps this from being a convention.
+// An htmx attribute like hx-delete is plain text to the escaper, so a file named
+// "a#b.mkv" yields hx-delete="/download/a#b.mkv": the browser drops everything
+// from the "#" and the server acts on a *different* file named "a", answering
+// 200. "?" truncates the same way and "%" fails the request outright. href and
+// src are no better — they get the URL *normalizer*, and urlProcessor in
+// html/template/url.go passes '#', '?' and '&' through unescaped by design,
+// because it normalizes a URL rather than escaping a path. File names come from
+// torrents, so all of this is attacker-reachable.
 //
 // Segments are escaped individually so the separators survive. PathEscape
 // leaves "/" alone, which is why splitting first is necessary.
@@ -87,8 +87,8 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", v, units[e])
 }
 
-// percentOf guards the division by zero that used to produce +Inf and break
-// JSON marshalling of the whole state document.
+// percentOf guards the division by zero: +Inf fails json.Marshal and takes the
+// whole state document with it.
 func percentOf(n, total int64) float64 {
 	if total <= 0 {
 		return 0
@@ -142,9 +142,9 @@ func humanSince(t time.Time) string {
 type renderer struct {
 	tmpl *template.Template
 
-	// One map, not two. Framing is a pure function of (event, body) and the
-	// event is the key, so a separate body map carried no information the
-	// framed one did not — it was two things to keep in step for nothing.
+	// One map, not two: framing is a pure function of (event, body) and the
+	// event is the key, so a separate body map would carry no information this
+	// one does not.
 	mu         sync.Mutex
 	framedBody map[string][]byte // event name -> last body, SSE-framed
 }
@@ -226,10 +226,9 @@ func (r *renderer) framed(event string) []byte {
 // newly connected subscriber.
 //
 // Order does not matter: every region name is fixed and its element exists in
-// the page the browser already has. It mattered when region names were created
-// dynamically — an element cannot listen for a name before it exists, so a frame
-// arriving ahead of its element was silently discarded — and that constraint
-// left with them.
+// the page the browser already has. It would matter for a dynamically named
+// region — an element cannot listen for a name before it exists, so a frame
+// arriving ahead of its element is silently discarded.
 //
 // One buffer rather than a slice of frames: SSE frames are self-delimiting, so
 // the caller makes a single Write and Flush instead of one pair per region.

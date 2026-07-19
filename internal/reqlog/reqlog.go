@@ -1,8 +1,5 @@
-// Package reqlog logs one line per HTTP request.
-//
-// It replaces jpillora/requestlog, which cost four modules (ansi, sizestr,
-// go-termutil, realip) for a format string. The ANSI colouring those provided is
-// deliberately not reproduced; the rest of the format is unchanged.
+// Package reqlog logs one line per HTTP request. Stdlib only, and deliberately
+// uncoloured.
 package reqlog
 
 import (
@@ -72,12 +69,11 @@ func (rec *recorder) status() int {
 
 // Unwrap exposes the underlying writer to http.ResponseController.
 //
-// This is load-bearing, not boilerplate. serveEvents sets a per-write deadline
-// through a ResponseController, which reaches the real writer by walking
-// Unwrap. jpillora/requestlog implemented Flush and Hijack but not Unwrap, so
-// with --log enabled SetWriteDeadline returned ErrNotSupported and the SSE
-// stream ran with no write timeout at all — silently, because the caller has
-// nothing useful to do with that error and discards it.
+// This is load-bearing, not boilerplate. web.ServeEvents sets a per-write
+// deadline through a ResponseController, which reaches the real writer by
+// walking Unwrap. Without it SetWriteDeadline returns ErrNotSupported and the
+// SSE stream runs with no write timeout at all — silently, because the caller
+// has nothing useful to do with that error and discards it.
 func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
 // Flush is separate from Unwrap because serveEvents type-asserts the writer to
@@ -103,10 +99,9 @@ func fmtDuration(d time.Duration) string {
 
 // byteSize renders a size, or "" for zero so the caller can omit the field.
 //
-// Base 1000, matching what the UI shows. The two formatters disagreed — this
-// one was binary and the web one decimal — so the same download was logged as
-// 954MB and displayed as 1.0 GB. A log that does not agree with the screen is
-// worse than either convention.
+// Base 1000, which must stay in step with web.humanBytes: a log that disagrees
+// with the screen about the size of the same download is worse than either
+// convention on its own.
 func byteSize(n int64) string {
 	if n <= 0 {
 		return ""

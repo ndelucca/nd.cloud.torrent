@@ -1,10 +1,9 @@
 // Package cli parses command-line flags with environment-variable fallbacks and
 // renders the help screen.
 //
-// It replaces jpillora/opts, which derived all of this by reflection over struct
-// tags and pulled in posener/complete for a shell-completion feature this
-// program never enabled. With nine flags, registering them explicitly is both
-// shorter and easier to follow than the machinery that inferred them.
+// Flags are registered explicitly rather than derived by reflection over struct
+// tags: with nine of them, the explicit form is both shorter and easier to
+// follow than the machinery that would infer them.
 package cli
 
 import (

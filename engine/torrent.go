@@ -27,9 +27,8 @@ type Torrent struct {
 	updatedAt time.Time
 }
 
-// File is the per-file progress view. It is a value: a nil entry was only ever
-// possible because the slice used to be patched in place, and every consumer
-// paid for that with a nil check.
+// File is the per-file progress view. It is a value, not a pointer, so no
+// consumer has to nil-check an entry.
 type File struct {
 	//anacrolix/torrent
 	Path string
@@ -89,11 +88,9 @@ func (t *Torrent) updateLoaded(tt *torrent.Torrent, now time.Time) {
 // not at all.
 //
 // Only Engine.refresh calls this, on a fixed cadence, so the interval between
-// readings *is* the measurement window. Readers cannot produce a reading, which
-// is what removed the debounce this used to need: when GetTorrents sampled on
-// read, an extra reader inserted a reading microseconds after the poll loop's,
-// consumed the interval the next real sample needed, and drove displayed rates
-// toward zero.
+// readings *is* the measurement window. Readers must never produce a reading:
+// an extra one inserted microseconds after the sampler's consumes the interval
+// the next real sample needed and drives displayed rates toward zero.
 func (t *Torrent) sample(bytes int64, now time.Time) {
 	t.Percent = percent(bytes, t.Size)
 
@@ -126,8 +123,8 @@ func (t *Torrent) sample(bytes int64, now time.Time) {
 
 // percent returns n/total as a percentage, truncated to two decimals.
 //
-// Truncated, not rounded, and that is load-bearing: torrents.html tests
-// `eq .Percent 100.0` to decide whether to show a file as complete, so rounding
+// Truncated, not rounded, and that is load-bearing: web.newFileView tests
+// `Percent >= 100` to decide whether to show a file as complete, so rounding
 // would mark a file done at 99.999%.
 func percent(n, total int64) float32 {
 	if total == 0 {

@@ -8,33 +8,62 @@ authorization.
 
 ## Ownership
 
-- `files.go` — `Node`, `Limit`, `List`, `ResolveWithin`, `isWithin`, and the bounded `list` walk
-- `serve.go` — `Handler` (GET/HEAD/DELETE over `/download/`), `sandbox` and `serveZip`
+- `files.go` — `Node`, `Limit`, `ErrOutsideRoot`, `List`, `ResolveWithin`,
+  `isWithin`, `visible`, and the bounded `list` walk
+- `serve.go` — `Handler` (GET/HEAD/DELETE over `/download/`), `sandbox`, `serveZip`
 
 ## Local Contracts
 
-- **`Handler` performs no authorization and must never be mounted on a mutating route without a caller-side gate.** DELETE here removes files from disk for anyone who reaches it. The gate is `server.requireSameOrigin`, middleware wrapping the whole mux: anything that is not GET or HEAD must be same-origin. CSRF policy lives in that one package. Any new mutating method added here inherits the assumption.
-- **Every user-supplied path goes through `ResolveWithin`.** A `strings.HasPrefix` check is not enough — it has no separator boundary, so `<root>-backup/secret` passes it. `ResolveWithin` uses `filepath.Rel` *and* resolves symlinks and re-checks, because a link inside the download directory can otherwise point anywhere on disk.
-- Rejections return `ErrOutsideRoot` and callers must answer with a generic 404. Echoing the resolved path back turns every rejected probe into a filesystem-layout oracle.
-- `Handler.Root` is a `func() string`, not a string: `/api/configure` can move the download directory at any time and a captured copy would serve from the old one.
-- `Handler` reads the request path as relative to the root, so it is mounted behind `http.StripPrefix`.
-- The walk is bounded by `Limit`. Hitting it sets `Truncated` rather than failing, so the UI can say the listing is partial instead of presenting it as complete.
-- `List` returns an empty `Node` for a missing or unreadable root. A download directory that does not exist yet is a normal state, not an error.
-- **`visible` is applied to a directory's *entries*, never to the walk root — in `List` and in `serveZip` alike.** Dotfiles and non-regular entries are skipped, so the archive and the tree agree on what exists; the zip previously carried dotfiles the UI said were not there. Testing the root instead would make a directory the user explicitly asked for zip up empty.
-- `serveZip` checks the request context on every entry. A zip of a large download directory reads the whole tree, and without it a client that navigated away left the walk and its file reads running to completion with nowhere to write them. There is deliberately no entry or byte cap: archiving a large directory is the feature, and a cap could only produce a silently truncated archive, which is strictly worse than a slow one. Testing the root itself made a download directory named `.torrents` abort the entire walk — logging a failure once per poll tick and rendering an empty tree, for a directory the operator deliberately chose.
-- **Everything served over GET/HEAD carries `Content-Security-Policy: sandbox`.** Content-Type is derived from the file extension, so a torrent containing an `index.html` is served as `text/html` from the app's own origin, and `nosniff` does not help when the declared type *is* `text/html` — that script would run same-origin and could drive every `/api/*` mutation and `DELETE /download/*`. The header lives here rather than in the server's middleware so it travels with the bytes and cannot be lost by a future mount; it is ignored for non-document responses, so image, audio and video previews are unaffected. This does not cover the app's own pages, which is a separate problem (Alpine needs `unsafe-eval`).
+- **`Handler` performs no authorization.** DELETE removes files from disk for
+  anyone who reaches it; the gate is `server.requireSameOrigin`, middleware
+  wrapping the whole mux. Any new mutating method added here inherits that
+  assumption.
+- **Every user-supplied path goes through `ResolveWithin`.** A
+  `strings.HasPrefix` check is not enough — it has no separator boundary, so
+  `<root>-backup/secret` passes it. `ResolveWithin` uses `filepath.Rel` *and*
+  resolves symlinks and re-checks, because a link inside the download directory
+  can otherwise point anywhere on disk.
+- Rejections return `ErrOutsideRoot` and callers must answer with a generic 404.
+  Echoing the resolved path back turns every rejected probe into a
+  filesystem-layout oracle.
+- `Handler.Root` is a `func() string`: `/api/configure` can move the download
+  directory at any time and a captured copy would serve from the old one. The
+  request path is read as relative to that root, so mount behind
+  `http.StripPrefix`.
+- The walk is bounded by `Limit`; hitting it sets `Truncated` rather than failing.
+  `List` returns an empty `Node` for a missing or unreadable root — a download
+  directory that does not exist yet is a normal state.
+- **`visible` is applied to a directory's *entries*, never to the walk root — in
+  `List` and `serveZip` alike.** Dotfiles and non-regular entries are skipped so
+  the tree and its zip agree on what exists, while testing the root would make a
+  directory the operator deliberately named `.torrents` walk or zip up empty.
+- `serveZip` checks the request context on every entry, so a client that navigates
+  away does not leave the walk and its file reads running with nowhere to write
+  them. There is deliberately no entry or byte cap: archiving a large directory is
+  the feature, and a cap could only produce a silently truncated archive.
+- **Everything served over GET/HEAD carries `Content-Security-Policy: sandbox`.**
+  Content-Type comes from the file extension, so a torrent containing an
+  `index.html` is served as `text/html` from the app's own origin — and `nosniff`
+  does not help when the declared type *is* `text/html`. That script would run
+  same-origin and could drive every `/api/*` mutation and `DELETE /download/*`.
+  The header lives here rather than in the server's middleware so it travels with
+  the bytes and cannot be lost by a future mount; it is ignored for non-document
+  responses, so image, audio and video previews are unaffected. It does not cover
+  the app's own pages, which is a separate problem (Alpine needs `unsafe-eval`).
 
 ## Work Guidance
 
-- Keep this package free of `engine`, `server` and rendering concerns. Presentation over the tree (`fsView`, the change-detection signature) belongs to the rendering layer, not here — a `Node` is a filesystem fact.
-- Path-containment changes are security-relevant: add the case to `TestResolveWithin` and watch it fail before fixing it. The same applies to the sandbox header — `TestServedContentIsSandboxed` was verified to fail without it.
+- Keep this package free of `engine`, `server` and rendering concerns — a `Node`
+  is a filesystem fact.
+- Path-containment and sandbox-header changes are security-relevant: add the case
+  to the tests and watch it fail before fixing it.
 
 ## Verification
 
 - `go test -race ./files/`
-- Manual, against a running server: a nested file downloads, a directory returns a zip, `Range` requests answer 206, `../../etc/passwd` answers 404, and a cross-origin `DELETE` answers 403 while a same-origin one succeeds.
-- Manual: drop an `index.html` containing a `<script>` into the download directory, open it under `/download/`, and confirm the browser console reports the script blocked by CSP.
-
-## Child DOX Index
-
-No children.
+- Manual, against a running server: a nested file downloads, a directory returns a
+  zip, `Range` answers 206, `../../etc/passwd` answers 404, and a cross-origin
+  `DELETE` answers 403 while a same-origin one succeeds.
+- Manual: drop an `index.html` containing a `<script>` into the download
+  directory, open it under `/download/`, and confirm the browser console reports
+  the script blocked by CSP.

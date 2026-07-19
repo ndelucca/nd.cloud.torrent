@@ -6,10 +6,8 @@ import (
 	"runtime"
 )
 
-// openBrowser opens url in the user's default browser.
-//
-// This replaces skratchdot/open-golang, which was abandoned in 2020 and did
-// exactly this. Keeping it in-tree is cheaper than carrying the dependency.
+// openBrowser opens url in the user's default browser. In-tree because it is
+// cheaper than carrying a dependency for three lines of platform dispatch.
 func openBrowser(url string) error {
 	var cmd string
 	var args []string

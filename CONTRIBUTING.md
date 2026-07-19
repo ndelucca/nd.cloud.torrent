@@ -8,6 +8,7 @@ engine/              torrent engine: wraps anacrolix/torrent
 server/              process shell, middleware, routing, /api/*
 web/                 rendering, view models, the SSE stream
 web/templates/       html/template fragments — the UI's HTML
+configfile/          loading and atomically persisting the engine config
 files/               download tree, path containment, file serving
 fetch/               SSRF-guarded remote .torrent download
 sysstat/             host CPU/memory/disk sampling
@@ -15,12 +16,14 @@ static/files/        embedded CSS and JavaScript
 internal/auth/       basic-auth login plus a signed session cookie
 internal/cli/        flag registration, env fallbacks, the help screen
 internal/reqlog/     one log line per request
+internal/testutil/   fixtures shared by more than one package's tests
 ```
 
 Dependencies flow one way: `main` → {`server`, `internal/cli`}, `server` →
-{`engine`, `web`, `files`, `fetch`, `sysstat`, `static`, `internal/auth`,
-`internal/reqlog`}, and `web` → {`files`, `sysstat`}. Nothing below the server
-imports it, and CI enforces that rather than trusting it.
+{`engine`, `web`, `files`, `fetch`, `sysstat`, `static`, `configfile`,
+`internal/auth`, `internal/reqlog`}, `configfile` → `engine`, and `web` →
+{`engine`, `files`, `sysstat`}. Nothing below the server imports it, and the
+`boundaries` job in CI enforces that rather than trusting it.
 
 ## Building
 
@@ -36,7 +39,7 @@ single most common thing to trip over.
 
 ## Verifying
 
-Everything CI enforces, in order of how fast it fails:
+The fast checks, in order of how quickly they fail:
 
 ```sh
 gofmt -l .          # must print nothing
@@ -45,11 +48,24 @@ go build ./...
 go test -race ./... # the race detector is not optional here
 ```
 
-`go vet`, the build and the tests run on linux, macOS and Windows. `gofmt`,
-`staticcheck` and `govulncheck` run on linux only.
-
 The race detector matters specifically: the bugs this codebase actually shipped
 were unsynchronised map access, twice.
+
+CI runs more than the above, so these passing is necessary and not sufficient:
+
+- linux, macOS and Windows: `go vet`, the build, and `go test -race`. macOS and
+  Windows run it with `-short`, which skips the two wall-clock tests, so only
+  linux runs the full suite.
+- linux only: `gofmt`, coverage, a `go mod tidy` gate, the `boundaries` job
+  (import-graph checks), `staticcheck` and `govulncheck`.
+
+To run the linux-only analysis locally:
+
+```sh
+staticcheck ./...
+govulncheck ./...
+go mod tidy && git diff --exit-code go.mod go.sum
+```
 
 ### Manual checks
 

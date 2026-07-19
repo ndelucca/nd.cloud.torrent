@@ -248,7 +248,7 @@
   document.body.addEventListener("htmx:sseError", function () { setConn("offline"); });
   document.body.addEventListener("htmx:sseClose", function () { setConn("offline"); });
 
-  // The stream deliberately stays open in a background tab. See
-  // static/CLAUDE.md for why closing it on visibilitychange was tried, removed,
-  // and is not worth retrying.
+  // The stream deliberately stays open in a background tab: htmx owns the
+  // EventSource, so closing it from here means driving unexported internals,
+  // whose failure mode is a permanently dead UI. See static/CLAUDE.md.
 })();
