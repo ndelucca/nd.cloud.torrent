@@ -32,3 +32,22 @@ var KnownRoutes = []string{
 	"/fragments/downloads",
 	"/fragments/torrent/{hash}/files",
 }
+
+// StaticAssets are the concrete files page.html loads from the embedded asset
+// FS.
+//
+// They are separate from KnownRoutes because they are asserted differently. A
+// KnownRoutes entry is a pattern, checked by resolving it on the mux; these are
+// real files, checked by fetching them. Resolution alone proves nothing here —
+// the server mounts "GET /css/" and "GET /js/" as prefixes, which match any
+// path beneath them, so a renamed stylesheet or a vendor upgrade that drops a
+// file would resolve happily and 404 in the browser.
+var StaticAssets = []string{
+	"/cloud-favicon.png",
+	"/css/ct.css",
+	"/js/ct.js",
+	"/js/vendor/alpine.min.js",
+	"/js/vendor/htmx.min.js",
+	"/js/vendor/idiomorph-ext.min.js",
+	"/js/vendor/sse.js",
+}

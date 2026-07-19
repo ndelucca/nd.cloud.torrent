@@ -592,3 +592,26 @@ func TestKnownRoutesResolve(t *testing.T) {
 		})
 	}
 }
+
+// TestStaticAssetsAreServed is the other half of TestKnownRoutesResolve, for
+// the paths where resolution is not evidence.
+//
+// The assets are mounted at prefixes, so mux.Handler matches /css/anything and
+// would report a renamed stylesheet as fine. Only a real request proves the
+// file is in the binary, which is what page.html depends on.
+func TestStaticAssetsAreServed(t *testing.T) {
+	h := newTestServer(t).routes()
+	for _, p := range web.StaticAssets {
+		t.Run(p, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s: %d, want 200 — page.html loads this and the embedded "+
+					"FS does not have it", p, rec.Code)
+			}
+			if rec.Body.Len() == 0 {
+				t.Fatalf("GET %s: 200 with an empty body", p)
+			}
+		})
+	}
+}

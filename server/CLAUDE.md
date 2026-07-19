@@ -81,6 +81,7 @@ Lifecycle:
 - `statsInterval` must stay fixed: `cpu.Percent(0, …)` measures since the previous call, so the interval *is* the measurement window.
 
 - `TestKnownRoutesResolve` asserts every `web.KnownRoutes` entry reaches a handler on the mux. Together with `web`'s template scan it is the only thing tying an `hx-get` attribute to a route that answers it.
+- `TestStaticAssetsAreServed` does the same for `web.StaticAssets`, but with a real request rather than a mux lookup: the assets are mounted at prefixes, so resolution matches `/css/anything` and would pass for a stylesheet that is no longer in the binary.
 
 ## Verification
 

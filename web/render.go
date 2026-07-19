@@ -48,12 +48,17 @@ func templateFuncs() template.FuncMap {
 // urlPath percent-encodes each segment of a slash-separated path for use in a
 // URL.
 //
-// html/template only normalizes attributes it recognises as URLs — href, src
-// and friends. An htmx attribute like hx-delete is just text to it, so a file
-// named "a#b.mkv" produced hx-delete="/download/a#b.mkv"; the browser dropped
+// Every URL attribute needs this, including the ones html/template recognises.
+// An htmx attribute like hx-delete is plain text to the escaper, so a file named
+// "a#b.mkv" produced hx-delete="/download/a#b.mkv"; the browser dropped
 // everything from the "#" and the server deleted a *different* file named "a",
-// answering 200. File names come from torrents, so that was attacker-reachable.
-// "?" truncated the same way and "%" made the request fail outright.
+// answering 200. "?" truncated the same way and "%" made the request fail
+// outright. But href and src are no better: they get the URL *normalizer*, and
+// urlProcessor in html/template/url.go passes '#', '?' and '&' through
+// unescaped by design, because it normalizes a URL rather than escaping a path.
+// File names come from torrents, so all of this is attacker-reachable.
+//
+// TestURLAttributesUseURLPath is what keeps this from being a convention.
 //
 // Segments are escaped individually so the separators survive. PathEscape
 // leaves "/" alone, which is why splitting first is necessary.
