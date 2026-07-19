@@ -146,7 +146,7 @@ func TestAddURIDispatch(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/api/add",
-				strings.NewReader("uri="+urlEncode(c.uri)))
+				strings.NewReader("uri="+url.QueryEscape(c.uri)))
 			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
@@ -197,7 +197,3 @@ func TestHTMXGetsHTMLNotPlainText(t *testing.T) {
 		t.Errorf("htmx body should carry the error message, got %q", body)
 	}
 }
-
-// urlEncode was a strings.NewReplacer reimplementation of url.QueryEscape whose
-// correctness depended on Replacer's single-pass semantics for the " "/"+" pair.
-func urlEncode(s string) string { return url.QueryEscape(s) }

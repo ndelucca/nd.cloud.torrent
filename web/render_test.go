@@ -116,6 +116,7 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 		"torrent-files":    torrentView{InfoHash: "abc", Files: []fileView{{Name: "b.mkv", Size: 1, Percent: 50, InProgress: true}}},
 		"omni":             nil,
 		"fragment-message": "Nothing here.",
+		"placeholder":      "Loading…",
 		"config":           engine.Config{DownloadDirectory: "/d", IncomingPort: 1},
 		"downloads":        newDownloadsView(&files.Node{Name: "d", IsDir: true}),
 		"fsnode":           newFSView(&files.Node{Name: "f.mkv", Size: 2}, ""),

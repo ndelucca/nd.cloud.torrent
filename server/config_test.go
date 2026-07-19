@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ndelucca/nd.cloud.torrent/internal/testutil"
 )
 
 // newConfigTestServer builds a server against a config path that may or may not
@@ -16,7 +18,7 @@ import (
 func newConfigTestServer(t *testing.T, configPath string) (*Server, error) {
 	t.Helper()
 	o := DefaultOptions()
-	o.Port = freePort(t)
+	o.Port = testutil.FreePort(t)
 	o.ConfigPath = configPath
 	s, err := New(o, "test")
 	if s != nil {
@@ -30,7 +32,7 @@ func writeConfig(t *testing.T, path string, extra string) {
 	t.Helper()
 	dir := filepath.Dir(path)
 	body := `{"DownloadDirectory":"` + filepath.ToSlash(filepath.Join(dir, "downloads")) +
-		`","IncomingPort":` + itoa(freePort(t)) + extra + `}`
+		`","IncomingPort":` + itoa(testutil.FreePort(t)) + extra + `}`
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}

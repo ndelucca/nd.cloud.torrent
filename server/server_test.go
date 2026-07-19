@@ -15,20 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ndelucca/nd.cloud.torrent/internal/testutil"
 	"github.com/ndelucca/nd.cloud.torrent/sysstat"
 	"github.com/ndelucca/nd.cloud.torrent/web"
 )
-
-// freePort returns a port that is currently unbound.
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -44,14 +34,14 @@ func newTestServerWith(t *testing.T, tweak func(*Options)) *Server {
 	// Seed a config file so the engine binds a free port and downloads into a
 	// scratch directory, rather than the shipped defaults.
 	cfg := fmt.Sprintf(`{"DownloadDirectory":%q,"IncomingPort":%d,"EnableUpload":true,"AutoStart":true}`,
-		filepath.Join(dir, "downloads"), freePort(t))
+		filepath.Join(dir, "downloads"), testutil.FreePort(t))
 	configPath := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(configPath, []byte(cfg), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	o := DefaultOptions()
-	o.Port = freePort(t)
+	o.Port = testutil.FreePort(t)
 	o.ConfigPath = configPath
 	if tweak != nil {
 		tweak(&o)
@@ -454,7 +444,7 @@ func TestTLSRequiresBothPaths(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			o := DefaultOptions()
-			o.Port = freePort(t)
+			o.Port = testutil.FreePort(t)
 			o.ConfigPath = filepath.Join(dir, "config.json")
 			tweak(&o)
 
@@ -476,7 +466,7 @@ func TestTLSRequiresBothPaths(t *testing.T) {
 func TestTLSWithBothPathsIsAccepted(t *testing.T) {
 	dir := t.TempDir()
 	o := DefaultOptions()
-	o.Port = freePort(t)
+	o.Port = testutil.FreePort(t)
 	o.ConfigPath = filepath.Join(dir, "config.json")
 	o.CertPath = filepath.Join(dir, "cert.pem")
 	o.KeyPath = filepath.Join(dir, "key.pem")

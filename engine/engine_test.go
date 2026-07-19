@@ -3,8 +3,6 @@ package engine
 import (
 	"bytes"
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/ndelucca/nd.cloud.torrent/internal/testutil"
 )
 
 func TestStr2IH(t *testing.T) {
@@ -190,12 +189,8 @@ func TestReconfigureSamePort(t *testing.T) {
 	defer e.Close()
 
 	dir := t.TempDir()
-	port := freeTCPPort(t)
-	base := Config{DownloadDirectory: dir, IncomingPort: port, EnableUpload: true}
-
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: dir, EnableUpload: true}
+	base.IncomingPort = mustConfigure(t, e, base)
 
 	// Same port, different settings — the case that used to always fail.
 	changed := base
@@ -215,7 +210,7 @@ func TestReconfigureSamePort(t *testing.T) {
 
 	// A port change must still work.
 	moved := changed
-	moved.IncomingPort = freeTCPPort(t)
+	moved.IncomingPort = testutil.FreePort(t)
 	if err := e.Configure(moved); err != nil {
 		t.Fatalf("reconfigure onto a new port: %v", err)
 	}
@@ -227,10 +222,8 @@ func TestReconfigureRejectsBadConfigWithoutStopping(t *testing.T) {
 	e := New()
 	defer e.Close()
 
-	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: t.TempDir()}
+	base.IncomingPort = mustConfigure(t, e, base)
 
 	bad := base
 	bad.IncomingPort = 0 // invalid
@@ -261,10 +254,8 @@ func TestEvictForRebindPicksTheTeardownOrder(t *testing.T) {
 		t.Error("evicted a client that does not exist")
 	}
 
-	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: t.TempDir()}
+	base.IncomingPort = mustConfigure(t, e, base)
 
 	// A different port: the running client keeps serving while the replacement
 	// is built, so it must NOT be detached here.
@@ -301,11 +292,8 @@ func TestConcurrentConfigure(t *testing.T) {
 	defer e.Close()
 
 	dir := t.TempDir()
-	port := freeTCPPort(t)
-	base := Config{DownloadDirectory: dir, IncomingPort: port}
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: dir}
+	base.IncomingPort = mustConfigure(t, e, base)
 
 	// Same port, so both callers take the evict-then-rebind path and contend
 	// for exactly the window configureMu exists to close.
@@ -334,67 +322,32 @@ func TestConcurrentConfigure(t *testing.T) {
 	}
 }
 
-// freeTCPPort returns a port that is currently unbound. It was called
-// freeUDPPort, which it never was.
-//
-// There is an unavoidable TOCTOU here: the listener is closed before the port
-// is returned. If something else takes it in between, Configure fails loudly
-// rather than hanging, which is the acceptable outcome.
 // mustConfigure configures e on a free port, retrying if the bind loses a race.
 //
-// freeTCPPort closes its probe listeners before the caller binds, so between the
-// two another process can claim the port — and `go test ./...` runs packages in
-// parallel, so the server package's fixtures are doing exactly that at the same
-// time. The retry is the only way to close that window without serialising the
-// suite; the alternative is an intermittent failure that blames whichever test
-// happened to draw the port.
+// testutil.FreePort closes its probe listeners before the caller binds, so
+// between the two another process can claim the port — and `go test ./...` runs
+// packages in parallel, so the server package's fixtures are doing exactly that
+// at the same time. The retry is the only way to close that window without
+// serialising the suite; the alternative is an intermittent failure that blames
+// whichever test happened to draw the port.
 //
-// c.IncomingPort is overwritten on each attempt.
-func mustConfigure(t *testing.T, e *Engine, c Config) {
+// c.IncomingPort is overwritten on each attempt, so the port that was actually
+// bound is returned. A test that reconfigures on "the same port" must write it
+// back into its own config, or it asks for a port the engine is not holding and
+// silently exercises the port-change path instead.
+func mustConfigure(t *testing.T, e *Engine, c Config) int {
 	t.Helper()
 	var err error
 	for attempt := 0; attempt < 8; attempt++ {
-		c.IncomingPort = freeTCPPort(t)
+		c.IncomingPort = testutil.FreePort(t)
 		if err = e.Configure(c); err == nil {
-			return
+			return c.IncomingPort
 		}
 		if !strings.Contains(err.Error(), "address already in use") {
 			t.Fatalf("configure: %v", err)
 		}
 	}
 	t.Fatalf("configure kept losing the port race: %v", err)
-}
-
-// freeTCPPort returns a port free on both TCP and UDP.
-//
-// Both, because anacrolix binds TCP *and* UDP on the listen port: a
-// TCP-only check handed out ports whose UDP half was taken, and Configure then
-// failed with "subsequent listen: bind: address already in use". That surfaced
-// as an intermittent failure in whichever test happened to draw the port,
-// blaming the code under test for a collision in the fixture.
-//
-// Still a TOCTOU — the listeners are closed before the caller binds — but
-// checking both halves removes the systematic collisions, which were the
-// common case. The retry loop covers a genuine race with another process.
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	for attempt := 0; attempt < 20; attempt++ {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := l.Addr().(*net.TCPAddr).Port
-		// Probe the UDP half of the same port before releasing the TCP one, so
-		// nothing else can claim the pair in between.
-		pc, uerr := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
-		l.Close()
-		if uerr != nil {
-			continue // UDP half taken; draw another
-		}
-		pc.Close()
-		return port
-	}
-	t.Fatal("no port free on both TCP and UDP after 20 attempts")
 	return 0
 }
 
@@ -406,10 +359,8 @@ func freeTCPPort(t *testing.T) int {
 // engine everyone believed was shut down, that nothing would ever close.
 func TestConfigureAfterCloseDoesNotLeak(t *testing.T) {
 	e := New()
-	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: t.TempDir()}
+	base.IncomingPort = mustConfigure(t, e, base)
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -440,10 +391,8 @@ func TestConfigureAfterCloseDoesNotLeak(t *testing.T) {
 // remain.
 func TestCloseDuringConfigure(t *testing.T) {
 	e := New()
-	base := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}
-	if err := e.Configure(base); err != nil {
-		t.Fatalf("initial configure: %v", err)
-	}
+	base := Config{DownloadDirectory: t.TempDir()}
+	base.IncomingPort = mustConfigure(t, e, base)
 
 	// Same port, so this takes the evict-then-rebind path.
 	changed := base
@@ -513,10 +462,10 @@ func TestAddDuringClose(t *testing.T) {
 	exercised := 0
 	for i := 0; i < rounds; i++ {
 		e := New()
-		// freeTCPPort only proves the TCP port is free, and anacrolix binds UDP
+		// testutil.FreePort is still a TOCTOU, and anacrolix binds UDP
 		// too. A collision here is the previous iteration's client still letting
 		// go, which is not what this test is about.
-		if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
+		if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: testutil.FreePort(t)}); err != nil {
 			e.Close()
 			continue
 		}
@@ -613,10 +562,7 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 		t.Helper()
 		e := New()
 		t.Cleanup(func() { e.Close() })
-		cfg := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t), AutoStart: false}
-		if err := e.Configure(cfg); err != nil {
-			t.Fatalf("configure: %v", err)
-		}
+		mustConfigure(t, e, Config{DownloadDirectory: t.TempDir(), AutoStart: false})
 		if err := e.NewTorrentFile(testTorrentFile(t)); err != nil {
 			t.Fatalf("NewTorrentFile: %v", err)
 		}

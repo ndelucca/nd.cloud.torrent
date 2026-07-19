@@ -4,7 +4,7 @@
   <p class="warn">Showing the first {{.Limit}} entries only — this directory has more.</p>
   {{end}}
   {{if not .Root.Children}}
-  <p class="muted">Nothing downloaded yet.</p>
+  {{template "placeholder" "Nothing downloaded yet."}}
   {{else}}
   <ul class="tree-list">
     {{range .Root.Children}}{{template "fsnode" .}}{{end}}

@@ -32,7 +32,7 @@
       <h2>Torrents</h2>
       {{/* Populated by the torrent-list SSE event. */}}
       <div id="torrents" sse-swap="torrent-list" hx-swap="morph:innerHTML">
-        <p class="muted">Connecting…</p>
+        {{template "placeholder" "Connecting…"}}
       </div>
     </section>
 
@@ -44,7 +44,7 @@
            hx-get="/fragments/downloads"
            hx-trigger="load, sse:downloads-changed delay:300ms"
            hx-swap="innerHTML">
-        <p class="muted">Loading…</p>
+        {{template "placeholder" "Loading…"}}
       </div>
     </section>
 

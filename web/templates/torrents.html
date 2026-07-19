@@ -14,7 +14,7 @@ first render.
 {{define "torrent-list"}}
 <div id="torrent-list">
   {{if not .}}
-  <p class="empty">No torrents. Add a magnet link or upload a .torrent file above.</p>
+  {{template "placeholder" "No torrents. Add a magnet link or upload a .torrent file above."}}
   {{end}}
   {{range .}}
   <article class="torrent" id="t-{{.InfoHash}}" x-data="{files:false}">
@@ -47,7 +47,7 @@ first render.
          hx-get="/fragments/torrent/{{urlpath .InfoHash}}/files"
          hx-trigger="load-files from:closest article"
          hx-swap="innerHTML">
-      <p class="muted">Loading files…</p>
+      {{template "placeholder" "Loading files…"}}
     </div>
   </article>
   {{end}}

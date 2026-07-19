@@ -102,7 +102,20 @@ clicked away from would be reverted by the next morph.
 {{/* fragment-message is the shared plain-message fragment: "Torrent not found",
      a render fallback, anything a pulled fragment needs to say. It lives here
      rather than as a string literal in Go so the markup and its class stay in
-     the template set, where the template tests can see them. */}}
+     the template set, where the template tests can see them.
+
+     Its markup matches "placeholder" today, and the two stay separate anyway: a
+     message reports something that happened, a placeholder stands in for content
+     that has not arrived. They are free to diverge — a message could grow a
+     dismiss control or a role="status" — and merging them on the grounds that
+     the HTML currently matches would make that a two-site change. */}}
 {{define "fragment-message"}}
 <p class="muted">{{.}}</p>
+{{end}}
+
+{{/* placeholder is the empty and loading state: "No torrents", "Loading files…",
+     the pre-connection text in the page shell. One wording site and one class
+     instead of five ad-hoc <p>s split across .empty and .muted. */}}
+{{define "placeholder"}}
+<p class="placeholder">{{.}}</p>
 {{end}}

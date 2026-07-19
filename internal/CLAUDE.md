@@ -2,18 +2,24 @@
 
 ## Purpose
 
-Small stdlib-only replacements for third-party helpers that cost far more than they earned. Each package here exists because the shipped code used a sliver of a dependency that dragged in several modules of its own.
+Small stdlib-only packages that are not part of the public surface. Most are replacements for third-party helpers that cost far more than they earned — the shipped code used a sliver of a dependency that dragged in several modules of its own — plus fixture helpers shared across packages' tests.
 
 ## Ownership
 
 - `auth/` — `Wrap`: basic-auth login plus an opaque session cookie. Replaced `jpillora/cookieauth`.
 - `cli/` — `App`: flag registration with env fallbacks and the help screen. Replaced `jpillora/opts`.
 - `reqlog/` — `Wrap`: one log line per request. Replaced `jpillora/requestlog`.
+- `testutil/` — `FreePort`, the one fixture helper more than one package needs. Imported only from `_test.go` files.
 
 ## Local Contracts
 
 - **Stdlib only.** These packages exist to remove dependencies; adding one to them defeats the point. If a package here starts needing a third-party module, that is the signal to reconsider the replacement, not to add the import.
-- Nothing here may import `server` or `engine`. The dependency direction is `main` → {`server`, `internal/cli`} and `server` → {`internal/auth`, `internal/reqlog`}.
+- Nothing here may import `server` or `engine`. The dependency direction is `main` → {`server`, `internal/cli`} and `server` → {`internal/auth`, `internal/reqlog`}. `testutil` is imported by the tests of `server` and `engine`, which does not create a package edge — nothing in a shipped build links it.
+
+`testutil`:
+
+- **`FreePort` probes UDP as well as TCP, and every caller gets both.** anacrolix binds TCP *and* UDP on the listen port, so a TCP-only check hands out ports whose UDP half is taken and `Configure` fails with "address already in use" — an intermittent failure that blames whichever test drew the port. The two packages had diverged copies: `engine`'s probed both after being bitten, `server`'s did not, and `server`'s fixture feeds its port straight to the engine. One helper that is always right beats two that differ in a way nobody remembers.
+- It remains a TOCTOU — the probe listeners close before the caller binds — so a caller that binds through the engine retries on top of it (`engine`'s `mustConfigure`).
 
 `auth`:
 
