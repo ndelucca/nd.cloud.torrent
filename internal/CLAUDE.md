@@ -17,12 +17,14 @@ Small stdlib-only replacements for third-party helpers that cost far more than t
 
 `auth`:
 
-- The cookie value is an opaque random token and must never be derived from the credentials. The previous implementation stored a scrypt hash of `user:password`, which made cookie theft equivalent to password theft.
-- The expiry is held server-side and checked on every request. A cookie's `Expires` attribute is a hint to the browser and is not an access control.
+- The cookie value is a **signed token** — expiry ‖ nonce ‖ HMAC-SHA256 under a per-process key — and must never be derived from the credentials. The previous implementation stored a scrypt hash of `user:password`, which made cookie theft equivalent to password theft.
+- The expiry is decided by the server and verified on every request. It travels in the cookie but is *authenticated*, so a client cannot extend its own session by editing it — `TestTamperedExpiryIsRejected` fails against any implementation that reads the expiry without checking the MAC. A cookie's `Expires` attribute is a hint to the browser and is not an access control.
+- **There is deliberately no session table.** Holding one meant every request carrying an `Authorization` header minted a fresh 32-byte entry with a fortnight TTL, with no check for an existing session: a scripted client (an uptime probe, curl in a loop) inflated the map without bound, and the sweep on the login path walked it under the lock, so the cost grew with the abuse. A signed token makes that structurally impossible rather than merely bounded.
+- **The trade, stated rather than discovered: an individual session cannot be revoked server-side.** Nothing revoked one except the refresh path, which is now a no-op — the pre-refresh token stays valid until its own expiry, and `TestSessionRefreshRotates` asserts exactly that. A restart still invalidates everything, since the key is per process.
 - Cookies are always `HttpOnly` and `SameSite=Lax`; `Secure` follows the server's TLS state, since setting it without TLS stops the browser returning the cookie at all.
 - Credentials are compared as SHA-256 digests so both sides are equal fixed-length values — `subtle.ConstantTimeCompare` returns early on a length mismatch and would otherwise leak the password's length.
 - `Wrap` with empty credentials returns the handler unchanged. Authentication is off by default and must not cost a wrapper.
-- Sessions are process-local and deliberately do not survive a restart.
+- Sessions are process-local and deliberately do not survive a restart: the signing key is generated in `Wrap` and never written down.
 
 `reqlog`:
 

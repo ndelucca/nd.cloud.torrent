@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,30 +170,62 @@ func TestCookieDoesNotDeriveFromThePassword(t *testing.T) {
 	}
 }
 
+// tokenAt mints a validly-signed token with a chosen expiry, so tests can place
+// a session anywhere in its lifetime without a session table to reach into.
+func tokenAt(a *authenticator, expiry time.Time) string {
+	signed := make([]byte, expiryBytes+nonceBytes)
+	binary.BigEndian.PutUint64(signed[:expiryBytes], uint64(expiry.Unix()))
+	rand.Read(signed[expiryBytes:])
+	return base64.RawURLEncoding.EncodeToString(append(signed, a.sign(signed)...))
+}
+
 // TestExpiredSessionIsRejected is the other regression test. The previous
 // implementation parsed an expiry out of the cookie and never compared it to
 // the clock, so a stolen cookie was valid indefinitely.
 func TestExpiredSessionIsRejected(t *testing.T) {
 	h := Wrap(okHandler(), user, pass, false).(*authenticator)
 
-	c := sessionCookie(t, do(h, true, nil))
-
-	// Backdate the session past its expiry.
-	h.mu.Lock()
-	h.sessions[c.Value] = time.Now().Add(-time.Minute)
-	h.mu.Unlock()
-
-	w := do(h, false, c)
-	if w.Code != http.StatusUnauthorized {
+	c := &http.Cookie{Name: cookieName, Value: tokenAt(h, time.Now().Add(-time.Minute))}
+	if w := do(h, false, c); w.Code != http.StatusUnauthorized {
 		t.Errorf("expired session accepted: status = %d, want 401", w.Code)
 	}
+}
 
-	// And it must be forgotten, not merely refused.
-	h.mu.Lock()
-	_, still := h.sessions[c.Value]
-	h.mu.Unlock()
-	if still {
-		t.Error("expired session left in the map")
+// TestTamperedExpiryIsRejected is the behaviour the signature exists for.
+//
+// The expiry now travels inside the cookie rather than in a server-side table,
+// so the thing that must not work is a client editing it to extend its own
+// session. This fails against any implementation that reads the expiry without
+// authenticating it.
+func TestTamperedExpiryIsRejected(t *testing.T) {
+	h := Wrap(okHandler(), user, pass, false).(*authenticator)
+
+	expired := tokenAt(h, time.Now().Add(-time.Minute))
+	raw, err := base64.RawURLEncoding.DecodeString(expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Push the expiry a year out, leaving the MAC untouched.
+	binary.BigEndian.PutUint64(raw[:expiryBytes], uint64(time.Now().Add(365*24*time.Hour).Unix()))
+	forged := base64.RawURLEncoding.EncodeToString(raw)
+
+	w := do(h, false, &http.Cookie{Name: cookieName, Value: forged})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("a token with an edited expiry was accepted: status = %d", w.Code)
+	}
+}
+
+// TestTamperedNonceIsRejected covers the rest of the payload.
+func TestTamperedNonceIsRejected(t *testing.T) {
+	h := Wrap(okHandler(), user, pass, false).(*authenticator)
+	raw, err := base64.RawURLEncoding.DecodeString(tokenAt(h, time.Now().Add(time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[expiryBytes] ^= 0xff
+	w := do(h, false, &http.Cookie{Name: cookieName, Value: base64.RawURLEncoding.EncodeToString(raw)})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("a token with an edited nonce was accepted: status = %d", w.Code)
 	}
 }
 
@@ -206,12 +241,9 @@ func TestForgedTokenIsRejected(t *testing.T) {
 // gets a fresh token, and the old one stops working.
 func TestSessionRefreshRotates(t *testing.T) {
 	h := Wrap(okHandler(), user, pass, false).(*authenticator)
-	c := sessionCookie(t, do(h, true, nil))
 
-	// Age the session past refreshAfter but leave it valid.
-	h.mu.Lock()
-	h.sessions[c.Value] = time.Now().Add(sessionTTL - refreshAfter - time.Minute)
-	h.mu.Unlock()
+	// Old enough to refresh, still valid.
+	c := &http.Cookie{Name: cookieName, Value: tokenAt(h, time.Now().Add(sessionTTL-refreshAfter-time.Minute))}
 
 	w := do(h, false, c)
 	if w.Code != http.StatusOK {
@@ -221,34 +253,38 @@ func TestSessionRefreshRotates(t *testing.T) {
 	if fresh.Value == c.Value {
 		t.Error("session was not rotated on refresh")
 	}
-	if w2 := do(h, false, c); w2.Code != http.StatusUnauthorized {
-		t.Errorf("the rotated-out token still works: status = %d", w2.Code)
+	// The old token keeps working until its own expiry, which is the trade a
+	// signed token makes: there is no table to revoke it in. It is stated here
+	// rather than left to be discovered.
+	if w2 := do(h, false, c); w2.Code != http.StatusOK {
+		t.Errorf("the pre-refresh token should stay valid until it expires: status = %d", w2.Code)
 	}
 }
 
-// TestExpiredSessionsAreSwept keeps the map from growing without bound across
-// long uptimes.
-func TestExpiredSessionsAreSwept(t *testing.T) {
-	h := Wrap(okHandler(), user, pass, false).(*authenticator)
-
-	h.mu.Lock()
-	for _, tok := range []string{"old-1", "old-2", "old-3"} {
-		h.sessions[tok] = time.Now().Add(-time.Hour)
-	}
-	h.mu.Unlock()
-
-	do(h, true, nil) // a fresh login sweeps
-
-	h.mu.Lock()
-	n := len(h.sessions)
-	h.mu.Unlock()
-	if n != 1 {
-		t.Errorf("%d sessions after a sweep, want 1 (only the new one)", n)
+// TestManyLoginsAllocateNothingPersistent replaces a test for the sweep that
+// kept the session table bounded. There is no table now: every request that
+// arrived with an Authorization header used to mint a fortnight-long entry with
+// no check for an existing session, so a scripted caller inflated it without
+// limit while the sweep walked it under the lock. A signed token makes that
+// structurally impossible, so what is worth pinning is that many logins still
+// produce distinct, usable sessions.
+func TestManyLoginsProduceDistinctSessions(t *testing.T) {
+	h := Wrap(okHandler(), user, pass, false)
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		c := sessionCookie(t, do(h, true, nil))
+		if seen[c.Value] {
+			t.Fatalf("token repeated after %d logins", i)
+		}
+		seen[c.Value] = true
+		if w := do(h, false, c); w.Code != http.StatusOK {
+			t.Fatalf("freshly issued session rejected: status = %d", w.Code)
+		}
 	}
 }
 
-// TestConcurrentLogins exercises the map under -race; the previous bugs in this
-// codebase were all unsynchronized map access.
+// TestConcurrentLogins exercises the authenticator under -race. There is no
+// shared mutable state left, which is the point: it must stay that way.
 func TestConcurrentLogins(t *testing.T) {
 	h := Wrap(okHandler(), user, pass, false)
 	done := make(chan struct{})

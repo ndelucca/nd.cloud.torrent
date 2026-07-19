@@ -12,18 +12,33 @@
 //     stayed valid forever, until the password changed.
 //   - The cookie carried no HttpOnly, Secure or SameSite attribute.
 //
-// Here the cookie is an opaque random token, the server holds the expiry and
-// enforces it, and the cookie is marked HttpOnly and SameSite=Lax (plus Secure
-// under TLS).
+// Here the cookie is a signed token: a random nonce and an absolute expiry,
+// authenticated with HMAC-SHA256 under a key generated per process. The server
+// decides the expiry and verifies it on every request — it is signed, not
+// trusted from the client — and the cookie is marked HttpOnly and SameSite=Lax
+// (plus Secure under TLS).
+//
+// There is deliberately no session table. Holding one meant every request that
+// arrived with an Authorization header minted a fresh 32-byte entry with a
+// fortnight TTL, with no check for an existing session: a scripted client — an
+// uptime probe, curl in a loop — inflated the map without bound, and the sweep
+// that ran on the login path walked it under the lock, so the cost grew with
+// the abuse. A signed token makes that structurally impossible rather than
+// merely bounded.
+//
+// The cost is that an individual session cannot be revoked server-side. Nothing
+// here revoked one except the refresh path, and sessions still do not survive a
+// restart, since the key is per process.
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -36,7 +51,10 @@ const (
 	// re-issues the cookie, so an active browser is not logged out mid-use
 	// while an idle one still expires.
 	refreshAfter = 24 * time.Hour
-	tokenBytes   = 32
+	nonceBytes   = 16
+	// A token is expiry (8 bytes, big-endian Unix seconds) ‖ nonce ‖ MAC.
+	expiryBytes = 8
+	tokenBytes  = expiryBytes + nonceBytes + sha256.Size
 )
 
 // Wrap returns a handler that requires user and pass via HTTP basic auth,
@@ -48,13 +66,20 @@ func Wrap(next http.Handler, user, pass string, secure bool) http.Handler {
 	if user == "" && pass == "" {
 		return next
 	}
-	return &authenticator{
-		next:     next,
-		user:     sha256.Sum256([]byte(user)),
-		pass:     sha256.Sum256([]byte(pass)),
-		secure:   secure,
-		sessions: make(map[string]time.Time),
+	a := &authenticator{
+		next:   next,
+		user:   sha256.Sum256([]byte(user)),
+		pass:   sha256.Sum256([]byte(pass)),
+		secure: secure,
 	}
+	// Per process, and never persisted: a restart invalidates every session,
+	// which is the same behaviour the session table had.
+	if _, err := rand.Read(a.key[:]); err != nil {
+		// Without a key no token can be signed, so every request would be
+		// denied. Failing here is louder and earlier than failing per request.
+		panic("auth: cannot read random key: " + err.Error())
+	}
+	return a
 }
 
 type authenticator struct {
@@ -64,14 +89,13 @@ type authenticator struct {
 	// mismatch, which would leak the length of the real password.
 	user, pass [sha256.Size]byte
 	secure     bool
-
-	mu       sync.Mutex
-	sessions map[string]time.Time // token → absolute expiry
+	// key signs session tokens. Generated per process, never written down.
+	key [32]byte
 }
 
 func (a *authenticator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
-		expiry, ok := a.lookup(c.Value)
+		expiry, ok := a.verify(c.Value)
 		if !ok {
 			a.deny(w)
 			return
@@ -80,7 +104,6 @@ func (a *authenticator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// use is not logged out on the fortnight boundary.
 		if time.Until(expiry) < sessionTTL-refreshAfter {
 			if token, exp, err := a.issue(); err == nil {
-				a.revoke(c.Value)
 				http.SetCookie(w, a.cookie(token, exp))
 			}
 		}
@@ -115,48 +138,41 @@ func (a *authenticator) valid(user, pass string) bool {
 	return okUser&okPass == 1
 }
 
-// lookup returns the session's expiry, enforcing it. This is the check the
-// previous implementation was missing entirely.
-func (a *authenticator) lookup(token string) (time.Time, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	expiry, ok := a.sessions[token]
-	if !ok {
+// verify checks a token's signature and its expiry. Both are the server's:
+// the expiry travels in the cookie but is authenticated, so a client cannot
+// extend its own session by editing it.
+func (a *authenticator) verify(token string) (time.Time, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != tokenBytes {
 		return time.Time{}, false
 	}
+	signed, mac := raw[:expiryBytes+nonceBytes], raw[expiryBytes+nonceBytes:]
+	if !hmac.Equal(mac, a.sign(signed)) {
+		return time.Time{}, false
+	}
+	expiry := time.Unix(int64(binary.BigEndian.Uint64(signed[:expiryBytes])), 0)
 	if !time.Now().Before(expiry) {
-		delete(a.sessions, token)
 		return time.Time{}, false
 	}
 	return expiry, true
 }
 
-// issue mints a session token. The map only grows on successful logins, so an
-// unauthenticated caller cannot inflate it; expired entries are swept here.
+// issue mints a session token.
 func (a *authenticator) issue() (string, time.Time, error) {
-	buf := make([]byte, tokenBytes)
-	if _, err := rand.Read(buf); err != nil {
+	expiry := time.Now().Add(sessionTTL)
+	signed := make([]byte, expiryBytes+nonceBytes)
+	binary.BigEndian.PutUint64(signed[:expiryBytes], uint64(expiry.Unix()))
+	if _, err := rand.Read(signed[expiryBytes:]); err != nil {
 		return "", time.Time{}, err
 	}
-	token := base64.RawURLEncoding.EncodeToString(buf)
-	expiry := time.Now().Add(sessionTTL)
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := time.Now()
-	for t, exp := range a.sessions {
-		if !now.Before(exp) {
-			delete(a.sessions, t)
-		}
-	}
-	a.sessions[token] = expiry
-	return token, expiry, nil
+	return base64.RawURLEncoding.EncodeToString(append(signed, a.sign(signed)...)), expiry, nil
 }
 
-func (a *authenticator) revoke(token string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.sessions, token)
+// sign authenticates a token's payload.
+func (a *authenticator) sign(payload []byte) []byte {
+	m := hmac.New(sha256.New, a.key[:])
+	m.Write(payload)
+	return m.Sum(nil)
 }
 
 func (a *authenticator) cookie(token string, expiry time.Time) *http.Cookie {
