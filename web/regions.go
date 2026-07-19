@@ -18,9 +18,13 @@ const (
 	// statsEvent carries the host stats region.
 	statsEvent = "stats"
 	// downloadsChangedEvent is a content-free ping; the tree itself is fetched
-	// with hx-get. It changes on the order of minutes while torrent progress
-	// changes every second, so streaming it would re-ship the whole tree — and
-	// risk every collapse state — for a change that did not happen.
+	// with hx-get. Streaming it would re-ship the whole tree once a second for a
+	// change nobody can see, since torrent progress moves every tick while the
+	// tree's shape moves on the order of minutes.
+	//
+	// The payload is a shape signature and a rate-limited content signature —
+	// see web.RenderDownloads. Hashing both together fires this every tick of
+	// every download, which is the thing the paragraph above claims it does not.
 	downloadsChangedEvent = "downloads-changed"
 )
 

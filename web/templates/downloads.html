@@ -77,8 +77,14 @@ hashed path from pathID, and treeNode() reads it from $el.
 
   {{if .Preview}}
   {{/* data-preserve keeps idiomorph from touching a playing media element, and
-       the src is only set once opened so nothing is prefetched. */}}
-  <div class="tree-preview" x-show="preview" x-cloak data-preserve>
+       the src is only set once opened so nothing is prefetched.
+
+       The id is what makes that reliable. beforeNodeMorphed only fires for a
+       node idiomorph has already matched, and without an id this is matched
+       structurally — by position among the <li>'s children. That works today
+       and degrades silently to remove-and-reinsert the moment those children
+       reorder, which is exactly the failure data-preserve exists to prevent. */}}
+  <div class="tree-preview" id="p-{{.ID}}" x-show="preview" x-cloak data-preserve>
     <template x-if="preview">
       {{if eq .Preview "video"}}
       <video controls preload="none" src="/download/{{urlpath .Path}}"></video>

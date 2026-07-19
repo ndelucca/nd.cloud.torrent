@@ -206,6 +206,95 @@ func TestIconButtonsHaveAccessibleNames(t *testing.T) {
 	}
 }
 
+// TestDownloadsRegionIsMorphed pins the swap strategy on #downloads.
+//
+// innerHTML destroys and rebuilds the subtree on every fetch, so every open
+// folder closes, every open preview closes, and a playing <video> is torn out of
+// the DOM. It also means idiomorph never runs there — which silently disables
+// data-preserve and every guard in ct.js, since none of them fire outside a
+// morph.
+func TestDownloadsRegionIsMorphed(t *testing.T) {
+	u := newTestUI(t)
+	body, err := u.renderer.execute("page", pageView{
+		Title:  "T",
+		Config: engine.Config{DownloadDirectory: "/d", IncomingPort: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(body)
+
+	i := strings.Index(out, `id="downloads"`)
+	if i < 0 {
+		t.Fatalf("no #downloads element in the page:\n%s", out)
+	}
+	tag := out[strings.LastIndex(out[:i], "<"):]
+	tag = tag[:strings.Index(tag, ">")]
+
+	if !strings.Contains(tag, `hx-swap="morph:innerHTML"`) {
+		t.Errorf("#downloads must be morphed, not replaced: <%s>", tag)
+	}
+	// The opt-out belongs on panels nested inside another morph target.
+	// #downloads is top level, so carrying it would make the region refuse its
+	// own swaps.
+	if strings.Contains(tag, "data-preserve") {
+		t.Errorf("#downloads must not opt out of morphing; it is the swap "+
+			"target itself: <%s>", tag)
+	}
+}
+
+// TestAlpineRootsCarryStableIDs pins the precondition every morphed region
+// depends on.
+//
+// idiomorph preserves Alpine's _x_dataStack only for a node it matched by id. An
+// x-data element without one is rebuilt on every morph, resetting its state once
+// per swap — with no console error and no test failure anywhere.
+func TestAlpineRootsCarryStableIDs(t *testing.T) {
+	u := newTestUI(t)
+	for _, c := range []struct {
+		name string
+		data any
+	}{
+		{"downloads", newDownloadsView(&files.Node{
+			Name: "root", IsDir: true,
+			Children: []*files.Node{
+				{Name: "sub", IsDir: true, Children: []*files.Node{{Name: "a.mp4", Size: 1}}},
+			},
+		})},
+		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body, err := u.renderer.execute(c.name, c.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := string(body)
+
+			found := 0
+			for i := 0; ; {
+				j := strings.Index(out[i:], "x-data=")
+				if j < 0 {
+					break
+				}
+				j += i
+				start := strings.LastIndex(out[:j], "<")
+				end := j + strings.Index(out[j:], ">")
+				tag := out[start:end]
+				found++
+				if !strings.Contains(tag, `id="`) {
+					t.Errorf("x-data element has no id, so a morph rebuilds it "+
+						"and resets its state: <%s>", tag)
+				}
+				i = end
+			}
+			if found == 0 {
+				t.Fatalf("no x-data elements found — the scan has stopped "+
+					"matching:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestStatusRegionIsOutsideSwapTargets is the reason the target above works.
 // #omni-status lives in the Add panel; if it were inside #torrents the morph
 // that follows an action would wipe the message the action just produced.

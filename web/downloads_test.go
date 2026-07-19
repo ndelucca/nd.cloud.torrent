@@ -98,31 +98,146 @@ func TestEmptyDirectoryIsStillADirectory(t *testing.T) {
 	}
 }
 
-// TestTreeSignatureDetectsChange covers the ping's change detection. The tree is
-// pulled, not streamed, so this signature is the only thing that tells a browser
-// to re-fetch.
-func TestTreeSignatureDetectsChange(t *testing.T) {
+// alignTimes copies a's timestamps onto b so a comparison isolates whatever the
+// caller actually varied. dir/file stamp time.Now.
+func alignTimes(a, b *files.Node) {
+	b.Modified = a.Modified
+	for i := range b.Children {
+		if i < len(a.Children) {
+			alignTimes(a.Children[i], b.Children[i])
+		}
+	}
+}
+
+// TestTreeShapeSignature covers the half that must fire immediately: an entry
+// appearing, disappearing or being renamed.
+//
+// It must NOT move when a file merely grows, and that is the whole point. One
+// signature over shape and content together changed on every tick of every
+// download, so the browser re-fetched the entire tree once a second — against a
+// comment in regions.go promising it changed on the order of minutes.
+func TestTreeShapeSignature(t *testing.T) {
 	a := dir("d", file("a.txt", 10))
+
 	same := dir("d", file("a.txt", 10))
-	same.Modified = a.Modified
-	same.Children[0].Modified = a.Children[0].Modified
-	if treeSignature(a) != treeSignature(same) {
-		t.Error("signature is not stable for equal input")
+	alignTimes(a, same)
+	if shapeSignature(a) != shapeSignature(same) {
+		t.Error("shape signature is not stable for equal input")
 	}
 
-	grown := dir("d", file("a.txt", 20)) // same name, new size
-	grown.Modified = a.Modified
-	grown.Children[0].Modified = a.Children[0].Modified
-	if treeSignature(a) == treeSignature(grown) {
-		t.Error("a file growing must change the signature — this is what makes " +
-			"a downloading file's size update in the browser")
+	grown := dir("d", file("a.txt", 20))
+	if shapeSignature(a) != shapeSignature(grown) {
+		t.Error("a file growing must NOT change the shape signature; that is " +
+			"what stops the ping firing every tick during a download")
 	}
 
 	added := dir("d", file("a.txt", 10), file("b.txt", 1))
-	added.Modified = a.Modified
-	added.Children[0].Modified = a.Children[0].Modified
-	if treeSignature(a) == treeSignature(added) {
-		t.Error("a new file must change the signature")
+	alignTimes(a, added)
+	if shapeSignature(a) == shapeSignature(added) {
+		t.Error("a new file must change the shape signature")
+	}
+
+	renamed := dir("d", file("renamed.txt", 10))
+	alignTimes(a, renamed)
+	if shapeSignature(a) == shapeSignature(renamed) {
+		t.Error("a rename must change the shape signature")
+	}
+
+	truncated := dir("d", file("a.txt", 10))
+	alignTimes(a, truncated)
+	truncated.Truncated = true
+	if shapeSignature(a) == shapeSignature(truncated) {
+		t.Error("hitting files.Limit must change the shape signature; the UI " +
+			"says so and the browser has to be told to re-fetch")
+	}
+}
+
+// TestTreeContentSignature covers the other half: sizes and mtimes, which is
+// what the settle window rate-limits.
+func TestTreeContentSignature(t *testing.T) {
+	a := dir("d", file("a.txt", 10))
+
+	same := dir("d", file("a.txt", 10))
+	alignTimes(a, same)
+	if contentSignature(a) != contentSignature(same) {
+		t.Error("content signature is not stable for equal input")
+	}
+
+	grown := dir("d", file("a.txt", 20))
+	alignTimes(a, grown)
+	if contentSignature(a) == contentSignature(grown) {
+		t.Error("a file growing must change the content signature, or the final " +
+			"size would never reach the browser")
+	}
+}
+
+// TestDownloadsPingIsRateLimitedDuringChurn is why the signature was split.
+//
+// The old signature hashed Size and Modified for every node, so any active
+// download changed it on every poll tick and the browser re-fetched the whole
+// tree once a second. This pins three things at once: churn is rate-limited, a
+// shape change is not, and the last write is still published once things settle.
+func TestDownloadsPingIsRateLimitedDuringChurn(t *testing.T) {
+	u := newTestUI(t)
+	clock := time.Now()
+	u.now = func() time.Time { return clock }
+
+	pings := 0
+	last := ""
+	tick := func(n *files.Node) {
+		u.RenderDownloads(n)
+		if got := string(u.renderer.framed(downloadsChangedEvent)); got != last {
+			last = got
+			pings++
+		}
+		clock = clock.Add(time.Second)
+	}
+
+	// A file growing once a second for a minute, the way a download does.
+	base := dir("d", file("a.txt", 0))
+	for i := 1; i <= 60; i++ {
+		grown := dir("d", file("a.txt", int64(i)))
+		alignTimes(base, grown)
+		tick(grown)
+	}
+	// 60 seconds of churn at downloadsSettle=30s admits the first reading and
+	// then one per window. Anything near 60 means the rate limit is not working.
+	if want := int(60*time.Second/downloadsSettle) + 1; pings > want {
+		t.Errorf("%d pings over 60s of churn, want at most %d — the tree is "+
+			"being re-fetched on churn again", pings, want)
+	}
+
+	// A shape change must not wait for the window.
+	before := pings
+	added := dir("d", file("a.txt", 60), file("new.txt", 1))
+	alignTimes(base, added)
+	tick(added)
+	if pings != before+1 {
+		t.Errorf("a new file did not ping immediately (%d -> %d); shape changes "+
+			"must bypass the settle window", before, pings)
+	}
+
+	// A last write lands inside the window, so it is not admitted and pings
+	// nothing.
+	final := dir("d", file("a.txt", 999), file("new.txt", 1))
+	alignTimes(added, final)
+	before = pings
+	tick(final)
+	if pings != before {
+		t.Fatalf("a write inside the settle window pinged (%d -> %d); the rate "+
+			"limit is not holding", before, pings)
+	}
+
+	// Then writing stops. Nothing about the tree changes from here, but the
+	// stored signature still differs from it, so the next admission publishes
+	// the final size. This is the difference between this and a plain throttle,
+	// which would drop that write and leave the browser permanently stale.
+	before = pings
+	clock = clock.Add(downloadsSettle)
+	tick(final)
+	if pings != before+1 {
+		t.Errorf("the final size was never published (%d -> %d); the settle "+
+			"window must not swallow the last write", before, pings)
 	}
 }
 

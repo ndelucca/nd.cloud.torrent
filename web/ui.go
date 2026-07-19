@@ -43,8 +43,20 @@ type UI struct {
 
 	// mu serializes rendering. The server's poll and stats loops both call in,
 	// and unsynchronized they can broadcast samples in the opposite order to the
-	// one they were taken in, leaving browsers on the older one.
+	// one they were taken in, leaving browsers on the older one. It also covers
+	// the two fields below.
 	mu sync.Mutex
+
+	// The last admitted content signature of the download tree and when it was
+	// admitted. See RenderDownloads for why the tree needs state across ticks
+	// while every other region is a pure function of its argument.
+	dlContentSig uint64
+	dlContentAt  time.Time
+
+	// now is time.Now, replaced in tests. A seam rather than a Deps field: the
+	// rate limit it drives is this package's own business, and Deps is the
+	// contract with the server.
+	now func() time.Time
 }
 
 // New parses the templates and returns a UI.
@@ -61,6 +73,7 @@ func New(d Deps) (*UI, error) {
 		renderer: newRenderer(tmpl),
 		hub:      newHub(),
 		deps:     d,
+		now:      time.Now,
 	}, nil
 }
 

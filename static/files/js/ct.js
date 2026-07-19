@@ -48,73 +48,117 @@
 
   // --- download tree state --------------------------------------------------
   //
-  // The tree fragment is re-fetched and replaced wholesale whenever it changes,
-  // so per-node state cannot live in the DOM. localStorage is what makes a
-  // folder stay open across a refetch, a page reload, and an EventSource
-  // reconnect — and reconnects do happen (laptop sleep, wifi), so without this
-  // the tree would silently re-collapse and read as broken.
+  // #downloads is morphed and every <li> carries a stable server-rendered id, so
+  // a folder now stays open across a swap on its own: idiomorph matches the
+  // element by id and Alpine's state survives in place. That covers an
+  // EventSource reconnect too, which re-fires the hx-trigger and is therefore
+  // just another swap.
   //
-  // The key comes from data-id rather than being interpolated into x-data:
+  // What a morph cannot help with is a full page reload: the document is rebuilt
+  // and Alpine re-initialises from the server markup. That is the only reason
+  // this survives.
+  //
+  // One key holding the ids whose state DIFFERS from the server-rendered
+  // default, rather than one key per directory. The per-directory scheme wrote a
+  // key for every folder ever seen and pruned none of them, so it grew without
+  // bound; it also could not represent "top-level folder the user closed"
+  // without storing a value for every folder.
+  //
+  // The id comes from data-id rather than being interpolated into x-data:
   // Alpine leaves _x_marker set on an initialised element, so changing an
   // x-data expression in place never re-initialises and breaks permanently.
-  var TREE_KEY = "ct.tree.";
+  var TREE_KEY = "ct.tree.open";
 
-  function readOpen(id, dflt) {
+  function readDeviations() {
     try {
-      var v = localStorage.getItem(TREE_KEY + id);
-      return v === null ? dflt : v === "1";
+      var raw = localStorage.getItem(TREE_KEY);
+      var set = {}, ids = raw ? raw.split(",") : [];
+      for (var i = 0; i < ids.length; i++) if (ids[i]) set[ids[i]] = true;
+      return set;
     } catch (e) {
-      return dflt; // private mode, quota, or storage disabled
+      return {}; // private mode, quota, or storage disabled
     }
   }
 
-  function writeOpen(id, open) {
+  function writeDeviations(set) {
+    var ids = [];
+    for (var k in set) {
+      if (Object.prototype.hasOwnProperty.call(set, k)) ids.push(k);
+    }
     try {
-      localStorage.setItem(TREE_KEY + id, open ? "1" : "0");
+      localStorage.setItem(TREE_KEY, ids.join(","));
     } catch (e) { /* non-fatal: the tree just will not remember */ }
   }
 
-  // ask arms a two-step delete and disarms it again after a pause, so a
-  // half-pressed delete does not sit armed indefinitely. The pending timer is
-  // cancelled on re-arm: without that, two clicks less than the timeout apart
-  // let the first click's timer disarm the second click's confirmation.
-  function armConfirm(self) {
-    if (self._confirmTimer) clearTimeout(self._confirmTimer);
-    self.confirm = true;
-    self._confirmTimer = setTimeout(function () {
-      self.confirm = false;
-      self._confirmTimer = null;
-    }, 3000);
+  // Bounds the key to directories that still exist. Pruning against the
+  // *rendered* tree means a folder hidden behind files.Limit loses its stored
+  // state, which is the accepted cost of not growing forever.
+  document.body.addEventListener("htmx:afterSwap", function (e) {
+    if (!e.target || e.target.id !== "downloads") return;
+    var live = {}, els = e.target.querySelectorAll("[data-id]");
+    for (var i = 0; i < els.length; i++) live[els[i].dataset.id] = true;
+    var set = readDeviations(), kept = {};
+    for (var k in set) {
+      if (Object.prototype.hasOwnProperty.call(set, k) && live[k]) kept[k] = true;
+    }
+    writeDeviations(kept);
+  });
+
+  // confirmable is the two-step delete, shared by both tree components. It
+  // disarms after a pause so a half-pressed delete does not sit armed
+  // indefinitely, and the pending timer is cancelled on re-arm: without that,
+  // two clicks less than the timeout apart let the first click's timer disarm
+  // the second click's confirmation.
+  //
+  // The base defines no init, so a caller's init cannot be clobbered by the
+  // merge below. Explicit copy rather than Object.assign: this file is ES5.
+  function confirmable(extra) {
+    var o = {
+      confirm: false,
+      _confirmTimer: null,
+      ask: function () {
+        if (this._confirmTimer) clearTimeout(this._confirmTimer);
+        this.confirm = true;
+        var self = this;
+        this._confirmTimer = setTimeout(function () {
+          self.confirm = false;
+          self._confirmTimer = null;
+        }, 3000);
+      },
+    };
+    for (var k in extra) {
+      if (Object.prototype.hasOwnProperty.call(extra, k)) o[k] = extra[k];
+    }
+    return o;
   }
 
   window.treeNode = function () {
-    return {
+    return confirmable({
       open: false,
-      confirm: false,
-      _confirmTimer: null,
       init: function () {
         var id = this.$el.dataset.id;
         // Whether an entry is top level is server-rendered (data-top), not
         // derived from how deeply the markup happens to be nested. Structure-
         // derived state breaks silently the moment the structure changes, which
         // is the same reason node paths are computed server-side.
-        this.open = readOpen(id, this.$el.dataset.top === "1");
-        this.$watch("open", function (v) { writeOpen(id, v); });
+        var dflt = this.$el.dataset.top === "1";
+        this.open = readDeviations()[id] ? !dflt : dflt;
+        this.$watch("open", function (v) {
+          var set = readDeviations();
+          if (v === dflt) delete set[id]; else set[id] = true;
+          writeDeviations(set);
+        });
       },
-      ask: function () { armConfirm(this); },
-    };
+    });
   };
 
   window.treeLeaf = function () {
-    return {
-      // No `preview` here: a directory is never previewable — the view model
-      // clears Preview for one — so the preview button never renders inside a
-      // treeNode. Only leaves need it.
+    return confirmable({
+      // No `open` here, and no `preview` in treeNode: a directory is never
+      // previewable — the view model clears Preview for one — so the preview
+      // button never renders inside a treeNode.
       preview: false,
-      confirm: false,
-      _confirmTimer: null,
-      ask: function () { armConfirm(this); },
-    };
+    });
   };
 
   // --- upload progress ------------------------------------------------------

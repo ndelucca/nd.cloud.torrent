@@ -53,17 +53,26 @@ Client behaviour:
   `x-data` value is silently ignored forever. Pass data via `data-*` attributes
   and read it from `$el.dataset`.
 - Server-rendered `data-*` attributes, not DOM structure, carry per-node facts:
-  `data-id` for the localStorage key, `data-top` for a tree node's default
+  `data-id` for the stored-state key, `data-top` for a tree node's default
   collapse state. Deriving depth by walking `parentElement` breaks on any markup
   change and throws on a null parent.
 - `ct.js` installs the idiomorph guards and must therefore load *before* Alpine.
 - An event dispatched by Alpine bubbles *up*, so an `hx-trigger` on a sibling
   never sees it — use `from:closest <ancestor>`.
-- The tree's collapse state lives in `localStorage` under `ct.tree.<id>`; storage
-  failures are non-fatal by design (private mode, quota). It cannot live in the
-  DOM: `#downloads` is `hx-swap="innerHTML"`, so the whole tree is replaced on
-  every refetch. The per-torrent file panel needs no equivalent — its row is
-  morphed and keeps its Alpine state across ticks.
+- **The tree's collapse state lives in the DOM, and `localStorage` covers only a
+  page reload.** `#downloads` is morphed and every `<li>` carries a stable
+  server-rendered `id`, so idiomorph matches by id and Alpine's state survives a
+  swap in place — including across an `EventSource` reconnect, which re-fires the
+  `hx-trigger` and is therefore just another swap. A reload is the one case a
+  morph cannot help with: the document is rebuilt and Alpine re-initialises from
+  the server markup.
+- **The stored value is the set of ids that *differ* from the server default**,
+  under the single key `ct.tree.open`, and it is pruned against the rendered tree
+  after each swap. One key per directory grows without bound — nothing removes a
+  folder that no longer exists — and cannot express "top-level folder the user
+  closed" without writing a value for every folder. The cost of pruning against
+  the rendered tree: a folder hidden behind `files.Limit` loses its stored state.
+  Storage failures are non-fatal by design (private mode, quota).
 - **The SSE stream stays open in a background tab, deliberately.** `EventSource`
   is not throttled when hidden, and without TLS this is HTTP/1.1 with ~6
   connections per origin, so many pinned tabs can starve it — accepted rather

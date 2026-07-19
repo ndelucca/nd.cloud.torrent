@@ -13,7 +13,7 @@ models, the SSE hub, and every handler that produces HTML.
 - `events.go` — `hub` (fan-out with backpressure, `close`) and `ServeEvents`, the `/events` endpoint
 - `stats.go` — `StatsData`, `statsView` (which embeds `sysstat.Stats`), `RenderStats`
 - `torrents.go` — `torrentView`, `fileView`, `RenderTorrents`
-- `downloads.go` — `downloadsView`, `fsView`, `treeSignature`, `RenderDownloads`
+- `downloads.go` — `downloadsView`, `fsView`, `shapeSignature`/`contentSignature`, `RenderDownloads`
 - `fragments.go` — `ServePage`, `ServeDownloads`, `ServeTorrentFiles`, `WriteAPIResult`
 - `templates/` — thirteen `{{define}}`s: `page`; `stats`; `torrent-list`/`torrent-row`/`torrent-files`; `downloads`/`fsnode`; `omni`/`config`/`api-ok`/`api-error`/`fragment-message`/`placeholder`
 
@@ -158,7 +158,17 @@ Rendering and the SSE stream:
 
 - A new region is a `{{define}}`, a view model, and a `Render*` method that takes
   what it needs as an argument. Do not give `UI` a field to hold state between
-  ticks unless it is covered by `UI.mu`.
+  ticks unless it is covered by `UI.mu`. There is exactly one such field today —
+  the download tree's last admitted content signature — and it earns its place:
+  "still changing" versus "settled" is a property of the tree over time, so no
+  pure function of the tree in hand can decide it.
+- **The download tree is fingerprinted in two halves.** `shapeSignature` (names,
+  `IsDir`, `Truncated`) fires the ping immediately; `contentSignature` (sizes,
+  mtimes) is admitted at most once per `downloadsSettle`. Hashing both together
+  changes on every tick of every download, so the browser re-fetches the whole
+  tree once a second. The rate limit is not a throttle: once writing stops the
+  stored signature still differs, so the last write is always published within
+  one window rather than dropped.
 - Anything expensive or bulky whose visibility the server cannot know belongs
   behind an `hx-get` fragment, not in the stream — per-torrent file tables and
   the download tree are the two existing cases.

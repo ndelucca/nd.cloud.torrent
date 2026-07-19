@@ -6,6 +6,7 @@ import (
 	"path"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/files"
 )
@@ -139,17 +140,60 @@ func ext(name string) string {
 	return string(lower)
 }
 
-// treeSignature is a cheap fingerprint of the tree's shape and contents. It is
-// compared instead of rendering the tree every tick, because the fragment is
-// only ever rendered on demand.
-func treeSignature(n *files.Node) uint64 {
+// The tree is fingerprinted in two parts because the two halves change on
+// completely different timescales, and one signature over both made the ping
+// fire every tick during any download — re-fetching the whole tree once a
+// second against a regions.go comment promising the opposite.
+//
+// No pure function of the tree can fix that. Bucketing mtime to the minute
+// loses a write that lands late in a bucket already reported; bucketing size
+// loses a file that grows by less than a bucket and stops. The distinction that
+// matters — "still changing" versus "settled" — is a property of the tree over
+// *time*, not of the tree in hand, so it needs state. That lives in UI, under
+// u.mu, which RenderDownloads already holds.
+
+// downloadsSettle is how long in-progress size and mtime churn may accumulate
+// before the tree is refreshed for it. A shape change bypasses it entirely.
+//
+// The value is a comfort setting, not a correctness one: the guarantee below
+// holds for any positive duration.
+const downloadsSettle = 30 * time.Second
+
+// shapeSignature fingerprints what the tree *is*: names, directory-ness, and
+// whether the walk was truncated. An entry appearing, disappearing or being
+// renamed changes it, and those must reach the browser at once.
+//
+// Size and Modified are deliberately excluded — they change every second for
+// every file a torrent is writing.
+func shapeSignature(n *files.Node) uint64 {
 	h := fnv.New64a()
 	var walk func(*files.Node)
 	walk = func(x *files.Node) {
 		if x == nil {
 			return
 		}
-		fmt.Fprintf(h, "%s|%d|%d|%t;", x.Name, x.Size, x.Modified.UnixNano(), x.Truncated)
+		fmt.Fprintf(h, "%s|%t|%t;", x.Name, x.IsDir, x.Truncated)
+		for _, c := range x.Children {
+			walk(c)
+		}
+	}
+	walk(n)
+	return h.Sum64()
+}
+
+// contentSignature fingerprints what the tree *contains*: sizes and mtimes.
+//
+// A directory's Size is the recursive sum of its children (see files.list), so
+// a single leaf write moves every ancestor — which is why this cannot be
+// compared per tick.
+func contentSignature(n *files.Node) uint64 {
+	h := fnv.New64a()
+	var walk func(*files.Node)
+	walk = func(x *files.Node) {
+		if x == nil {
+			return
+		}
+		fmt.Fprintf(h, "%d|%d;", x.Size, x.Modified.UnixNano())
 		for _, c := range x.Children {
 			walk(c)
 		}
@@ -160,14 +204,28 @@ func treeSignature(n *files.Node) uint64 {
 
 // RenderDownloads emits the ping when the tree changed. It renders no HTML: the
 // browser pulls the fragment.
+//
+// The content half is admitted at most once per downloadsSettle. This is not a
+// plain throttle, and the difference is what closes the hole: once the tree
+// settles, the stored signature keeps differing from the current one until the
+// next admission, so the final size is always published within downloadsSettle
+// of the last write. An idle tree that suddenly changes fires at once, because
+// the last admission is long past.
 func (u *UI) RenderDownloads(root *files.Node) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	sig := treeSignature(root)
+	now := u.now()
+	if c := contentSignature(root); c != u.dlContentSig &&
+		now.Sub(u.dlContentAt) >= downloadsSettle {
+		u.dlContentSig = c
+		u.dlContentAt = now
+	}
 	// Wrapped in a comment so the payload is still element-shaped; nothing
 	// swaps this event, it only fires an hx-trigger.
-	body := []byte("<!--" + strconv.FormatUint(sig, 36) + "-->")
+	body := []byte("<!--" +
+		strconv.FormatUint(shapeSignature(root), 36) + "." +
+		strconv.FormatUint(u.dlContentSig, 36) + "-->")
 	if frame := u.renderer.store(downloadsChangedEvent, body); frame != nil {
 		u.hub.broadcast(frame)
 	}

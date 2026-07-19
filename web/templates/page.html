@@ -47,11 +47,21 @@
     <section class="panel">
       <h2>Downloads</h2>
       {{/* Pulled rather than streamed. The server only pings when the tree
-           actually changed; see downloadsChangedEvent. */}}
+           actually changed; see downloadsChangedEvent.
+
+           morph, not innerHTML: innerHTML destroys and rebuilds the subtree on
+           every fetch, which closes every open folder, closes any open preview
+           and tears a playing <video> out of the DOM. It also means idiomorph
+           never runs here, so the data-preserve below and the guards in ct.js
+           are inert — they only fire under a morph.
+
+           No data-preserve on this element. That rule is for a panel nested
+           inside another morph target; #downloads is a top-level section, so
+           opting out would make it refuse its own swaps. */}}
       <div id="downloads"
            hx-get="/fragments/downloads"
            hx-trigger="load, sse:downloads-changed delay:300ms"
-           hx-swap="innerHTML">
+           hx-swap="morph:innerHTML">
         {{template "placeholder" "Loading…"}}
       </div>
     </section>
