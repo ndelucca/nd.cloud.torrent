@@ -52,6 +52,20 @@ func TestTorrentVerbsRoundTrip(t *testing.T) {
 	s := newTestServer(t)
 	h := s.handler()
 
+	// AutoStart off *before* adding, so the torrent's state is driven only by
+	// the verbs below. With it on, the metadata watcher starts the torrent
+	// asynchronously — GotInfo is already closed for a .torrent file — and can
+	// land between a check and the next request, answering 409 to a start this
+	// test just established was needed.
+	//
+	// It is also the one setting that applies without a restart, which is why
+	// this works at all.
+	cfg := s.engine.Config()
+	cfg.AutoStart = false
+	if err := s.engine.Configure(cfg); err != nil {
+		t.Fatalf("disabling AutoStart: %v", err)
+	}
+
 	if err := s.engine.NewTorrentFile(testTorrentFile(t, "payload.bin")); err != nil {
 		t.Fatalf("NewTorrentFile: %v", err)
 	}
@@ -80,11 +94,8 @@ func TestTorrentVerbsRoundTrip(t *testing.T) {
 		return tor.Started
 	}
 
-	// AutoStart is on in the fixture, so it may already be running; normalise.
 	if started(t) {
-		if w := post(t, "stop"); w.Code != http.StatusOK {
-			t.Fatalf("setup stop: status %d (%q)", w.Code, w.Body.String())
-		}
+		t.Fatal("setup: the torrent is running with AutoStart off")
 	}
 
 	if w := post(t, "start"); w.Code != http.StatusOK {

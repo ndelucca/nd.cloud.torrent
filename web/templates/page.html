@@ -8,11 +8,19 @@
   <title>{{.Title}}</title>
   <link rel="icon" href="/cloud-favicon.png">
   <link rel="stylesheet" href="/css/ct.css">
-  <script src="/js/vendor/htmx.min.js" defer></script>
-  <script src="/js/vendor/sse.js" defer></script>
-  <script src="/js/vendor/idiomorph-ext.min.js" defer></script>
+  {{/* integrity on the vendored bundles: the hashes are recorded with their
+       provenance in static/VENDOR and CI recomputes them, so a bundle that
+       changed without the manifest changing fails the build.
+
+       A stale integrity value is not a server error — the browser refuses to
+       run the script and the UI is simply dead — which is why the gate exists
+       rather than trusting the two to be edited together. ct.js is ours and
+       changes with the app, so it carries none. */}}
+  <script src="/js/vendor/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" defer></script>
+  <script src="/js/vendor/sse.js" integrity="sha384-QA9wXqexhwzXTuTvuF5QP82pddm3R2hy81UzXi7ioNTqNF2b75hlkkSGjafohhL3" defer></script>
+  <script src="/js/vendor/idiomorph-ext.min.js" integrity="sha384-SsScJKzATF/w6suEEdLbgYGsYFLzeKfOA6PY+/C5ZPxOSuA+ARquqtz/BZz9JWU8" defer></script>
   <script src="/js/ct.js" defer></script>
-  <script src="/js/vendor/alpine.min.js" defer></script>
+  <script src="/js/vendor/alpine.min.js" integrity="sha384-ZzplbkDNw4d2hjWc+D9EcDIgXEUybwPr2Slhix4BTtvQO3JbK60Av543BvQT9gTu" defer></script>
 </head>
 <body hx-ext="sse,morph" sse-connect="/events">
   <header class="topbar">

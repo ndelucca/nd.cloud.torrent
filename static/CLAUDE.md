@@ -16,6 +16,23 @@ Compiles the web UI's client-side assets into the binary and exposes them as an
 
 ## Local Contracts
 
+- **`static/VENDOR` records what the four vendored bundles are**: package,
+  version, source URL and sha384, each established by fetching the upstream
+  artefact and comparing hashes rather than by reading a version string. Two of
+  the four carry no version marker at all, so that is the only way to know. It
+  lives outside `files/` because everything under there is embedded and served.
+- **`sse.js` is patched.** It is `htmx-ext-sse@2.2.3` with one line changed:
+  `api.swap` is called with `{ contextElement: elt }`, which upstream omits.
+  htmx uses that to resolve extensions *for that element*, and the two SSE
+  regions are `hx-swap="morph:innerHTML"`, so the morph extension has to be
+  found for them. An upgrade that drops in the upstream file cleanly removes it,
+  with no console error and no failing test. `static/VENDOR` has the detail.
+- **Every vendored `<script>` carries `integrity=`**, and CI recomputes the
+  hashes from the files, matching them against both the manifest and the page.
+  A stale integrity value is invisible server-side — the browser refuses to run
+  the script and the UI is simply dead — so it is a gate, not a convention.
+  `ct.js` is ours and carries none.
+
 Embedding:
 
 - Package name is `ctstatic`, not `static`; the server imports it as `github.com/ndelucca/nd.cloud.torrent/static`

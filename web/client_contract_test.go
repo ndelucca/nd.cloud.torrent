@@ -346,3 +346,53 @@ func TestAPIErrorCarriesTheSharedClass(t *testing.T) {
 		}
 	}
 }
+
+// TestVendoredScriptsCarryIntegrity pins that every third-party bundle the page
+// loads is pinned by hash.
+//
+// The vendored JS has no package.json and no build step, so integrity= plus
+// static/VENDOR is the whole of its supply-chain story. Adding a bundle without
+// a hash would otherwise be silent — CI's gate compares the hashes that ARE
+// there against the files, so a script tag with no integrity at all slips past
+// it. This is the half that catches the omission.
+//
+// ct.js is excluded deliberately: it is ours, it changes with the app, and a
+// hash there would just be one more thing to update on every edit.
+func TestVendoredScriptsCarryIntegrity(t *testing.T) {
+	u := newTestUI(t)
+	body, err := u.renderer.execute("page", pageView{
+		Title:  "T",
+		Config: engine.Config{DownloadDirectory: "/d", IncomingPort: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(body)
+
+	var vendored int
+	for i := 0; ; {
+		j := strings.Index(out[i:], "<script")
+		if j < 0 {
+			break
+		}
+		j += i
+		end := j + strings.Index(out[j:], ">")
+		tag := out[j:end]
+		i = end
+
+		if !strings.Contains(tag, "/js/vendor/") {
+			continue
+		}
+		vendored++
+		if !strings.Contains(tag, `integrity="sha384-`) {
+			t.Errorf("vendored script is not pinned by hash: <%s>", tag)
+		}
+	}
+
+	// The count guards the scan itself: if <script> parsing broke, this test
+	// would pass having checked nothing.
+	if want := 4; vendored != want {
+		t.Fatalf("found %d vendored scripts, want %d — the scan has stopped "+
+			"matching:\n%s", vendored, want, out)
+	}
+}

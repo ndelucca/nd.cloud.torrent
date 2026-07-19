@@ -154,6 +154,38 @@ jobs:
             echo "gopsutil must be imported only by sysstat; also imported by:"
             printf '%s\n' "$other"; exit 1
           fi
+      # The vendored JS has no package.json and no build step, so static/VENDOR
+      # is the only record of what those bundles are. This keeps it honest:
+      # every hash is recomputed from the file on disk and matched against both
+      # the manifest and the integrity= attribute the page ships.
+      #
+      # A wrong integrity value is invisible server-side — the browser refuses
+      # to run the script and the UI is dead with no error anywhere — which is
+      # why this is a gate and not a convention.
+      - name: vendored JS matches its manifest
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in static/files/js/vendor/*.js; do
+            name=$(basename "$f")
+            got="sha384-$(openssl dgst -sha384 -binary "$f" | openssl base64 -A)"
+            if ! grep -qF "$got" static/VENDOR; then
+              echo "$name: hash $got is not in static/VENDOR"; fail=1
+            fi
+            if ! grep -qF "$got" web/templates/page.html; then
+              echo "$name: hash $got is not the integrity= in page.html"; fail=1
+            fi
+          done
+          # And the other direction: an integrity= naming a file that is gone.
+          for h in $(grep -o 'integrity="sha384-[^"]*"' web/templates/page.html | sed 's/integrity="//;s/"//'); do
+            found=0
+            for f in static/files/js/vendor/*.js; do
+              [ "sha384-$(openssl dgst -sha384 -binary "$f" | openssl base64 -A)" = "$h" ] && found=1 && break
+            done
+            [ "$found" = 0 ] && echo "page.html pins $h, which matches no vendored file" && fail=1
+          done
+          exit $fail
+
       # configfile is named for the file, not the type: the config itself lives
       # in the engine. Anything else it imports is a second copy waiting to be.
       - name: configfile imports only engine

@@ -1,0 +1,78 @@
+# Vendored JavaScript.
+#
+# There is no package.json and no build step: these four files are committed as
+# they are served. This file is what makes that reviewable — without it an
+# upgrade is an opaque binary diff, and a tampered bundle is indistinguishable
+# from a legitimate one.
+#
+# Every version below was established by fetching the upstream artefact and
+# comparing hashes, not by reading a version string out of the bundle. Two of
+# the four carry no version marker at all.
+#
+# The sha384 values are also the SRI hashes in web/templates/page.html, and CI
+# recomputes them from the files. Changing a bundle without updating both fails
+# the build.
+#
+# To upgrade one:
+#   1. curl -sSL <source> -o <file>
+#   2. openssl dgst -sha384 -binary <file> | openssl base64 -A
+#   3. update the hash here and the integrity= in web/templates/page.html
+#   4. go build ./...   (the assets are go:embed'd; a rebuild is required)
+#   5. check it in a browser — see CONTRIBUTING.md. A bad integrity value is not
+#      a build error: the browser silently refuses to run the script.
+#
+# The files it describes live in static/files/js/vendor/. This file is here,
+# outside that tree, because everything under files/ is go:embed'd and served —
+# a manifest in there would ship to every user at /js/vendor/VERSIONS.
+#
+# format: <file> <package>@<version> <source> <sha384>
+
+htmx.min.js
+    htmx.org@2.0.10
+    https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js
+    sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V
+    verified: byte-identical to upstream
+
+alpine.min.js
+    alpinejs@3.15.0
+    https://unpkg.com/alpinejs@3.15.0/dist/cdn.min.js
+    sha384-ZzplbkDNw4d2hjWc+D9EcDIgXEUybwPr2Slhix4BTtvQO3JbK60Av543BvQT9gTu
+    verified: byte-identical to upstream
+
+idiomorph-ext.min.js
+    idiomorph@0.7.4
+    https://unpkg.com/idiomorph@0.7.4/dist/idiomorph-ext.min.js
+    sha384-SsScJKzATF/w6suEEdLbgYGsYFLzeKfOA6PY+/C5ZPxOSuA+ARquqtz/BZz9JWU8
+    verified: byte-identical to upstream. The bundle carries no version string;
+    0.7.4 was established by matching the hash against upstream releases.
+
+sse.js
+    htmx-ext-sse@2.2.3  — PATCHED, see below
+    https://unpkg.com/htmx-ext-sse@2.2.3/sse.js
+    sha384-QA9wXqexhwzXTuTvuF5QP82pddm3R2hy81UzXi7ioNTqNF2b75hlkkSGjafohhL3
+    verified: identical to upstream 2.2.3 except for one line.
+
+    THE PATCH. In swap(), around line 283:
+
+        api.swap(target, content, swapSpec, { contextElement: elt })
+                                            ^^^^^^^^^^^^^^^^^^^^^^^
+        upstream passes only three arguments.
+
+    htmx reads that option to decide *which element's* extension set applies to
+    the swap: in its internal swap it does
+
+        const r = g.contextElement ? q(g.contextElement, false) : te()
+
+    — resolve extensions for the given element, or fall back to the default set.
+    This app's two SSE regions are `sse-swap="…" hx-swap="morph:innerHTML"`
+    (web/templates/page.html), so the morph extension has to be resolved for
+    those elements. Do not drop this line when upgrading.
+
+    It arrived with the original vendoring commit (b8850e3) and was recorded
+    nowhere until this file existed, which is the reason this file exists. An
+    upgrade that drops in the upstream file cleanly would remove it, and the
+    symptom would be the torrent list falling back to a plain innerHTML swap —
+    no console error, no failing test, just state lost on every tick.
+
+    (Not confirmed in a browser: I established the mechanism from htmx's source,
+    not by removing the patch and watching morphing break.)

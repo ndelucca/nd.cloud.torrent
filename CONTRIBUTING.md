@@ -32,6 +32,11 @@ go build -o nd-cloud-torrent .
 ./nd-cloud-torrent --port 3000
 ```
 
+**Upgrading a vendored JS bundle** means updating `static/VENDOR` and the
+matching `integrity=` in `web/templates/page.html` together; CI fails if they
+drift. Read `static/VENDOR` first — `sse.js` carries a local patch that an
+upstream drop-in would silently remove.
+
 **Editing anything under `static/files/` or `web/templates/` requires a
 rebuild before it is visible.** Both are compiled into the binary with
 `go:embed`; there is no file-watching dev server and no build step. This is the
