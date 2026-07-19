@@ -101,12 +101,7 @@ func (e *Engine) Configure(c Config) error {
 		return err
 	}
 
-	replaced, rewatch := e.installClient(client, c)
-
-	// Outside the lock: watchInfo takes mu itself when its metadata lands.
-	for _, tt := range rewatch {
-		e.watchInfo(tt)
-	}
+	replaced := e.installClient(client, c)
 
 	// Only non-nil on the port-changed path; the same-port path already closed
 	// and waited on the previous client. Closing last means a failed build
@@ -193,8 +188,8 @@ func buildClient(ctx context.Context, tc *torrent.ClientConfig, evicted *torrent
 
 // installClient publishes the new client and config, and re-adds every cached
 // torrent to it. It returns the client it displaced (nil on the same-port path,
-// which already closed it) and the torrents needing a fresh metadata watcher.
-func (e *Engine) installClient(client *torrent.Client, c Config) (*torrent.Client, []*torrent.Torrent) {
+// which already closed it).
+func (e *Engine) installClient(client *torrent.Client, c Config) *torrent.Client {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -204,7 +199,6 @@ func (e *Engine) installClient(client *torrent.Client, c Config) (*torrent.Clien
 
 	// Every cached handle points into the old client. Re-add the torrents we
 	// know about so a settings change does not silently stop all downloads.
-	var rewatch []*torrent.Torrent
 	for _, t := range e.ts {
 		t.t = nil
 		if t.spec == nil {
@@ -212,22 +206,27 @@ func (e *Engine) installClient(client *torrent.Client, c Config) (*torrent.Clien
 		}
 		tt, _, err := client.AddTorrentSpec(t.spec)
 		if err != nil {
+			// Clearing Started matters: leaving it set showed the torrent as
+			// running against a client that never accepted it, with t.t nil, so
+			// nothing would ever move it again.
 			log.Printf("engine: failed to re-add %s: %s", t.InfoHash, err)
+			t.Started = false
 			continue
 		}
 		t.t = tt
-		switch {
-		case t.Started && tt.Info() != nil:
-			tt.DownloadAll()
-		case tt.Info() == nil && c.AutoStart:
-			// A magnet whose metadata had not arrived yet. Its original watcher
-			// is parked on the OLD handle and will correctly decline to act once
-			// it fires, so without a fresh watcher the torrent would never
-			// auto-start — permanently, for the lifetime of the process.
-			rewatch = append(rewatch, tt)
+		if tt.Info() != nil {
+			if t.Started {
+				tt.DownloadAll()
+			}
+			continue
 		}
+		// Metadata has not arrived. The original watcher is parked on the OLD
+		// handle and will correctly decline to act once it fires, so without a
+		// fresh one this torrent would never start — permanently, for the
+		// lifetime of the process.
+		e.watchInfoLocked(t.InfoHash, tt)
 	}
-	return replaced, rewatch
+	return replaced
 }
 
 // closeClient shuts a displaced client down, logging rather than returning its
@@ -256,14 +255,21 @@ func (e *Engine) Close() error {
 	e.configureMu.Lock()
 	defer e.configureMu.Unlock()
 
-	// Safe under configureMu: no Configure can be past its ErrClosed check, so
-	// nothing will Add to the group after this returns.
-	e.wg.Wait()
-
 	e.mu.Lock()
 	client := e.client
 	e.client = nil
+	// Drop the cache. Without this, GetTorrents on a closed engine kept
+	// returning torrents that no longer exist anywhere.
+	clear(e.ts)
 	e.mu.Unlock()
+
+	// Ordering, not luck: every wg.Add happens under mu after an e.ctx.Err()
+	// check, and cancel ran before we took mu above. So a watcher registered
+	// before this point is already counted, and any registration racing us takes
+	// mu after we release it and sees the cancelled context. Waiting without
+	// that guarantee is the documented "Add called concurrently with Wait"
+	// misuse, which panics when the counter happens to be at zero.
+	e.wg.Wait()
 
 	if client == nil {
 		return nil
@@ -296,30 +302,34 @@ func (e *Engine) NewTorrentFile(data []byte) error {
 
 func (e *Engine) addSpec(spec *torrent.TorrentSpec) error {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.client == nil {
-		e.mu.Unlock()
 		return ErrNotConfigured
 	}
 	tt, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
-		e.mu.Unlock()
 		return fmt.Errorf("Torrent error: %w", err)
 	}
 	t := e.upsertLocked(tt)
 	t.spec = spec
-	autoStart := e.config.AutoStart
-	e.mu.Unlock()
-
-	if autoStart {
-		e.watchInfo(tt)
-	}
+	// Unconditional, not gated on AutoStart: the watcher is also what resumes a
+	// torrent the user starts before its metadata lands. When the info is
+	// already present GotInfo is closed, so the watcher settles immediately.
+	e.watchInfoLocked(t.InfoHash, tt)
 	return nil
 }
 
-// watchInfo starts the torrent once its metadata resolves. The goroutine exits
-// when the engine is closed, so an unresolvable magnet no longer leaks it.
-func (e *Engine) watchInfo(tt *torrent.Torrent) {
-	ih := tt.InfoHash().HexString()
+// watchInfoLocked arranges for infoArrived to run once the torrent's metadata
+// resolves. The goroutine exits when the engine is closed, so an unresolvable
+// magnet does not leak it. Callers must hold e.mu.
+//
+// Registering under the lock is what makes wg.Add safe against Close's wg.Wait:
+// Close takes mu and cancels the context before waiting, so a watcher is either
+// already counted or never registered.
+func (e *Engine) watchInfoLocked(ih string, tt *torrent.Torrent) {
+	if e.ctx.Err() != nil {
+		return
+	}
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -328,18 +338,36 @@ func (e *Engine) watchInfo(tt *torrent.Torrent) {
 			return
 		case <-tt.GotInfo():
 		}
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		t, ok := e.ts[ih]
-		// t.t != tt means the torrent was stopped, deleted or re-added under a
-		// new client while we waited — do not resurrect it.
-		if !ok || t.t != tt || t.Started {
-			return
-		}
-		if err := e.startLocked(t); err != nil {
-			log.Printf("engine: auto-start %s: %s", ih, err)
-		}
+		e.infoArrived(ih, tt)
 	}()
+}
+
+// infoArrived is the single place the post-metadata decision is made. It is a
+// method rather than a closure so a test can drive it without racing a real
+// metadata fetch.
+func (e *Engine) infoArrived(ih string, tt *torrent.Torrent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t, ok := e.ts[ih]
+	// t.t != tt means the torrent was stopped, deleted or re-added under a new
+	// client while we waited — do not resurrect it.
+	if !ok || t.t != tt {
+		return
+	}
+	if t.Started {
+		// Started before the metadata arrived, so startLocked could not call
+		// DownloadAll and left the torrent flagged as running while downloading
+		// nothing — for the lifetime of the process. This is the only place that
+		// can put it right.
+		tt.DownloadAll()
+		return
+	}
+	if !e.config.AutoStart {
+		return
+	}
+	if err := e.startLocked(t); err != nil {
+		log.Printf("engine: auto-start %s: %s", ih, err)
+	}
 }
 
 // GetTorrents refreshes the cache from the client and returns a deep copy. The

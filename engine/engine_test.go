@@ -1,10 +1,18 @@
 package engine
 
 import (
+	"bytes"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/metainfo"
 )
 
 func TestStr2IH(t *testing.T) {
@@ -441,4 +449,190 @@ func TestCloseDuringConfigure(t *testing.T) {
 	if live {
 		t.Error("a client survived Close; it holds a listening socket nothing will release")
 	}
+}
+
+// testMagnet is a well-formed magnet whose metadata will never arrive: no
+// tracker, no peers. That is exactly the state the watcher exists for.
+const testMagnet = "magnet:?xt=urn:btih:aabbccddeeff00112233445566778899aabbccdd"
+
+// TestCloseClearsTheCache covers an engine that reported torrents it no longer
+// had. Close released the client but left ts populated, so GetTorrents kept
+// handing out torrents that existed nowhere.
+func TestCloseClearsTheCache(t *testing.T) {
+	e := New()
+	if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := e.NewMagnet(testMagnet); err != nil {
+		t.Fatalf("NewMagnet: %v", err)
+	}
+	if len(e.GetTorrents()) != 1 {
+		t.Fatalf("setup: expected the magnet to be cached")
+	}
+
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := e.GetTorrents(); len(got) != 0 {
+		t.Fatalf("GetTorrents after Close = %d torrents, want 0", len(got))
+	}
+}
+
+// TestAddDuringClose covers a WaitGroup misuse panic.
+//
+// addSpec registered a metadata watcher — and so called wg.Add — without any
+// lock Close held, while Close did wg.Wait under configureMu. The safety
+// argument in the code only covered Configure, so an add concurrent with
+// shutdown could Add while Wait was running: the documented misuse, which
+// panics outright when the counter is at zero.
+//
+// The race is timing-dependent, so this loops. It asserts no panic and no
+// deadlock; which side wins is not a requirement.
+func TestAddDuringClose(t *testing.T) {
+	for i := 0; i < 25; i++ {
+		e := New()
+		// freeTCPPort only proves the TCP port is free, and anacrolix binds UDP
+		// too. A collision here is the previous iteration's client still letting
+		// go, which is not what this test is about.
+		if err := e.Configure(Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t)}); err != nil {
+			e.Close()
+			continue
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Either outcome is fine: the add lands, or it is refused because
+			// the engine is already closing.
+			_ = e.NewMagnet(testMagnet)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = e.Close()
+		}()
+		wg.Wait()
+	}
+}
+
+// testTorrentFile builds a real .torrent for a small local payload, so tests
+// can work with a torrent whose metadata is already present.
+func testTorrentFile(t *testing.T) []byte {
+	t.Helper()
+	payload := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(payload, bytes.Repeat([]byte("x"), 1<<16), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info := metainfo.Info{PieceLength: 1 << 14}
+	if err := info.BuildFromFilePath(payload); err != nil {
+		t.Fatal(err)
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := (&metainfo.MetaInfo{InfoBytes: infoBytes}).Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// onlyTorrent returns the single cached torrent, failing if there is not
+// exactly one. It reaches into ts because the test needs the live entry, not
+// the clone GetTorrents hands out.
+func onlyTorrent(t *testing.T, e *Engine) *Torrent {
+	t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.ts) != 1 {
+		t.Fatalf("expected exactly one cached torrent, got %d", len(e.ts))
+	}
+	for _, tor := range e.ts {
+		return tor
+	}
+	return nil
+}
+
+// TestStartedWithoutMetadataDownloadsOnArrival covers a torrent that showed as
+// running forever while downloading nothing.
+//
+// startLocked sets Started but can only call DownloadAll once metadata exists.
+// The watcher was registered only when AutoStart was on, and its body bailed
+// out whenever Started was already set — so a user who added a magnet and
+// pressed Start before the metadata arrived hit a permanent dead end, with no
+// settings change involved. infoArrived is now the single place that decision
+// is made.
+//
+// Scope, stated plainly because it is easy to over-read: this pins the decision
+// table infoArrived owns, which is observable in Started. The started-without-
+// metadata branch itself is NOT covered. Its only effect is the DownloadAll
+// call, and anacrolix does not expose one — piece priorities read back unchanged
+// either way, so every assertion available here passes with the branch removed.
+// A test that cannot fail is worse than an admitted gap. That branch ships
+// verified by inspection.
+func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
+	// newLoaded returns an engine holding one torrent whose metadata is present.
+	newLoaded := func(t *testing.T, autoStart bool) (*Engine, *Torrent) {
+		t.Helper()
+		e := New()
+		t.Cleanup(func() { e.Close() })
+		cfg := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t), AutoStart: autoStart}
+		if err := e.Configure(cfg); err != nil {
+			t.Fatalf("configure: %v", err)
+		}
+		if err := e.NewTorrentFile(testTorrentFile(t)); err != nil {
+			t.Fatalf("NewTorrentFile: %v", err)
+		}
+		return e, onlyTorrent(t, e)
+	}
+
+	t.Run("autostart starts it", func(t *testing.T) {
+		e, tor := newLoaded(t, true)
+		e.mu.Lock()
+		tor.Started = false
+		handle := tor.t
+		e.mu.Unlock()
+
+		e.infoArrived(tor.InfoHash, handle)
+
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if !tor.Started {
+			t.Fatal("AutoStart is on; the watcher must start the torrent")
+		}
+	})
+
+	t.Run("autostart off leaves it stopped", func(t *testing.T) {
+		e, tor := newLoaded(t, false)
+		e.mu.Lock()
+		tor.Started = false
+		handle := tor.t
+		e.mu.Unlock()
+
+		e.infoArrived(tor.InfoHash, handle)
+
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if tor.Started {
+			t.Fatal("AutoStart is off; the watcher must not start the torrent")
+		}
+	})
+
+	t.Run("stale handle is ignored", func(t *testing.T) {
+		e, tor := newLoaded(t, true)
+		e.mu.Lock()
+		tor.Started = false
+		e.mu.Unlock()
+
+		// A handle the torrent no longer points at: it was stopped, deleted or
+		// re-added under a new client while the watcher waited.
+		e.infoArrived(tor.InfoHash, &torrent.Torrent{})
+
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if tor.Started {
+			t.Fatal("a torrent whose handle moved must not be resurrected")
+		}
+	})
 }
