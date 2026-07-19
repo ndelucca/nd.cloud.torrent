@@ -95,13 +95,14 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 
 ## Repo-Wide Contracts
 
-- The server owns the HTTP surface and process lifecycle; the engine owns torrent state. Below the server sit four leaf packages with one job each: `web` renders, `files` walks and serves the download directory, `fetch` pulls a remote `.torrent`, `sysstat` reads the host. None of them imports `server` or each other, except `web` → {`files`, `sysstat`} for the types it renders.
+- The server owns the HTTP surface and process lifecycle; the engine owns torrent state. Below the server sit five leaf packages with one job each: `web` renders, `files` walks and serves the download directory, `fetch` pulls a remote `.torrent`, `sysstat` reads the host, `configfile` loads and atomically persists the engine config. None of them imports `server` or each other, except `web` → {`files`, `sysstat`} for the types it renders.
 - Frontend assets and HTML templates are compiled into the binary via `go:embed`; any change to either requires a rebuild to take effect
 - Dependency direction is one-way and enforced by the compiler:
 
   ```
   main   → { server, internal/cli }
-  server → { engine, web, files, fetch, sysstat, static, internal/auth, internal/reqlog }
+  server → { engine, web, files, fetch, sysstat, static, configfile, internal/auth, internal/reqlog }
+  configfile → engine
   web    → { engine, files, sysstat }
   files  → stdlib only
   fetch  → stdlib only
@@ -131,6 +132,7 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
 
 ## Child DOX Index
 
+- `configfile/CLAUDE.md` — loading and atomically persisting the engine config as JSON
 - `engine/CLAUDE.md` — torrent engine: client lifecycle, torrent/file state, start/stop/delete semantics
 - `internal/CLAUDE.md` — stdlib-only replacements for third-party helpers: `auth` (session cookies), `cli` (flags), `reqlog` (request logging)
 - `server/CLAUDE.md` — process lifecycle, middleware chain, routing, `/api/*`, `/api/state`, system stats

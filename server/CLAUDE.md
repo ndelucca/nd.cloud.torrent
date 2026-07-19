@@ -2,14 +2,14 @@
 
 ## Purpose
 
-The process shell and the HTTP surface: flags, config, the middleware chain, the
+The process shell and the HTTP surface: flags, the middleware chain, the
 route dispatcher, the `/api/*` command endpoints, `/api/state`, host stats, and
 the two background loops. Rendering, file serving and the remote fetch are
 delegated to `web`, `files`, `fetch` and `sysstat`.
 
 ## Ownership
 
-- `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `applyConfig`/`saveConfig`/`reconfigure`, `renderStats`, the `routes()` table and the middleware chain (`requireSameOrigin`, `securityHeaders`, `gzip`)
+- `server.go` — `Options` (CLI flags), the `Server` runtime, `New`, `Run`, `applyConfig`/`reconfigure`, `renderStats`, the `routes()` table and the middleware chain (`requireSameOrigin`, `securityHeaders`, `gzip`)
 - `state.go` — `sampledStats` (the host sample), the `stateDocument` wire types, and `GET /api/state`
 - `server_api.go` — the `/api/*` handlers (`handleAdd`, `handleTorrentFile`, `handleConfigure`, `handleStart`/`handleStop`/`handleDelete`), `apiHandler`/`apiRoute`/`finishAPI`, `apiError`/`classify`/`sentence`, `checkSameOrigin`
 - `server_api_forms.go` — form-encoded and multipart request handling for the htmx UI
@@ -67,10 +67,11 @@ Lifecycle:
 - Shutdown order is load-bearing: cancel the context → `ui.Close()` → `srv.Shutdown` → join the loops → (`main`) `engine.Close`. **`ui.Close` must come before `srv.Shutdown`.** `Shutdown` waits for connections to become idle and does not cancel request contexts, so an `/events` handler parked in its select is never released by it — with one browser connected that burned the entire shutdown budget and exited non-zero. `TestRunShutsDownPromptlyWithSSEClients` pins it end to end, `web.TestHubCloseReleasesSubscribers` pins the mechanism.
 - `Run` returns nil for any *completed* shutdown, including one that overran its drain budget: a requested stop is not a failed run, and `main` calls `log.Fatal` on a non-nil error. Only a genuine serving failure (bind, TLS) returns one. If the drain does overrun, `srv.Close` stops waiting.
 - `Run` is one-shot — the hub latches closed, so a second call would serve no events. `Close` releases the engine.
-- `reconfigure` is `applyConfig` then `saveConfig`. `applyConfig` absolutizes the download directory and hands the config to the engine; `saveConfig` persists it. The engine restart happens first, so a failed restart persists nothing.
+- `reconfigure` is `applyConfig` then `configfile.Save`. `applyConfig` absolutizes the download directory and hands the config to the engine. The engine restart happens first, so a failed restart persists nothing.
 - **Startup applies but never saves.** `New` calls `applyConfig` alone. Rewriting the config on every boot was a chance to corrupt it that bought nothing, and it made `New`'s own doc comment false. `TestNewDoesNotWriteConfig` and `TestNewWithNoConfigCreatesNone` pin it.
-- **`saveConfig` writes a sibling temp file and renames.** Write-in-place could be interrupted by a crash, a full disk or a container stop, leaving a truncated file that `loadConfig` then rejects as "Malformed configuration" — the server refused to start until someone deleted it by hand. The temp file is created in the target's directory because rename is only atomic within a filesystem, and it is `Sync`ed before the rename so the metadata cannot land ahead of the bytes.
-- **Port validity is `engine.Config.Validate`'s call and nowhere else.** `loadConfig` used to silently clamp an out-of-range port to the default while `Validate` rejected the identical value. Since `loadConfig` unmarshals over a defaults struct, an absent port already keeps the default — the clamp could only fire on a value someone explicitly wrote. Two policies for one rule is how they end up disagreeing.
+- **Reading and writing the config file belongs to `configfile`**, including the atomic-write guarantee; see `configfile/CLAUDE.md`. This package decides *when* to load and save, not how.
+- **`configMu` stays here, not in `configfile` or `engine`.** It serializes a four-step transaction — read the engine's config, merge an HTML form over it, apply, persist — and a lock belongs with the widest thing it serializes. `configfile` never reads the engine, so it could not cover the read that caused the lost update; `engine.configureMu` already covers the apply, and the read-merge sits outside it because "overlay a form onto the current config" is an HTTP-layer transaction, not an engine one.
+- **Port validity is `engine.Config.Validate`'s call and nowhere else.** `configfile.Load` does not clamp; an earlier version silently clamped an out-of-range port to the default while `Validate` rejected the identical value. Since `Load` unmarshals over a defaults struct, an absent port already keeps the default — the clamp could only fire on a value someone explicitly wrote. Two policies for one rule is how they end up disagreeing.
 - TLS requires both `CertPath` and `KeyPath` or startup fails.
 
 ## Work Guidance

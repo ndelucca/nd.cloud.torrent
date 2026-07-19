@@ -6,13 +6,11 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,6 +18,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/gzhttp"
+	"github.com/ndelucca/nd.cloud.torrent/configfile"
 	"github.com/ndelucca/nd.cloud.torrent/engine"
 	"github.com/ndelucca/nd.cloud.torrent/files"
 	"github.com/ndelucca/nd.cloud.torrent/internal/auth"
@@ -30,7 +29,6 @@ import (
 )
 
 const (
-	defaultIncomingPort = 50007
 	// pollInterval is how often torrent and download-tree state is refreshed.
 	pollInterval = 1 * time.Second
 	// statsInterval must stay fixed: cpu.Percent(0, …) reports usage since the
@@ -137,7 +135,7 @@ func New(o Options, version string) (*Server, error) {
 	s.ui = ui
 	s.static = ctstatic.FileSystemHandler()
 
-	c, err := s.loadConfig()
+	c, err := configfile.Load(s.opts.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -147,34 +145,6 @@ func New(o Options, version string) (*Server, error) {
 		return nil, fmt.Errorf("initial configure failed: %w", err)
 	}
 	return s, nil
-}
-
-func (s *Server) loadConfig() (engine.Config, error) {
-	c := engine.Config{
-		DownloadDirectory: "./downloads",
-		EnableUpload:      true,
-		AutoStart:         true,
-		IncomingPort:      defaultIncomingPort,
-	}
-	b, err := os.ReadFile(s.opts.ConfigPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
-	}
-	if err != nil {
-		return c, fmt.Errorf("read configuration error: %w", err)
-	}
-	if len(b) == 0 {
-		return c, nil //ignore empty file
-	}
-	if err := json.Unmarshal(b, &c); err != nil {
-		return c, fmt.Errorf("malformed configuration: %w", err)
-	}
-	// The port is deliberately not clamped. c starts from the defaults above, so
-	// an absent IncomingPort already keeps defaultIncomingPort — a clamp could
-	// only fire on a value someone explicitly wrote, and silently rewriting that
-	// is worse than reporting it. Port validity is engine.Config.Validate's call
-	// and nowhere else; two policies for one rule end up disagreeing.
-	return c, nil
 }
 
 // Run serves until ctx is cancelled, then shuts down gracefully. It is
@@ -362,7 +332,7 @@ func (s *Server) reconfigure(c engine.Config) error {
 	if err != nil {
 		return err
 	}
-	return s.saveConfig(c)
+	return configfile.Save(s.opts.ConfigPath, c)
 }
 
 // applyConfig absolutizes the download directory and hands the config to the
@@ -378,52 +348,6 @@ func (s *Server) applyConfig(c engine.Config) (engine.Config, error) {
 		return c, err
 	}
 	return c, nil
-}
-
-// saveConfig persists a config atomically: the file is either the old one or
-// the new one, never a fragment. An interrupted write-in-place leaves a
-// truncated file that loadConfig rejects as malformed, and the server then
-// refuses to start until someone deletes it by hand.
-func (s *Server) saveConfig(c engine.Config) error {
-	b, err := json.MarshalIndent(&c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to encode configuration: %w", err)
-	}
-	path := s.opts.ConfigPath
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return fmt.Errorf("failed to save configuration: %w", err)
-		}
-	}
-	// Same directory as the target: rename is only atomic within a filesystem.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cloud-torrent-*.json")
-	if err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename succeeds
-	// 0600: the file lives next to the binary and holds operational settings.
-	// CreateTemp already makes it 0600, but say so rather than rely on it.
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	// Sync before rename: without it the rename can land before the bytes do,
-	// which is the same truncated file this function exists to prevent.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
-	}
-	return nil
 }
 
 // routes declares the HTTP surface.

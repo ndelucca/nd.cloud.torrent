@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/ndelucca/nd.cloud.torrent/engine"
 )
 
 // newConfigTestServer builds a server against a config path that may or may not
@@ -80,69 +78,12 @@ func TestNewWithNoConfigCreatesNone(t *testing.T) {
 	}
 }
 
-// TestSaveConfigIsAtomic pins that a save leaves either the old file or the new
-// one, never a fragment, and cleans up after itself.
-func TestSaveConfigIsAtomic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	writeConfig(t, path, "")
-	s, err := newConfigTestServer(t, path)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	c := s.engine.Config()
-	c.EnableSeeding = true
-	if err := s.saveConfig(c); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
-
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got engine.Config
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("saved config does not parse: %v\n%s", err, b)
-	}
-	if !got.EnableSeeding {
-		t.Fatal("saved config lost the change")
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".cloud-torrent-") {
-			t.Fatalf("temp file %s was left behind", e.Name())
-		}
-	}
-}
-
-// TestSaveConfigCreatesParentDirectory covers --config-path pointing somewhere
-// that does not exist yet, which used to fail the save outright.
-func TestSaveConfigCreatesParentDirectory(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "deeper", "config.json")
-	s, err := newConfigTestServer(t, path)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := s.saveConfig(s.engine.Config()); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("config was not written: %v", err)
-	}
-}
-
 // TestBadPortInConfigIsReported covers two policies for one rule.
 //
-// loadConfig silently rewrote an out-of-range port to the default while
-// engine.Config.Validate rejected the identical value. The clamp could only
-// ever fire on a port someone explicitly wrote, so silently ignoring it was the
-// worst of the options — and having both meant they could disagree.
+// configfile.Load preserves an out-of-range port and engine.Config.Validate
+// rejects it, so the value the user wrote is reported rather than silently
+// replaced. A clamp in Load could only ever fire on a port someone explicitly
+// chose, and having both would let the two policies disagree.
 func TestBadPortInConfigIsReported(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"IncomingPort":99999}`), 0600); err != nil {
