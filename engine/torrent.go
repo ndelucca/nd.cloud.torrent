@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"slices"
 	"time"
 
 	"github.com/anacrolix/torrent"
@@ -15,7 +16,7 @@ type Torrent struct {
 	Loaded     bool
 	Downloaded int64
 	Size       int64
-	Files      []*File
+	Files      []File
 	//cloud torrent
 	Started      bool
 	Percent      float32
@@ -26,13 +27,13 @@ type Torrent struct {
 	updatedAt time.Time
 }
 
-// File is the per-file view model.
+// File is the per-file progress view. It is a value: a nil entry was only ever
+// possible because the slice used to be patched in place, and every consumer
+// paid for that with a nil check.
 type File struct {
 	//anacrolix/torrent
-	Path      string
-	Size      int64
-	Chunks    int
-	Completed int
+	Path string
+	Size int64
 	//cloud torrent
 	Percent float32
 }
@@ -44,14 +45,7 @@ func (t *Torrent) clone() *Torrent {
 	c := *t
 	c.t = nil
 	c.spec = nil
-	c.Files = make([]*File, len(t.Files))
-	for i, f := range t.Files {
-		if f == nil {
-			continue
-		}
-		cf := *f
-		c.Files[i] = &cf
-	}
+	c.Files = slices.Clone(t.Files)
 	return &c
 }
 
@@ -67,49 +61,74 @@ func (t *Torrent) update(tt *torrent.Torrent) {
 }
 
 func (t *Torrent) updateLoaded(tt *torrent.Torrent) {
-	t.Size = tt.Length()
-
+	// Rebuilt each pass rather than patched in place. The previous version kept
+	// surviving entries by index, which assumed index i is the same file across
+	// ticks — untrue once a torrent is re-added, and unwritten anywhere. Every
+	// field is read from the live torrent regardless, so preserving nothing
+	// costs one small allocation per torrent per tick.
 	tfiles := tt.Files()
-	t.resizeFiles(len(tfiles))
+	t.Files = make([]File, len(tfiles))
 	for i, f := range tfiles {
-		file := t.Files[i]
-		if file == nil {
-			file = &File{Path: f.Path()}
-			t.Files[i] = file
+		t.Files[i] = File{
+			Path:    f.Path(),
+			Size:    f.Length(),
+			Percent: percent(f.BytesCompleted(), f.Length()),
 		}
-		chunks := f.State()
-		completed := 0
-		for _, p := range chunks {
-			if p.Complete {
-				completed++
-			}
-		}
-		file.Size = f.Length()
-		file.Chunks = len(chunks)
-		file.Completed = completed
-		file.Percent = percent(int64(completed), int64(len(chunks)))
 	}
 
-	now := time.Now()
-	bytes := tt.BytesCompleted()
+	t.Size = tt.Length()
+	t.sample(tt.BytesCompleted(), time.Now())
+}
+
+// minRateInterval is the shortest gap that may be used to compute a rate. The
+// poll loop runs at 1s; anything much below that is a second reader, not a new
+// measurement.
+const minRateInterval = 250 * time.Millisecond
+
+// sample records a progress reading and derives the download rate from it.
+//
+// Downloaded, updatedAt and DownloadRate are one sample and move together or
+// not at all. They used to move apart: every caller advanced Downloaded and
+// updatedAt while the rate was only recomputed when the interval happened to be
+// positive. Since GetTorrents refreshes on read, an extra reader — /api/state,
+// or opening a torrent's Files panel — inserted a reading microseconds after
+// the poll loop's, consuming the interval the next real sample needed and
+// driving the displayed rate toward zero. Two clients polling once a second
+// roughly halved every rate on the page.
+//
+// A reading that arrives too soon is therefore dropped whole rather than
+// half-applied.
+func (t *Torrent) sample(bytes int64, now time.Time) {
 	t.Percent = percent(bytes, t.Size)
-	// Rate is a derivative, so it needs both a previous sample and a non-zero
-	// interval — a zero dt used to yield +Inf, which fails json.Marshal and
-	// freezes the entire UI.
-	if dt := now.Sub(t.updatedAt); !t.updatedAt.IsZero() && dt > 0 {
-		if db := bytes - t.Downloaded; db >= 0 {
-			t.DownloadRate = float32(float64(db) * float64(time.Second) / float64(dt))
-		} else {
-			// Bytes went backwards (torrent was re-added); the old rate is
-			// meaningless now.
-			t.DownloadRate = 0
-		}
+
+	if t.updatedAt.IsZero() {
+		// First reading: there is no interval yet, so there is no rate. Leaving
+		// it at zero is honest; a rate derived from a zero dt was +Inf, which
+		// fails json.Marshal and froze the entire UI.
+		t.Downloaded = bytes
+		t.updatedAt = now
+		return
+	}
+	dt := now.Sub(t.updatedAt)
+	if dt < minRateInterval {
+		return
+	}
+	if db := bytes - t.Downloaded; db >= 0 {
+		t.DownloadRate = float32(float64(db) * float64(time.Second) / float64(dt))
+	} else {
+		// Bytes went backwards (the torrent was re-added); the old rate is
+		// meaningless now.
+		t.DownloadRate = 0
 	}
 	t.Downloaded = bytes
 	t.updatedAt = now
 }
 
-// percent returns n/total as a percentage rounded to two decimals.
+// percent returns n/total as a percentage, truncated to two decimals.
+//
+// Truncated, not rounded, and that is load-bearing: torrents.html tests
+// `eq .Percent 100.0` to decide whether to show a file as complete, so rounding
+// would mark a file done at 99.999%.
 func percent(n, total int64) float32 {
 	if total == 0 {
 		return 0
@@ -117,18 +136,4 @@ func percent(n, total int64) float32 {
 	const scale = 100 // two decimal places
 	pct := float64(n) / float64(total) * 100
 	return float32(int64(pct*scale)) / scale
-}
-
-// resizeFiles makes the cached file slice match the live file count,
-// preserving the entries that survive.
-//
-// It runs on every pass: the file list is only trustworthy once metadata has
-// arrived, and an under-sized slice used to panic on index.
-func (t *Torrent) resizeFiles(n int) {
-	if len(t.Files) == n {
-		return
-	}
-	resized := make([]*File, n)
-	copy(resized, t.Files)
-	t.Files = resized
 }

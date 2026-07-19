@@ -46,7 +46,7 @@ type torrentView struct {
 	// reports a float32 of bytes per second.
 	Rate         int64
 	DownloadRate float32
-	Files        []*engine.File
+	Files        []engine.File
 }
 
 func newTorrentView(t *engine.Torrent) torrentView {
@@ -193,11 +193,6 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 func (u *UI) newThisTick(hash string) bool { return !u.seen[hash] }
 
 // sortFilesByPath orders a torrent's files for display.
-func sortFilesByPath(files []*engine.File) {
-	sort.Slice(files, func(i, j int) bool {
-		if files[i] == nil || files[j] == nil {
-			return files[j] == nil
-		}
-		return files[i].Path < files[j].Path
-	})
+func sortFilesByPath(files []engine.File) {
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 }

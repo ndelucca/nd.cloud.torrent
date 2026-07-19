@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
@@ -102,7 +103,7 @@ func TestTorrentCloneIsDeep(t *testing.T) {
 	orig := &Torrent{
 		InfoHash: "abc",
 		Started:  true,
-		Files:    []*File{{Path: "a.mkv", Percent: 10}, nil},
+		Files:    []File{{Path: "a.mkv", Percent: 10}, {Path: "b.mkv", Percent: 20}},
 	}
 	c := orig.clone()
 
@@ -114,45 +115,8 @@ func TestTorrentCloneIsDeep(t *testing.T) {
 	if orig.Files[0].Percent != 10 {
 		t.Error("clone shares File values")
 	}
-	if c.Files[1] != nil {
-		t.Error("nil file entry should stay nil")
-	}
 	if c.t != nil || c.spec != nil {
 		t.Error("clone must not carry internal handles out of the engine")
-	}
-}
-
-// TestUpdateLoadedResizesFiles guards against the index panic that happened
-// when a torrent's file list grew after the slice was first allocated.
-//
-// It calls the production path. The previous version re-implemented the resize
-// inside the test body and asserted on its own copy, so it passed whether or
-// not the real code was correct — it would have passed with updateLoaded
-// deleted entirely.
-func TestUpdateLoadedResizesFiles(t *testing.T) {
-	tor := &Torrent{Files: []*File{{Path: "old"}}}
-
-	// Grow: one cached entry, three live files.
-	tor.resizeFiles(3)
-	if len(tor.Files) != 3 {
-		t.Fatalf("after growing: len = %d, want 3", len(tor.Files))
-	}
-	if tor.Files[0] == nil || tor.Files[0].Path != "old" {
-		t.Error("existing entries must be preserved across a resize")
-	}
-	for i, f := range tor.Files {
-		if f == nil && i > 0 {
-			continue // new slots are filled by the caller
-		}
-	}
-
-	// Shrink: the slice must follow the live count, not keep stale entries.
-	tor.resizeFiles(1)
-	if len(tor.Files) != 1 {
-		t.Fatalf("after shrinking: len = %d, want 1", len(tor.Files))
-	}
-	if tor.Files[0] == nil || tor.Files[0].Path != "old" {
-		t.Error("shrinking must keep the surviving entry")
 	}
 }
 
@@ -185,7 +149,7 @@ func TestStartAfterStopReAdds(t *testing.T) {
 // TestStopTorrentClearsHandle pins the invariant startLocked relies on.
 func TestStopTorrentClearsHandle(t *testing.T) {
 	e := New()
-	tor := &Torrent{InfoHash: "ih", Started: true, Files: []*File{{Path: "a"}, nil}}
+	tor := &Torrent{InfoHash: "ih", Started: true, Files: []File{{Path: "a"}}}
 	e.ts["ih"] = tor
 
 	// t.t is nil here, so Drop is skipped, but the bookkeeping must still run.
@@ -195,7 +159,7 @@ func TestStopTorrentClearsHandle(t *testing.T) {
 
 	// Via the real path, with a valid hash.
 	valid := "abababababababababababababababababababab"
-	tor2 := &Torrent{InfoHash: valid, Started: true, Files: []*File{{Path: "a"}, nil}}
+	tor2 := &Torrent{InfoHash: valid, Started: true, Files: []File{{Path: "a"}}}
 	e.ts[valid] = tor2
 	if err := e.StopTorrent(valid); err != nil {
 		t.Fatalf("StopTorrent: %v", err)
@@ -573,11 +537,18 @@ func onlyTorrent(t *testing.T, e *Engine) *Torrent {
 // verified by inspection.
 func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	// newLoaded returns an engine holding one torrent whose metadata is present.
-	newLoaded := func(t *testing.T, autoStart bool) (*Engine, *Torrent) {
+	//
+	// It always adds with AutoStart off. addSpec registers a watcher, and with
+	// the metadata already there that watcher fires immediately on its own
+	// goroutine — so adding with AutoStart on would race every assertion below,
+	// and the "autostart starts it" case would pass whether or not the call
+	// under test did anything. Each subtest sets the flag afterwards, under the
+	// lock, so the only thing that can act on it is the infoArrived call itself.
+	newLoaded := func(t *testing.T) (*Engine, *Torrent) {
 		t.Helper()
 		e := New()
 		t.Cleanup(func() { e.Close() })
-		cfg := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t), AutoStart: autoStart}
+		cfg := Config{DownloadDirectory: t.TempDir(), IncomingPort: freeTCPPort(t), AutoStart: false}
 		if err := e.Configure(cfg); err != nil {
 			t.Fatalf("configure: %v", err)
 		}
@@ -588,8 +559,9 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	}
 
 	t.Run("autostart starts it", func(t *testing.T) {
-		e, tor := newLoaded(t, true)
+		e, tor := newLoaded(t)
 		e.mu.Lock()
+		e.config.AutoStart = true
 		tor.Started = false
 		handle := tor.t
 		e.mu.Unlock()
@@ -604,7 +576,7 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	})
 
 	t.Run("autostart off leaves it stopped", func(t *testing.T) {
-		e, tor := newLoaded(t, false)
+		e, tor := newLoaded(t)
 		e.mu.Lock()
 		tor.Started = false
 		handle := tor.t
@@ -620,8 +592,9 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	})
 
 	t.Run("stale handle is ignored", func(t *testing.T) {
-		e, tor := newLoaded(t, true)
+		e, tor := newLoaded(t)
 		e.mu.Lock()
+		e.config.AutoStart = true
 		tor.Started = false
 		e.mu.Unlock()
 
@@ -635,4 +608,69 @@ func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 			t.Fatal("a torrent whose handle moved must not be resurrected")
 		}
 	})
+}
+
+// TestExtraReadsDoNotDisturbTheRate covers a rate that got quieter the more
+// people looked at it.
+//
+// GetTorrents refreshes the cache on read, so every caller — the 1s poll loop,
+// but also GET /api/state and opening a torrent's Files panel — produced a
+// reading. Downloaded and updatedAt were advanced by all of them while the rate
+// was only recomputed when the interval happened to be positive, so an extra
+// read microseconds after the poll's consumed the interval the next real sample
+// needed. Two clients polling once a second roughly halved every rate shown.
+//
+// The three fields are one sample: they move together or not at all.
+func TestExtraReadsDoNotDisturbTheRate(t *testing.T) {
+	t0 := time.Now()
+	tor := &Torrent{Size: 10_000}
+
+	// First reading: no interval yet, so no rate.
+	tor.sample(0, t0)
+	if tor.DownloadRate != 0 {
+		t.Fatalf("first sample produced a rate of %v, want 0", tor.DownloadRate)
+	}
+
+	// One second later, 1000 bytes in: 1000 B/s.
+	tor.sample(1000, t0.Add(time.Second))
+	if tor.DownloadRate != 1000 {
+		t.Fatalf("DownloadRate = %v, want 1000", tor.DownloadRate)
+	}
+
+	// Two extra readers arrive right behind the poll. Each must be dropped
+	// whole — not applied to Downloaded while skipping the rate.
+	tor.sample(1001, t0.Add(time.Second+time.Millisecond))
+	tor.sample(1002, t0.Add(time.Second+2*time.Millisecond))
+	if tor.DownloadRate != 1000 {
+		t.Fatalf("an extra read changed the rate to %v", tor.DownloadRate)
+	}
+	if tor.Downloaded != 1000 {
+		t.Fatalf("an extra read advanced Downloaded to %d, stealing the next "+
+			"sample's interval", tor.Downloaded)
+	}
+
+	// The next real poll must still measure against t0+1s, not against the
+	// readers. 1000 more bytes over 1s is still 1000 B/s.
+	tor.sample(2000, t0.Add(2*time.Second))
+	if tor.DownloadRate != 1000 {
+		t.Fatalf("DownloadRate = %v after a real sample, want 1000", tor.DownloadRate)
+	}
+}
+
+// TestSampleHandlesBytesGoingBackwards pins the re-add case: the old rate is
+// meaningless once progress resets, and a negative delta must not produce a
+// negative rate.
+func TestSampleHandlesBytesGoingBackwards(t *testing.T) {
+	t0 := time.Now()
+	tor := &Torrent{Size: 10_000}
+	tor.sample(5000, t0)
+	tor.sample(6000, t0.Add(time.Second))
+	tor.sample(0, t0.Add(2*time.Second))
+
+	if tor.DownloadRate != 0 {
+		t.Fatalf("DownloadRate = %v after progress reset, want 0", tor.DownloadRate)
+	}
+	if tor.Downloaded != 0 {
+		t.Fatalf("Downloaded = %d, want the new reading", tor.Downloaded)
+	}
 }

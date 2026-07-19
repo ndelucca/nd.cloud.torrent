@@ -109,7 +109,7 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 		{"api-error", "Nope."},
 		{"torrent-list", []torrentView{{InfoHash: "abc", Name: "N", Loaded: true}}},
 		{"torrent-row", torrentView{InfoHash: "abc", Name: "N", Loaded: true, Started: true}},
-		{"torrent-files", torrentView{InfoHash: "abc", Files: []*engine.File{{Path: "a/b.mkv", Size: 1}}}},
+		{"torrent-files", torrentView{InfoHash: "abc", Files: []engine.File{{Path: "a/b.mkv", Size: 1}}}},
 		{"omni", nil},
 		{"config", engine.Config{DownloadDirectory: "/d", IncomingPort: 1}},
 		{"downloads", struct {

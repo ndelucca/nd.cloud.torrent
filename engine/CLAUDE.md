@@ -7,7 +7,7 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 ## Ownership
 
 - `engine.go` — `Engine` type: client lifecycle (`Configure` and its steps `clientConfig`/`evictForRebind`/`buildClient`/`installClient`/`closeClient`), adding torrents (`NewMagnet`, `NewTorrentFile`), the `ts` cache (`GetTorrents`, `upsertLocked`), and start/stop/delete for torrents
-- `torrent.go` — `Torrent` and `File` view models, `update` (copies live state out of the underlying torrent) and `clone` (deep copy for callers)
+- `torrent.go` — `Torrent` and `File` view models, `update`/`updateLoaded` (copy live state out of the underlying torrent), `sample` (the atomic progress reading) and `clone` (deep copy for callers)
 - `config.go` — the `Config` struct persisted by the server as JSON, plus `Validate`
 
 ## Local Contracts
@@ -25,7 +25,10 @@ Wraps `anacrolix/torrent` in a small, server-friendly facade: one `*torrent.Clie
 - If `installClient` fails to re-add a torrent it clears `Started`. Leaving it set showed the torrent as running against a client that never accepted it, with `t.t` nil, so nothing would ever move it again.
 - `Torrent`/`File` fields are read by the server and marshalled straight to the browser; treat exported field names as part of the UI contract
 - Stopping is destructive: `StopTorrent` drops the underlying torrent rather than pausing it, and clears `t.t`. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
-- `GetTorrents` returns a deep copy; the internal `ts` map and its `*Torrent` values never escape the engine
+- **`GetTorrents` refreshes the cache and then returns a deep copy — it is not a pure read**, and callers must not assume otherwise. The internal `ts` map and its `*Torrent` values never escape the engine.
+- **`Downloaded`, `updatedAt` and `DownloadRate` are one sample: `Torrent.sample` moves all three or none.** Because reads refresh, every caller produces a reading — the poll loop, `GET /api/state`, and opening a torrent's Files panel. The old code advanced `Downloaded`/`updatedAt` on all of them while recomputing the rate only when the interval was positive, so an extra reader consumed the interval the next real sample needed and drove the displayed rate toward zero; two clients polling at 1 Hz roughly halved every rate on the page. A reading closer than `minRateInterval` is now dropped whole. `TestExtraReadsDoNotDisturbTheRate` pins it.
+- `Torrent.Files` is rebuilt from the live torrent on every pass, not patched in place. Patching assumed index *i* is the same file across ticks, which is untrue once a torrent is re-added and was written down nowhere. `File` is a value, so a nil entry — and the nil check every consumer carried — is unrepresentable.
+- `percent` truncates rather than rounds, and that is load-bearing: `torrents.html` tests `eq .Percent 100.0` to decide whether a file is complete, so rounding would mark a file done at 99.999%.
 - Errors are sentinels (`ErrMissingTorrent`, `ErrAlreadyStarted`, …) wrapped with `%w`; the server maps them to HTTP status codes
 - Start/stop is per torrent, never per file. `anacrolix/torrent` has no per-file pause that composes with `DownloadAll`, and the engine tracks no per-file priorities, so a per-file API could only ever be a lie. `File` is a read-only progress view.
 - Torrent parsing lives here, not in `server`: `anacrolix/torrent` types must not appear in exported signatures
