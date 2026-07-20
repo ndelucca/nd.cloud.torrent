@@ -40,6 +40,26 @@ Embedding:
 - Everything under `files/` ships inside the binary and is publicly served. Do not put documentation, notes, or secrets there — this doc lives at `static/CLAUDE.md` for exactly that reason.
 - `go:embed` skips names beginning with `_` or `.`; never rely on such a name inside `files/`
 
+Styling:
+
+- **`--accent`, `--danger` and `--ok` invert between themes; text drawn on top
+  of them does not follow automatically.** The dark block *lightens* all three
+  because they are used as text, which is the opposite of what a fill needs. Any
+  rule that uses one as a `background` must take its `color` from the matching
+  `--on-*` token, never a literal — a hardcoded `#fff` on `.btn.primary` and
+  `.btn.danger` read 2.4:1 in dark mode and passed review twice.
+- **There is exactly one width media query**, for screens under `30rem`, and it
+  exists only because the download tree cannot reflow intrinsically:
+  indentation accumulates per level and `.tree-meta` holds its width. Everything
+  else reflows through `flex-wrap` plus a `flex-basis` that acts as the
+  breakpoint (`.torrent-info` at `20rem`, `.omni-form` at `24rem`). Reach for a
+  flex-basis before adding a second query. Letting `.tree-row` wrap is the
+  tempting fix and the wrong one: the actions fall to their own line and every
+  file grows to three.
+- The token set covers colour, radius, the focus ring and the page container.
+  Spacing and type are still literals — check the neighbours before inventing a
+  value.
+
 Client behaviour:
 
 - **Alpine state must live outside SSE swap targets, on an element with a stable

@@ -2,6 +2,10 @@
    Grown alongside the htmx UI; no build step, no framework. */
 
 :root {
+  /* Native controls (checkboxes, scrollbars) follow the theme; without this
+     they stay light-themed on the dark surface. */
+  color-scheme: light dark;
+
   --bg: #f6f7f9;
   --panel: #fff;
   --text: #1c2024;
@@ -10,8 +14,23 @@
   --accent: #2563eb;
   --danger: #dc2626;
   --ok: #16a34a;
+  /* Text drawn *on* an --accent or --danger fill. They are a separate pair
+     because the fills invert between themes and this does not follow. */
+  --on-accent: #fff;
+  --on-danger: #fff;
   --radius: 8px;
   --radius-sm: 6px;
+  --radius-pill: 999px;
+
+  /* One focus recipe. It was written out six times with the offset drifting
+     between 1px and 2px; the ring is the same affordance everywhere. */
+  --focus: 2px solid var(--accent);
+  --focus-offset: 2px;
+
+  /* The page container. main and .stats have to agree on it or the footer
+     stops lining up with the panels above it. */
+  --container: 62rem;
+  --container-pad: 1.25rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,10 +44,17 @@
        white but only reach ~3.2:1 (accent) and ~3.4:1 (danger) on --panel, and
        all three are used as text: file links, .err-msg, .warn. Leaving them
        unset made every error message and file name fail WCAG AA in dark mode
-       only, which is exactly the kind of thing nobody notices. */
+       only, which is exactly the kind of thing nobody notices.
+
+       These three are also used as *fills* — .btn.primary and .btn.danger —
+       where lightening pushes contrast the other way. That is what --on-accent
+       and --on-danger below are for: the fill and the text on it have to move
+       together, so neither may be hardcoded. */
     --accent: #7ba6ff;
     --danger: #ff8a80;
     --ok: #6ee7a0;
+    --on-accent: #14171a;
+    --on-danger: #14171a;
   }
 }
 
@@ -72,7 +98,7 @@ body {
 .conn[data-state="offline"] .dot { background: var(--danger); }
 
 /* --- layout -------------------------------------------------------------- */
-main { max-width: 62rem; margin: 0 auto; padding: 1.25rem; }
+main { max-width: var(--container); margin: 0 auto; padding: var(--container-pad); }
 
 .panel {
   background: var(--panel);
@@ -97,13 +123,19 @@ main { max-width: 62rem; margin: 0 auto; padding: 1.25rem; }
 .torrent-info { flex: 1 1 20rem; min-width: 0; }
 .torrent-side { flex: 0 0 auto; text-align: right; }
 
+/* Two lines before truncating. A single nowrap line cut a long release name
+   down to nothing on a phone, and the full text is only in title=, which a
+   touch device never shows. */
 .torrent-name {
   margin: 0 0 .15rem;
   font-size: 1rem;
   font-weight: 600;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
 }
 .torrent-hash {
   margin: 0 0 .5rem;
@@ -117,15 +149,15 @@ progress {
   width: 100%;
   height: .5rem;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--line);
   /* The value bar animates because idiomorph morphs the element in place
      instead of recreating it; a plain innerHTML swap would restart it. */
   transition: none;
 }
-progress::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
-progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width .3s linear; }
-progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+progress::-webkit-progress-bar { background: var(--line); border-radius: var(--radius-pill); }
+progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-pill); transition: width .3s linear; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-pill); }
 
 .torrent-actions { display: flex; gap: .4rem; justify-content: flex-end; flex-wrap: wrap; }
 .torrent-files-row { margin-top: .6rem; }
@@ -144,10 +176,10 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
   cursor: pointer;
 }
 .btn:hover { border-color: var(--muted); }
-.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-.btn.active { border-color: var(--accent); color: var(--accent); }
+.btn:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
+.btn.is-active { border-color: var(--accent); color: var(--accent); }
 
 /* --- file table ---------------------------------------------------------- */
 .files-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
@@ -166,9 +198,9 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 
 /* --- stats footer -------------------------------------------------------- */
 .stats {
-  max-width: 62rem;
+  max-width: var(--container);
   margin: 0 auto;
-  padding: 0 1.25rem 2rem;
+  padding: 0 var(--container-pad) 2rem;
 }
 .stats-inner {
   display: flex;
@@ -207,8 +239,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 /* The tree's primary keyboard affordance. .btn and .icon-btn both carry one;
    without it, tabbing through the download tree gave no visible position. */
 .tree-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus); outline-offset: var(--focus-offset);
   border-radius: var(--radius);
 }
 .caret {
@@ -235,14 +266,14 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
   line-height: 1;
   padding: .2rem .4rem;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   cursor: pointer;
 }
 .icon-btn:hover { border-color: var(--line); color: var(--text); }
 .icon-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
-.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.icon-btn:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
 .tree-preview { padding: .4rem 0 .4rem 1.5rem; }
 .tree-preview video, .tree-preview img, .tree-preview audio { max-width: 100%; border-radius: var(--radius-sm); }
@@ -270,7 +301,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
   background: var(--bg);
   color: var(--text);
 }
-.omni-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.omni-input:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
 .upload-form { display: flex; align-items: center; gap: .5rem; }
 .upload-form label.btn { cursor: pointer; }
@@ -293,7 +324,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
   background: var(--bg);
   color: var(--text);
 }
-.field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field input:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
 .field-group { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .7rem .9rem; margin: 0; }
 .field-group legend { font-size: .8rem; color: var(--muted); padding: 0 .3rem; }
@@ -319,6 +350,23 @@ body.dropping::after {
   border: 3px dashed var(--accent);
   border-radius: var(--radius);
   pointer-events: none;
+}
+
+/* --- narrow screens ------------------------------------------------------ */
+/* The only width query in the file. Everything else reflows intrinsically via
+   flex-wrap, but the tree cannot: indentation accumulates per level and
+   .tree-meta holds its width, so on a phone a deep path squeezed the name —
+   the one thing worth reading — down to an ellipsis. */
+@media (max-width: 30rem) {
+  /* Buy the name width back from the indent and the gutters, and let the size
+     give way first — the row stays on one line. Wrapping it was worse: the
+     actions fell to a line of their own and every file grew to three. */
+  .tree-list { padding-left: .6rem; }
+  .tree-row { gap: .3rem; padding: .2rem .15rem; }
+  .tree-meta { font-size: .7rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  .files-table { font-size: .8rem; }
+  .files-table th, .files-table td { padding: .35rem .3rem; }
 }
 
 /* --- reduced motion ------------------------------------------------------ */

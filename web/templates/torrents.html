@@ -21,7 +21,7 @@ first render.
     {{template "torrent-row" .}}
     <div class="torrent-files-row">
       <button type="button" class="btn"
-              :class="files && 'active'"
+              :class="files && 'is-active'"
               :aria-expanded="files"
               aria-controls="tf-{{.InfoHash}}"
               @click="toggleFiles()">
