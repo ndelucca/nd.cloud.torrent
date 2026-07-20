@@ -19,6 +19,21 @@ goroutine count.
   *when* to sample. The caller owns the cadence.
 - `Set` reports whether **every** source succeeded, and consumers check it before
   showing CPU, memory or disk, so a partial sample is never shown as current.
+- **A download directory that does not exist yet is not a failed sample.** The
+  torrent client creates it lazily on the first write, so on a fresh install
+  `disk.Usage` reports ENOENT — and one `Set` for the whole sample meant that hid
+  CPU and memory too, neither of which had failed. `diskTarget` substitutes the
+  parent, which is not a way of tolerating the miss but of answering the question:
+  the directory will be created there, and a directory lands on the filesystem its
+  parent is on, so the parent's free space is exactly what "room for downloads"
+  means.
+- **`diskTarget` climbs exactly one level, and only for a missing leaf.** Walking
+  further would answer confidently about an ancestor with nothing to do with the
+  target — a download directory under an unmounted `/mnt/bigdisk` would report the
+  root filesystem as though it were the download disk. A path missing more than
+  its last component is a broken configuration and is left to fail, which is what
+  keeps "one bad source clears `Set`" a real contract rather than an unreachable
+  one.
 - **`cpu.Percent(0, false)` reports usage since the previous call in this process,
   so the caller's interval is the measurement window.** That is why
   `server.statsInterval` is fixed rather than adaptive, and why the server samples
