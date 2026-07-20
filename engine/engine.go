@@ -183,7 +183,7 @@ func (e *Engine) Configure(c Config) error {
 
 	if e.client != nil {
 		if needsRestart(e.config, c) {
-			return fmt.Errorf("%w", ErrRestartRequired)
+			return ErrRestartRequired
 		}
 		e.config = c // AutoStart, and nothing else reaches this line
 		return nil
@@ -307,26 +307,47 @@ func (e *Engine) addSpec(spec *torrent.TorrentSpec) error {
 	// Unconditional, not gated on AutoStart: the watcher is also what resumes a
 	// torrent the user starts before its metadata lands. When the info is
 	// already present GotInfo is closed, so the watcher settles immediately.
-	e.watchInfoLocked(t.InfoHash, tt)
+	e.watchInfoLocked(t, tt)
 	return nil
 }
 
 // watchInfoLocked arranges for infoArrived to run once the torrent's metadata
-// resolves. The goroutine exits when the engine is closed, so an unresolvable
-// magnet does not leak it. Callers must hold e.mu.
+// resolves. Callers must hold e.mu.
+//
+// Exactly one watcher per torrent, parked on the handle it was registered for.
+// The stopWatch below is what holds that: registering unconditionally, as this
+// once did, parks a second watcher whenever AddTorrentSpec returns the existing
+// handle for a duplicate add. The watching check on top is not what makes it
+// correct — it only spares a handle already covered a pointless cancel and
+// respawn.
 //
 // Registering under the lock is what makes wg.Add safe against Close's wg.Wait:
 // Close takes mu and cancels the context before waiting, so a watcher is either
 // already counted or never registered.
-func (e *Engine) watchInfoLocked(ih string, tt *torrent.Torrent) {
+func (e *Engine) watchInfoLocked(t *torrentState, tt *torrent.Torrent) {
 	if e.ctx.Err() != nil {
 		return
 	}
+	if t.watching == tt {
+		return
+	}
+	t.stopWatch()
+
+	// A child of e.ctx, so Close still releases every watcher at once, while
+	// stopping or deleting one torrent releases only its own.
+	ctx, cancel := context.WithCancel(e.ctx)
+	t.watching = tt
+	t.cancelWatch = cancel
+
+	ih := t.InfoHash
 	e.wg.Add(1)
 	go func() {
+		// Unregisters the child from e.ctx on every path, including the one
+		// where the metadata simply arrives and nobody cancels.
+		defer cancel()
 		defer e.wg.Done()
 		select {
-		case <-e.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-tt.GotInfo():
 		}
@@ -443,7 +464,7 @@ func (e *Engine) getLocked(infohash string) (*torrentState, error) {
 	}
 	t, ok := e.ts[ih.HexString()]
 	if !ok {
-		return nil, fmt.Errorf("%w %s", ErrMissingTorrent, ih.HexString())
+		return nil, fmt.Errorf("%w: %s", ErrMissingTorrent, ih.HexString())
 	}
 	return t, nil
 }
@@ -476,6 +497,13 @@ func (e *Engine) startLocked(t *torrentState) error {
 			return fmt.Errorf("torrent error: %w", err)
 		}
 		t.t = tt
+		// The re-added torrent needs its own watcher: stopping dropped the
+		// metadata, and a magnet's retained spec carries no InfoBytes, so
+		// Info() is nil here and the DownloadAll below is skipped. The watcher
+		// from the original add is parked on the previous handle and
+		// infoArrived's t.t != tt guard makes it a no-op, so without this a
+		// restarted magnet stays flagged as running and downloads nothing.
+		e.watchInfoLocked(t, tt)
 	}
 	t.Started = true
 	if t.t.Info() != nil {
@@ -496,6 +524,10 @@ func (e *Engine) StopTorrent(infohash string) error {
 	}
 	// There is no pause in anacrolix/torrent — stopping drops the torrent. The
 	// spec is retained so StartTorrent can re-add it.
+	//
+	// Drop does not close GotInfo, so the watcher has to be released here; the
+	// re-add in startLocked parks a fresh one on the new handle.
+	t.stopWatch()
 	if t.t != nil {
 		t.t.Drop()
 		t.t = nil
@@ -511,6 +543,7 @@ func (e *Engine) DeleteTorrent(infohash string) error {
 	if err != nil {
 		return err
 	}
+	t.stopWatch()
 	if t.t != nil {
 		t.t.Drop()
 	}

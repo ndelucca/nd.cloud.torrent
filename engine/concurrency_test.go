@@ -12,10 +12,12 @@ import (
 // CLAUDE.md records that the bugs this codebase actually shipped were
 // unsynchronized map access, twice, so this is the gap that mattered most.
 //
-// It also matters ahead of any change to how sampling works: GetTorrents is
-// currently a *mutating* read — it refreshes the cache from the client and takes
-// a progress sample — so it contends with adds and deletes for e.mu. These tests
-// are the ones that say whether that contract still holds after a refactor.
+// It also matters ahead of any change to how sampling works. GetTorrents is a
+// pure read of the last sample, so the concurrent *writes* these tests race it
+// against come from two directions: the caller's adds and deletes, and the
+// sampler goroutine, which is writing every torrent's progress on its own
+// cadence throughout. The sampler is the half that is easy to forget, and the
+// one that makes a configured engine the right fixture here.
 
 // TestConcurrentReadsAndMutations runs GetTorrents against adds and deletes.
 // Under -race, an unsynchronized map access here is a hard failure rather than
@@ -36,8 +38,8 @@ func TestConcurrentReadsAndMutations(t *testing.T) {
 	// passes having raced almost nothing — green, and covering nothing.
 	var reads, mutations atomic.Int64
 
-	// Readers. GetTorrents refreshes and clones, so these are writers to the
-	// engine's internal state even though they read from the caller's view.
+	// Readers. GetTorrents clones under the lock and touches nothing else; the
+	// concurrent writes come from the mutators below and from the sampler.
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {

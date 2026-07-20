@@ -121,12 +121,15 @@ func TestViewWithFilesIsDeep(t *testing.T) {
 	}
 }
 
-// TestViewCarriesNoFiles pins the hot path. GetTorrents runs once per sample for
-// every connected browser and the streamed row never renders a file table, so
-// copying one into every row would be pure waste — and it is the reason Torrent
-// and TorrentWithFiles are separate types rather than one with an optional
-// slice.
-func TestViewCarriesNoFiles(t *testing.T) {
+// TestViewRoundTrips checks that both views carry the record's identity and
+// that viewWithFiles carries a file table.
+//
+// It does not — and cannot — assert that view() carries no files: Torrent has
+// no such field, so the type system enforces that and a test claiming to would
+// be asserting something unrepresentable. The separation itself is the point,
+// because GetTorrents runs once per sample for every connected browser and the
+// streamed row never renders a file table.
+func TestViewRoundTrips(t *testing.T) {
 	orig := &torrentState{
 		Torrent: Torrent{InfoHash: "abc"},
 		Files:   []File{{Path: "a.mkv"}},

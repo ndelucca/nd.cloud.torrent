@@ -29,24 +29,20 @@ func TestGetTorrentsDoesNotSample(t *testing.T) {
 	// Establish a reading, then record it.
 	e.refresh(time.Now())
 	before := liveTorrent(t, e, hash)
-	e.mu.Lock()
-	wantDownloaded, wantRate, wantAt := before.Downloaded, before.DownloadRate, before.updatedAt
-	e.mu.Unlock()
+	wantDownloaded, wantRate, wantAt := before.Downloaded, before.DownloadRate, before.UpdatedAt
 
 	for i := 0; i < 25; i++ {
 		e.GetTorrents()
 	}
 
 	after := liveTorrent(t, e, hash)
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if after.Downloaded != wantDownloaded {
 		t.Errorf("Downloaded moved from %d to %d across reads", wantDownloaded, after.Downloaded)
 	}
 	if after.DownloadRate != wantRate {
 		t.Errorf("DownloadRate moved from %v to %v across reads", wantRate, after.DownloadRate)
 	}
-	if !after.updatedAt.Equal(wantAt) {
+	if !after.UpdatedAt.Equal(wantAt) {
 		t.Errorf("updatedAt moved across reads; a reader stole the next sample's interval")
 	}
 }
@@ -158,11 +154,7 @@ func TestSamplerRunsWithoutWatchers(t *testing.T) {
 	// that can move updatedAt.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		tor := liveTorrent(t, e, hash)
-		e.mu.Lock()
-		sampled := !tor.updatedAt.IsZero()
-		e.mu.Unlock()
-		if sampled {
+		if !liveTorrent(t, e, hash).UpdatedAt.IsZero() {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -214,10 +206,7 @@ func TestSampledDoesNotBlockTheSampler(t *testing.T) {
 	advances := 0
 	deadline := time.Now().Add(wantAdvances * 4 * SampleInterval)
 	for time.Now().Before(deadline) && advances < wantAdvances {
-		tor := liveTorrent(t, e, hash)
-		e.mu.Lock()
-		at := tor.updatedAt
-		e.mu.Unlock()
+		at := liveTorrent(t, e, hash).UpdatedAt
 		if !at.IsZero() && at.After(last) {
 			last = at
 			advances++

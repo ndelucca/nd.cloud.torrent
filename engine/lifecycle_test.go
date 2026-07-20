@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 // StartTorrent and DeleteTorrent were both at 0% coverage, and
@@ -45,10 +46,10 @@ func TestStartAfterStopReAddsForReal(t *testing.T) {
 	if stopped.Started {
 		t.Error("Started must be cleared by stop")
 	}
-	if stopped.t != nil {
+	if stopped.HasHandle {
 		t.Error("stop must drop the underlying torrent handle")
 	}
-	if stopped.spec == nil {
+	if !stopped.HasSpec {
 		t.Fatal("stop must retain the spec, or the torrent can never restart")
 	}
 
@@ -60,7 +61,7 @@ func TestStartAfterStopReAddsForReal(t *testing.T) {
 	if !restarted.Started {
 		t.Error("Started must be set after the restart")
 	}
-	if restarted.t == nil {
+	if !restarted.HasHandle {
 		t.Fatal("restart flipped Started without re-adding the torrent; " +
 			"the UI would show it running while nothing downloads")
 	}
@@ -127,7 +128,25 @@ func TestVerbsRejectUnknownHashes(t *testing.T) {
 // liveTorrent reaches into ts for the real entry. GetTorrents hands out clones
 // with the internal handles stripped, and t.t is exactly what these tests need
 // to see.
-func liveTorrent(t *testing.T, e *Engine, hash string) *torrentState {
+// torrentSnapshot is what a test may read about a cached torrent.
+//
+// Fields taken under the lock rather than the *torrentState itself: these
+// fixtures build a *configured* engine, so the sampler is writing that record
+// once a second for the whole test. Handing the pointer out made every
+// follow-up read a race — one a fast machine wins and a loaded CI runner does
+// not. Copying makes the unlocked read unrepresentable instead of remembered.
+type torrentSnapshot struct {
+	InfoHash  string
+	Started   bool
+	HasHandle bool
+	HasSpec   bool
+	// The progress sample, which is what the sampler is concurrently writing.
+	Downloaded   int64
+	DownloadRate float32
+	UpdatedAt    time.Time
+}
+
+func liveTorrent(t *testing.T, e *Engine, hash string) torrentSnapshot {
 	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -135,5 +154,14 @@ func liveTorrent(t *testing.T, e *Engine, hash string) *torrentState {
 	if !ok {
 		t.Fatalf("torrent %s is not cached", hash)
 	}
-	return tor
+	return torrentSnapshot{
+		InfoHash:  tor.InfoHash,
+		Started:   tor.Started,
+		HasHandle: tor.t != nil,
+		HasSpec:   tor.spec != nil,
+
+		Downloaded:   tor.Downloaded,
+		DownloadRate: tor.DownloadRate,
+		UpdatedAt:    tor.updatedAt,
+	}
 }
