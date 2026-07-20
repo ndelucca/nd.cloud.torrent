@@ -1,11 +1,11 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,10 +40,7 @@ func writeConfig(t *testing.T, path string, extra string) {
 	}
 }
 
-func itoa(n int) string {
-	b, _ := json.Marshal(n)
-	return string(b)
-}
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // TestNewDoesNotWriteConfig covers startup rewriting a file it had no reason to
 // touch. New called reconfigure, which persisted unconditionally, so every boot

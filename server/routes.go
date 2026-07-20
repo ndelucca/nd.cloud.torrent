@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ndelucca/nd.cloud.torrent/internal/reqlog"
+	ctstatic "github.com/ndelucca/nd.cloud.torrent/static"
 
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/ndelucca/nd.cloud.torrent/files"
@@ -54,9 +55,13 @@ func (s *Server) routes() http.Handler {
 	// "/": a catch-all matches every unrouted path, so ServeMux could never
 	// answer 405 — a GET to /api/add would reach the file server and 404. The
 	// cost is a line here when a new asset directory appears.
-	mux.Handle("GET /css/", s.static)
-	mux.Handle("GET /js/", s.static)
-	mux.Handle("GET /cloud-favicon.png", s.static)
+	// One handler, three mounts. Not a catch-all "/": that matches every
+	// unrouted path, so ServeMux could never answer 405 and a GET /api/add
+	// would reach the file server and 404.
+	static := ctstatic.FileSystemHandler()
+	mux.Handle("GET /css/", static)
+	mux.Handle("GET /js/", static)
+	mux.Handle("GET /cloud-favicon.png", static)
 	return mux
 }
 
@@ -102,8 +107,10 @@ func requireSameOrigin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if err := checkSameOrigin(r); err != nil {
-				_, msg := classify(err)
-				http.Error(w, msg, http.StatusForbidden)
+				// classify owns the status as well as the message; a literal
+				// here would be a second place for the 403 to live.
+				status, msg := classify(err)
+				http.Error(w, msg, status)
 				return
 			}
 		}

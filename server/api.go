@@ -58,11 +58,16 @@ func (s *Server) finishAPI(w http.ResponseWriter, r *http.Request, err error) {
 	fmt.Fprint(w, msg)
 }
 
-// readBody drains a request body under the size cap.
-func readBody(r *http.Request) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBody))
+// readBody drains a request body, refusing one over the size cap.
+//
+// MaxBytesReader rather than LimitReader, which is what the multipart path
+// already uses: LimitReader reports the cap as a clean io.EOF, so an oversized
+// .torrent arrived truncated and was then reported as *malformed*, sending the
+// user to look for corruption in a file that has none.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAPIBody))
 	if err != nil {
-		return nil, badRequest("failed to read request body")
+		return nil, badRequest("%s", err)
 	}
 	return data, nil
 }
@@ -71,7 +76,6 @@ func readBody(r *http.Request) ([]byte, error) {
 // server dispatches on the scheme, so the client needs no parsing rules of its
 // own.
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) error {
-	defer r.Body.Close()
 	// The omni form posts form-encoded; scripts post the bare string.
 	if isForm(r) {
 		if err := r.ParseForm(); err != nil {
@@ -79,7 +83,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) error {
 		}
 		return s.addURI(r, strings.TrimSpace(r.PostFormValue("uri")))
 	}
-	data, err := readBody(r)
+	data, err := readBody(w, r)
 	if err != nil {
 		return err
 	}
@@ -89,13 +93,12 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) error {
 // handleTorrentFile takes raw .torrent bytes, or a multipart upload from the
 // browser.
 func (s *Server) handleTorrentFile(w http.ResponseWriter, r *http.Request) error {
-	defer r.Body.Close()
 	// Multipart is checked before the body is drained: it is the only encoding
 	// that must be parsed by the stdlib rather than read whole.
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		return s.addUploadedTorrents(w, r)
 	}
-	data, err := readBody(r)
+	data, err := readBody(w, r)
 	if err != nil {
 		return err
 	}
@@ -104,7 +107,6 @@ func (s *Server) handleTorrentFile(w http.ResponseWriter, r *http.Request) error
 
 // handleConfigure applies the settings form.
 func (s *Server) handleConfigure(w http.ResponseWriter, r *http.Request) error {
-	defer r.Body.Close()
 	if !isForm(r) {
 		return badRequest("expected a form-encoded configuration")
 	}
@@ -135,7 +137,7 @@ func isForm(r *http.Request) bool {
 }
 
 // apiHandler is what an /api/* route does. It takes the ResponseWriter because
-// the multipart path needs it, for http.MaxBytesReader.
+// every path that reads a body needs it, for http.MaxBytesReader.
 type apiHandler func(http.ResponseWriter, *http.Request) error
 
 // apiRoute adapts an apiHandler into an http.Handler, applying the kick, the

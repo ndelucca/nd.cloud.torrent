@@ -11,7 +11,8 @@ serving and the remote fetch are delegated to `web`, `files`, `fetch` and `sysst
 - `server.go` — package doc, interval consts, `Options`/`DefaultOptions`, the `Server` runtime,
   `downloadDir`, `New`, `Close`
 - `run.go` — `Run` and its shutdown sequence
-- `loops.go` — `kick`, `pollLoop`, `statsLoop`, `watchers`, `renderStats`
+- `loops.go` — `renderLoop`: the render schedule (`kick`, `kickDelay`, `render`, `poll`,
+  `sampleHost`, `watchers`, `renderStats`)
 - `routes.go` — the `routes()` table and the middleware chain (`handler`, `gzip`,
   `requireSameOrigin`, `securityHeaders`)
 - `config.go` — `applyConfig` and `reconfigure`, the two that face the engine
@@ -40,14 +41,15 @@ Routing and middleware:
   `requireSameOrigin` → the mux.
 - **Authentication sits inside the security headers**, so a 401 still carries `nosniff`, `DENY`,
   `no-referrer` and the CSP.
-- **`appCSP` is the policy for this app's own pages.** The directive that earns its keep is
-  `script-src` *without* `'unsafe-inline'` — not about our scripts, which are all same-origin files,
-  but about one an attacker gets into the page, and `web/templates/downloads.html` documents an
-  Alpine `x-data` sink the `html/template` escaper cannot see. `'unsafe-eval'` stays: the vendored
-  Alpine build compiles attribute expressions with the AsyncFunction constructor. It buys an
-  attacker far less, since it only matters once they can already reach `eval` with their own data.
-  htmx's eval paths are off — `ct.js` sets `allowEval` false — as is its indicator `<style>`
-  injection, which `style-src 'self'` would otherwise refuse.
+- **`appCSP` is the policy for this app's own pages, and it carries no escape hatch:**
+  `script-src 'self'` with neither `'unsafe-inline'` nor `'unsafe-eval'`. The first is not about our
+  scripts, which are all same-origin files, but about one an attacker gets into the page —
+  `web/templates/downloads.html` documents an Alpine `x-data` sink the `html/template` escaper
+  cannot see. The second is affordable because Alpine ships as its CSP build, which interprets
+  attribute expressions rather than compiling them, and htmx's eval paths are off (`ct.js` sets
+  `allowEval` false), as is its indicator `<style>` injection, which `style-src 'self'` would
+  otherwise refuse. Per-directive reasoning lives at `appCSP` in `routes.go`; do not restate it
+  here or it drifts.
 - **The middleware sets the CSP; `files.Handler` overwrites it** with the stricter `sandbox` for
   downloaded content. That ordering is the intent, not a coincidence: this wraps the mux, so it runs
   first and the handler's later `Set` wins.
@@ -113,11 +115,28 @@ The API:
   every pending change on the next save.
 - When `HX-Request` is set, responses are HTML fragments with status 200 — htmx does not swap
   non-2xx. Status codes stay intact for every other client.
+- **Bodies are capped with `http.MaxBytesReader`, never `io.LimitReader`.** A
+  `LimitReader` reports its cap as a clean `io.EOF`, so an oversized `.torrent`
+  arrived truncated and was reported as *malformed* — sending the user to look for
+  corruption in a file that has none. That is why `apiHandler` carries the
+  `ResponseWriter`: `readBody` needs it too, not only the multipart path.
 - Multipart uploads are capped with `http.MaxBytesReader` (`maxUploadBody`). `ParseMultipartForm`
   bounds only what is buffered in RAM; the rest spills to temp files with no limit.
 
 State:
 
+- **`renderLoop` owns *when* the UI is redrawn**, and nothing else. What a region contains is
+  `web`'s; where the data comes from is the engine's and the filesystem's. It is a type rather than
+  a cluster of `Server` fields because the schedule is the part most likely to change and, as
+  methods on `Server`, none of it could be exercised without a config file, a listening socket and a
+  torrent client. `Server` keeps `kick` and `watchers` as one-line delegates, because the API
+  handlers and `/api/state` reach for those and have no other business with the schedule.
+- **The kick floor is measured from the last render, not slept on receipt** (`kickDelay`). Sleeping
+  unconditionally charged every isolated click the full `kickFloor` before anything appeared — the
+  common case paying to bound the rare one. A burst is bounded exactly as tightly either way.
+- **Instance metadata is one struct (`instanceMeta`), not four fields.** It has two consumers, the
+  rendered page and `/api/state`, and declaring it twice is how they come to disagree about the
+  version running — which is the situation `/api/state` exists to debug.
 - **The server stores one thing: the latest host sample (`sampledStats`).** Everything else the UI
   and `/api/state` show is read from its owner when needed — torrents from `engine.GetTorrents`, the
   tree from `files.List`, the config from `engine.Config`, viewers from `web.UI.Watchers`. Do not
@@ -181,7 +200,16 @@ Lifecycle:
   clamp: it unmarshals over a defaults struct, so an absent port already keeps the default and a
   clamp could only fire on a value someone explicitly wrote. Two policies for one rule end up
   disagreeing.
-- TLS requires both `CertPath` and `KeyPath` or startup fails.
+- TLS requires both `CertPath` and `KeyPath` or startup fails. **`--auth` is
+  validated the same way and for the same reason**: `auth.Wrap` treats empty
+  credentials as "authentication is off" and returns the handler untouched, so a
+  bare `Auth != ""` test let `--auth ":"` disable authentication while logging
+  that it had been enabled. A half-configured security option stops the process;
+  it does not degrade.
+- **`New` releases the engine on every failure path.** `engine.New` starts the
+  sampler goroutine and only `Close` reclaims it, so a constructor that returns an
+  error after building the engine leaks one — invisible under `main`, which exits,
+  and accumulating in the test suite, which does not.
 
 ## Work Guidance
 
