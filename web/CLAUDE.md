@@ -63,8 +63,11 @@ Templates:
   template.** `html/template` has no arithmetic, and doing it inline invites
   `100*used/total`, whose divide-by-zero produces `+Inf` before the first disk
   sample lands (`percentOf` guards it). Float comparison is the other trap:
-  `fileView.Complete`/`.InProgress` exist so nothing tests `eq .Percent 100.0`
-  against a percentage that renders truncated.
+  `fileView.Complete`/`.InProgress` and `torrentView.Complete` exist so nothing
+  tests `eq .Percent 100.0` against a percentage that renders truncated.
+  `torrentView.Complete` drives the row's state class, and that is the shape to
+  copy: a template may branch on a boolean the view model decided, never on a
+  comparison it makes itself.
 - **Formatting is a template func when it is generic, a view-model field when it
   encodes a decision.** `bytes`, `pct`, `round` and `urlpath` are funcs:
   one value in, same meaning everywhere. `fileView.Complete`, `torrentView.Idle`,

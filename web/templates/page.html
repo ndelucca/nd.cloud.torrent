@@ -74,12 +74,20 @@
       </div>
     </section>
 
-    <section class="panel">
-      <h2>Settings</h2>
+    {{/* Collapsed by default. Settings is configuration, not operation: open it
+         once, then never again. Given equal weight it took the whole lower half
+         of the page and pushed the torrent list — the reason the page exists —
+         up out of the way.
+
+         <details> and not Alpine: it needs no JS, it is open-by-default for a
+         browser that does not support it, and it is outside every swap target
+         so nothing morphs its open state away. */}}
+    <details class="panel panel-collapsible">
+      <summary><h2>Settings</h2></summary>
       {{/* Rendered inline, outside every swap target: a morph would revert a
            field the user typed into and then clicked away from. */}}
       {{template "config" .Config}}
-    </section>
+    </details>
   </main>
 
   <footer id="stats" class="stats" sse-swap="stats" hx-swap="morph:innerHTML">

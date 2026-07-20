@@ -17,7 +17,12 @@ first render.
   {{template "placeholder" "No torrents. Add a magnet link or upload a .torrent file above."}}
   {{end}}
   {{range .}}
-  <article class="torrent" id="t-{{.InfoHash}}" x-data="torrentRow()">
+  {{/* The state class drives the row's left edge. It reads booleans the view
+       model already decided — never a comparison against .Percent. This element
+       carries no :class binding, so the server may vary its class list; see
+       static/CLAUDE.md. */}}
+  <article class="torrent {{if .Complete}}is-done{{else if not .Started}}is-idle{{else if .Idle}}is-idle{{else}}is-running{{end}}"
+           id="t-{{.InfoHash}}" x-data="torrentRow()">
     {{template "torrent-row" .}}
     <div class="torrent-files-row">
       <button type="button" class="btn"

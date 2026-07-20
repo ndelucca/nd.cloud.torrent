@@ -24,9 +24,12 @@ type torrentView struct {
 	Size       int64
 	// Rate is int64 so the `bytes` template func can format it; the engine
 	// reports a float32 of bytes per second.
-	Rate  int64
-	Idle  bool
-	Files []fileView
+	Rate int64
+	Idle bool
+	// Complete is decided here for the same reason fileView.Complete is: a
+	// torrent at 99.999% renders as "100.00%" and must not be marked done.
+	Complete bool
+	Files    []fileView
 }
 
 // fileView is one file's progress row.
@@ -64,6 +67,7 @@ func newTorrentView(t *engine.Torrent) torrentView {
 		Size:       t.Size,
 		Rate:       int64(t.DownloadRate),
 		Idle:       t.DownloadRate == 0,
+		Complete:   t.Percent >= 100,
 	}
 }
 

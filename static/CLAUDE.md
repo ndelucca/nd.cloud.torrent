@@ -56,9 +56,18 @@ Styling:
   flex-basis before adding a second query. Letting `.tree-row` wrap is the
   tempting fix and the wrong one: the actions fall to their own line and every
   file grows to three.
-- The token set covers colour, radius, the focus ring and the page container.
-  Spacing and type are still literals — check the neighbours before inventing a
-  value.
+- **Every length picks a token.** Colour, radius, focus ring, container, an
+  eight-step spacing scale and a six-step type scale. Adding a component means
+  choosing a step, not a number: the file previously carried eighteen distinct
+  spacing literals and thirteen font sizes spanning 1.5x in total, which is how
+  a stylesheet ends up with nothing able to lead.
+- **One depth cue per nesting level.** The panel owns the border; a `.torrent`
+  inside it is a recessed surface (`--bg`) with a state-coloured left edge; the
+  file table inside that has only row rules. Do not give a nested block its own
+  full border — three boxed outlines read as a wireframe.
+- **`.panel-collapsible > summary` must stay `display: list-item`.** Setting
+  `flex` or `block` silently drops the disclosure triangle, which is the only
+  affordance the panel has, leaving a heading that looks inert.
 
 Client behaviour:
 
