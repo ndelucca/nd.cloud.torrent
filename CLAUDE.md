@@ -102,7 +102,8 @@ Request flow: `main` → `server.New` → `Server.Run` → handler chain (`reqlo
   may return to the graph; `files`, `fetch` and `internal/{auth,cli,reqlog}` stay stdlib-only;
   `sysstat` is the only importer of `gopsutil`; and `configfile` imports nothing beyond `engine`
   and the stdlib. Each step runs its `go` command separately so a tooling failure aborts it rather
-  than reading as "nothing matched".
+  than reading as "nothing matched". The same job carries one gate that is not an import rule —
+  the vendored-JS manifest check, documented in `static/CLAUDE.md`.
 
 ## Child DOX Index
 

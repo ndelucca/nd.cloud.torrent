@@ -57,12 +57,11 @@ authorization.
   The header lives here rather than in the server's middleware so it travels with
   the bytes and cannot be lost by a future mount; it is ignored for non-document
   responses, so image, audio and video previews are unaffected. It does not cover
-  the app's own pages, which have their own policy — `server.appCSP`. That one is
-  weaker by necessity (`script-src` keeps `'unsafe-eval'`, because the vendored
-  Alpine build compiles attribute expressions with the AsyncFunction
-  constructor) but it is a policy, and the middleware sets it before this
-  handler runs, so the `Set` here is what makes downloaded content strictly
-  more constrained than the app.
+  the app's own pages, which have their own policy — `server.appCSP`, whose
+  directives and reasoning belong to `server/CLAUDE.md` and are deliberately not
+  repeated here. What matters at this boundary is only the ordering: the
+  middleware sets `appCSP` before this handler runs, so the `Set` here wins and
+  downloaded content ends up strictly more constrained than the app.
 
 ## Work Guidance
 
