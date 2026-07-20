@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"slices"
 	"time"
 
@@ -54,6 +55,26 @@ type torrentState struct {
 	t         *torrent.Torrent
 	spec      *torrent.TorrentSpec
 	updatedAt time.Time
+
+	// watching is the handle the live metadata watcher is parked on, and
+	// cancelWatch releases it. Both are nil when no watcher is live.
+	//
+	// The pair exists because a watcher outlives the handle it waits on:
+	// Drop does not close GotInfo, so without a cancel the watcher for an
+	// unresolvable magnet parks until the engine closes, and add/delete churn
+	// accumulates goroutines for as long as the process runs.
+	watching    *torrent.Torrent
+	cancelWatch context.CancelFunc
+}
+
+// stopWatch releases the metadata watcher, if one is live. Idempotent. Callers
+// must hold the engine mutex.
+func (t *torrentState) stopWatch() {
+	if t.cancelWatch != nil {
+		t.cancelWatch()
+		t.cancelWatch = nil
+	}
+	t.watching = nil
 }
 
 // view returns the progress snapshot. No file list and no internal handles —

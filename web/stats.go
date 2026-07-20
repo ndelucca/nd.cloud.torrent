@@ -1,7 +1,6 @@
 package web
 
 import (
-	"log"
 	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/sysstat"
@@ -28,11 +27,10 @@ type statsView struct {
 	ConnectedUsers int
 	Version        string
 	Runtime        string
-	// StartedAt is the process start instant; Started is the formatted form the
-	// template shows. A time.Time rendered raw into markup produces
-	// "2026-07-19 10:00:00.123456789 +0000 UTC m=+3.14", so the template must
-	// never reach for StartedAt directly.
-	StartedAt   time.Time
+	// Started is the formatted process start; Uptime is how long ago that was.
+	// The instant itself is deliberately absent: a time.Time rendered raw into
+	// markup produces "2026-07-19 10:00:00.123456789 +0000 UTC m=+3.14", and a
+	// field no template can reach is one no template can get wrong.
 	Started     string
 	Uptime      string
 	MemPercent  float64
@@ -50,17 +48,11 @@ func (u *UI) RenderStats(d StatsData) {
 		ConnectedUsers: d.ConnectedUsers,
 		Version:        u.deps.Version,
 		Runtime:        u.deps.Runtime,
-		StartedAt:      u.deps.Uptime,
 		Started:        u.deps.Uptime.Format(time.RFC1123),
 		Uptime:         humanSince(u.deps.Uptime),
 		MemPercent:     percentOf(d.System.MemoryUsed, d.System.MemoryTotal),
 		DiskPercent:    percentOf(d.System.DiskUsed, d.System.DiskTotal),
 		DiskFree:       d.System.DiskTotal - d.System.DiskUsed,
 	}
-	frame, err := u.renderer.render(statsEvent, "stats", view)
-	if err != nil {
-		log.Printf("render stats: %s", err)
-		return
-	}
-	u.hub.broadcast(frame)
+	u.emit(statsEvent, "stats", view)
 }

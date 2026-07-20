@@ -30,8 +30,8 @@ func (s *Server) Run(ctx context.Context) error {
 	defer s.ui.Close()
 
 	wg.Add(2)
-	go func() { defer wg.Done(); s.pollLoop(ctx) }()
-	go func() { defer wg.Done(); s.statsLoop(ctx) }()
+	go func() { defer wg.Done(); s.render.poll(ctx) }()
+	go func() { defer wg.Done(); s.render.sampleHost(ctx) }()
 
 	host := s.opts.Host
 	if host == "" {

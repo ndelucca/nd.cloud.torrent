@@ -121,12 +121,15 @@ func TestViewWithFilesIsDeep(t *testing.T) {
 	}
 }
 
-// TestViewCarriesNoFiles pins the hot path. GetTorrents runs once per sample for
-// every connected browser and the streamed row never renders a file table, so
-// copying one into every row would be pure waste — and it is the reason Torrent
-// and TorrentWithFiles are separate types rather than one with an optional
-// slice.
-func TestViewCarriesNoFiles(t *testing.T) {
+// TestViewRoundTrips checks that both views carry the record's identity and
+// that viewWithFiles carries a file table.
+//
+// It does not — and cannot — assert that view() carries no files: Torrent has
+// no such field, so the type system enforces that and a test claiming to would
+// be asserting something unrepresentable. The separation itself is the point,
+// because GetTorrents runs once per sample for every connected browser and the
+// streamed row never renders a file table.
+func TestViewRoundTrips(t *testing.T) {
 	orig := &torrentState{
 		Torrent: Torrent{InfoHash: "abc"},
 		Files:   []File{{Path: "a.mkv"}},
@@ -608,20 +611,29 @@ func onlyTorrent(t *testing.T, e *Engine) *torrentState {
 func TestStartedWithoutMetadataDownloadsOnArrival(t *testing.T) {
 	// newLoaded returns an engine holding one torrent whose metadata is present.
 	//
-	// It always adds with AutoStart off. addSpec registers a watcher, and with
-	// the metadata already there that watcher fires immediately on its own
-	// goroutine — so adding with AutoStart on would race every assertion below,
-	// and the "autostart starts it" case would pass whether or not the call
-	// under test did anything. Each subtest sets the flag afterwards, under the
-	// lock, so the only thing that can act on it is the infoArrived call itself.
+	// It always adds with AutoStart off, and it waits for addSpec's watcher to
+	// finish before returning. Both halves are needed and only the first was
+	// here before.
+	//
+	// The metadata is already present, so GotInfo is closed and that watcher
+	// fires at once on its own goroutine. Each subtest then flips AutoStart
+	// under the lock — and a watcher still in flight reads the *new* value,
+	// starts the torrent, and fails the assertion for a reason the subtest is
+	// not about. "stale handle is ignored" failed roughly one run in five that
+	// way, blaming the guard it exists to cover.
+	//
+	// Waiting on the goroutine rather than sleeping: the watcher exits once
+	// infoArrived returns, so a count back at the baseline means it is done.
 	newLoaded := func(t *testing.T) (*Engine, *torrentState) {
 		t.Helper()
+		base := liveWatchers()
 		e := New()
 		t.Cleanup(func() { e.Close() })
 		mustConfigure(t, e, Config{DownloadDirectory: t.TempDir(), AutoStart: false})
 		if err := e.NewTorrentFile(testTorrentFile(t)); err != nil {
 			t.Fatalf("NewTorrentFile: %v", err)
 		}
+		waitWatchers(t, base, 0)
 		return e, onlyTorrent(t, e)
 	}
 

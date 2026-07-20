@@ -118,14 +118,9 @@ func torrent(hash, name string, pct float32) *engine.Torrent {
 	}
 }
 
-// The two-tier scheme's tests were deleted with it:
-// TestTorrentListIsNotTreatedAsATorrent (removals derived by scanning region
-// names for a "torrent-" prefix, which also matched "torrent-list"),
-// TestSkeletonIsGatedOnMembershipNotBytes, TestTorrentTwoTierEvents and
-// TestForgetSurvivesARenderFailure (a render failure marking a tick delivered
-// via a defer, so its forget events were skipped forever). Each pinned
-// machinery that no longer exists; the ones below assert observable output
-// instead of internal bookkeeping.
+// The tests below assert observable output — what a browser receives — rather
+// than internal bookkeeping. With one fixed region for the whole list there is
+// no per-torrent listener lifecycle left to pin.
 
 // TestIdleServerIsSilent is the byte-gating property, and the reason a full
 // list per tick is affordable: an unchanged list emits nothing at all. This is

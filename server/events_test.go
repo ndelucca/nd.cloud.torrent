@@ -22,7 +22,7 @@ import (
 func TestEventsArriveImmediately(t *testing.T) {
 	s := newTestServer(t)
 	// Populate a region so there is a snapshot to deliver on connect.
-	s.renderStats()
+	s.render.renderStats()
 
 	ts := httptest.NewServer(s.handler())
 	defer ts.Close()
@@ -96,12 +96,12 @@ func TestIdleServerIsQuiet(t *testing.T) {
 
 	// Warm the regions before measuring. Each region's very first render is a
 	// legitimate one-time event.
-	s.renderStats()
+	s.render.renderStats()
 	s.ui.RenderTorrents(s.engine.GetTorrents())
 	s.ui.RenderDownloads(files.List(s.downloadDir()))
 
-	go s.pollLoop(ctx)
-	go s.statsLoop(ctx)
+	go s.render.poll(ctx)
+	go s.render.sampleHost(ctx)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events", nil)
 	if err != nil {

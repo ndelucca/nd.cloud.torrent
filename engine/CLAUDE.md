@@ -71,11 +71,20 @@ Torrents:
 
 - **Every torrent without metadata has exactly one watcher, registered under `mu` by
   `watchInfoLocked`, and `infoArrived` is the only place the post-metadata decision is made.**
-  Registration is unconditional, not gated on `AutoStart`: the watcher is also what calls
-  `DownloadAll` for a torrent started before its metadata landed, which `startLocked` cannot do.
-  Re-added magnets need a fresh watcher — the original is parked on the previous handle.
+  Registration is not gated on `AutoStart`: the watcher is also what calls `DownloadAll` for a
+  torrent started before its metadata landed, which `startLocked` cannot do.
+- **A watcher belongs to a handle, and `torrentState.watching`/`cancelWatch` are what tie the two
+  together.** `watchInfoLocked` releases any previous watcher before registering — that, not the
+  `watching == tt` short circuit in front of it, is what keeps the count at one when
+  `AddTorrentSpec` returns the existing handle for a duplicate add.
+- **`Drop` does not close `GotInfo`**, so a watcher outlives the handle it waits on. `StopTorrent`
+  and `DeleteTorrent` call `stopWatch`; without it an unresolvable magnet's watcher parks until
+  `Close` and add/delete churn accumulates goroutines for the life of the process. The cancel is a
+  child of `e.ctx`, so `Close` still releases every watcher at once.
 - Stopping is destructive: `StopTorrent` drops the underlying torrent and clears `t.t` rather than
-  pausing. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works.
+  pausing. `StartTorrent` re-adds from the retained `spec`, so start-after-stop works — and
+  **`startLocked` must re-watch**, because a magnet's spec carries no `InfoBytes`, so the re-added
+  handle has no metadata and nothing else is left to call `DownloadAll` when it lands.
 - Start/stop is per torrent, never per file: `anacrolix/torrent` has no per-file pause that composes
   with `DownloadAll` and the engine tracks no per-file priorities, so a per-file API could only be a
   lie. `File` is a read-only progress view.

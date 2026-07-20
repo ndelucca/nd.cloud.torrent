@@ -307,3 +307,49 @@ func TestConcurrentLogins(t *testing.T) {
 		<-done
 	}
 }
+
+// TestUnusableCookieFallsThroughToCredentials covers a client that proved it
+// knows the password and was refused anyway.
+//
+// A cookie that does not verify — expired, forged, or left over from a previous
+// process, since the signing key is per-process — used to deny the request
+// outright, without ever consulting the Authorization header. Browsers hid it:
+// the 401 clears the cookie and re-prompts, so the next request succeeds. A
+// scripted client with a cookie jar and credentials (an uptime probe, curl with
+// -b and -u) got a hard 401 on its first request after the boundary.
+//
+// Strictly more permissive only to callers who already authenticate: with no
+// credentials, or wrong ones, deny still fires — the two cases below.
+func TestUnusableCookieFallsThroughToCredentials(t *testing.T) {
+	h := Wrap(okHandler(), user, pass, false).(*authenticator)
+
+	stale := &http.Cookie{Name: cookieName, Value: tokenAt(h, time.Now().Add(-time.Minute))}
+	forged := &http.Cookie{Name: cookieName, Value: "not-a-real-token"}
+
+	for _, tc := range []struct {
+		name   string
+		cookie *http.Cookie
+	}{
+		{"expired session", stale},
+		{"forged token", forged},
+	} {
+		t.Run(tc.name+" with credentials", func(t *testing.T) {
+			w := do(h, true, tc.cookie)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: valid credentials must be honoured "+
+					"even when the request carries an unusable cookie", w.Code)
+			}
+			// And the caller is put back on a working session rather than
+			// re-authenticating on every request from here on.
+			if sessionCookie(t, w) == nil {
+				t.Error("no fresh session was issued")
+			}
+		})
+
+		t.Run(tc.name+" without credentials", func(t *testing.T) {
+			if w := do(h, false, tc.cookie); w.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401: an unusable cookie alone grants nothing", w.Code)
+			}
+		})
+	}
+}

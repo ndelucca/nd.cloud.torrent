@@ -7,7 +7,7 @@ models, the SSE hub, and every handler that produces HTML.
 
 ## Ownership
 
-- `ui.go` — `UI`, `Deps`, `New`, `Watchers`, `Close`
+- `ui.go` — `UI`, `Deps`, `New`, `Watchers`, `Close`, `emit`
 - `render.go` — `parseTemplates`, the template funcs, `urlPath`, the formatters (`humanBytes`, `humanAgo`, `humanSince`, `percentOf`), and `renderer`: `execute`, `store`, `snapshot`, change detection and SSE framing
 - `regions.go` — the SSE region names, `KnownRoutes` (the fragment paths the templates ask for) and `StaticAssets` (the embedded files `page.html` loads)
 - `events.go` — `hub` (fan-out with backpressure, `close`) and `ServeEvents`, the `/events` endpoint
@@ -72,16 +72,25 @@ Templates:
   fields: each is a judgement (what
   counts as complete, as idle, how a duration reads) belonging with the model
   rather than repeated at each call site. A field's name must say what it holds —
-  `statsView` splits the process start into `StartedAt` (instant), `Started`
-  (formatted) and `Uptime` (duration) rather than one field doing all three.
+  `statsView` splits the process start into `Started` (formatted) and `Uptime`
+  (duration) rather than one field doing both. The instant itself is deliberately
+  absent: a `time.Time` rendered raw produces
+  `2026-07-19 10:00:00.123456789 +0000 UTC m=+3.14`, and a field no template can
+  reach is one no template can get wrong.
 - **`placeholder` is the empty and loading state; `fragment-message` is a
   message.** Their markup is identical today and they stay separate anyway: a
   message reports something that happened and could grow a dismiss control or
   `role="status"`, a placeholder stands in for content that has not arrived.
   Markup a Go file would otherwise build as a string literal goes through
   `fragment-message`, so the class contract stays where the template tests can
-  see it. One literal remains, in `writeMessage`, for when the template set
-  itself failed to render.
+  see it. Two literals remain, each for a reason a template cannot cover:
+  `writeMessage`'s, for when the template set itself failed to render, and
+  `RenderDownloads`'s ping. **The ping cannot be a template**: `html/template`
+  elides HTML comments during escaping, so a comment-shaped `{{define}}` renders
+  to nothing, the signature disappears, and the browser silently stops
+  re-fetching the tree. It is also the one payload that does not pass through
+  `renderer.execute`, and therefore not through `checkFragment` — it satisfies
+  that rule by construction instead.
 
 Rendering and the SSE stream:
 
@@ -160,8 +169,11 @@ Rendering and the SSE stream:
 ## Work Guidance
 
 - A new region is a `{{define}}`, a view model, and a `Render*` method that takes
-  what it needs as an argument. Do not give `UI` a field to hold state between
-  ticks unless it is covered by `UI.mu`. There is exactly one such field today —
+  what it needs as an argument — the render-and-broadcast tail is `UI.emit`, so
+  the method is one line. Dropping the frame on a render failure is deliberate:
+  browsers keep the last good state rather than being handed a blank one.
+- Do not give `UI` a field to hold state between ticks unless it is covered by
+  `UI.mu`. There is exactly one such field today —
   the download tree's last admitted content signature — and it earns its place:
   "still changing" versus "settled" is a property of the tree over time, so no
   pure function of the tree in hand can decide it.

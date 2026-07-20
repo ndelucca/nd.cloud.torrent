@@ -76,10 +76,10 @@ func (s *Server) serveState(w http.ResponseWriter, r *http.Request) {
 		Downloads:      files.List(s.downloadDir()),
 		ConnectedUsers: s.watchers(),
 		Stats: statsDocument{
-			Title:   s.opts.Title,
-			Version: s.version,
-			Runtime: s.goRuntime,
-			Uptime:  s.startedAt,
+			Title:   s.meta.Title,
+			Version: s.meta.Version,
+			Runtime: s.meta.GoRuntime,
+			Uptime:  s.meta.StartedAt,
 			System:  s.stats.get(),
 		},
 	}

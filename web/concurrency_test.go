@@ -14,11 +14,11 @@ import (
 // call in. Nothing exercised that — server's TestConcurrentEventStreams only
 // pairs stats.set with renderStats, never RenderTorrents against RenderStats.
 //
-// What UI.mu actually protects, established by removing it and watching:
+// What UI.mu actually protects:
 //
-//   - `seen`, a plain map read and written by RenderTorrents. Two concurrent
-//     RenderTorrents calls race on it, and -race catches that. This test drives
-//     exactly that pairing.
+//   - `dlContentSig` and `dlContentAt`, plain fields read and written by
+//     RenderDownloads. They are the only cross-tick state the Render* methods
+//     share, and -race catches two concurrent calls on them.
 //   - Broadcast *ordering* between the poll and stats loops. That is a logical
 //     race, not a memory one: every other piece of shared state (the renderer
 //     cache) has its own mutex, so -race stays silent no matter how the two
@@ -28,10 +28,12 @@ import (
 // Removing UI.mu from RenderStats alone produces no failure anywhere in the
 // suite. That is worth knowing before anyone "simplifies" it away.
 
-// TestConcurrentRenderTorrentsRaceOnSeen pins the memory race. `seen` is
-// cross-tick state — "what the browsers have been told" — and it is the only
-// unguarded-by-default structure the Render* methods share.
-func TestConcurrentRenderTorrentsRaceOnSeen(t *testing.T) {
+// TestConcurrentRenderTorrentsAreSerialized drives the pairing the poll loop
+// produces. It reaches the renderer cache, which has its own mutex, so what it
+// proves is that the path is clean under -race rather than that UI.mu is
+// load-bearing for it — the state UI.mu exists for lives on the downloads path,
+// which TestConcurrentRendersAreSerialized below exercises.
+func TestConcurrentRenderTorrentsAreSerialized(t *testing.T) {
 	u := newTestUI(t)
 
 	const rounds = 60
@@ -42,8 +44,8 @@ func TestConcurrentRenderTorrentsRaceOnSeen(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
 				torrents := map[string]*engine.Torrent{}
-				// Different goroutines publish different sets, so `seen` is
-				// genuinely written from several directions.
+				// Different goroutines publish different sets, so the renderer
+				// cache is genuinely written from several directions.
 				for j := 0; j <= (i+g)%5; j++ {
 					hash := fmt.Sprintf("%040x", j)
 					torrents[hash] = torrent(hash, fmt.Sprintf("t%d", j), float32(i%100))
@@ -135,8 +137,8 @@ func TestConcurrentRendersWithChurningMembership(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < rounds; i++ {
 			torrents := map[string]*engine.Torrent{}
-			// The set grows and shrinks, so torrents appear and disappear and
-			// the forget path runs.
+			// The set grows and shrinks, so torrents appear and disappear
+			// between renders.
 			for j := 0; j <= i%6; j++ {
 				hash := fmt.Sprintf("%040x", j)
 				torrents[hash] = torrent(hash, fmt.Sprintf("t%d", j), float32(j))
@@ -159,8 +161,8 @@ func TestConcurrentRendersWithChurningMembership(t *testing.T) {
 	wg.Wait()
 
 	// The region count is fixed regardless of churn: torrent-list, stats and
-	// downloads-changed. It used to grow with the torrent set, which is what
-	// made the forget bookkeeping necessary.
+	// downloads-changed. A count above three means a region name is being
+	// built at runtime again, which is what the fixed-name contract forbids.
 	u.renderer.mu.Lock()
 	cached := len(u.renderer.framedBody)
 	u.renderer.mu.Unlock()

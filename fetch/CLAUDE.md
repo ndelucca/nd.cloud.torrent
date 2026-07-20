@@ -25,11 +25,17 @@ host's own network while doing it.
   what those miss: `100.64.0.0/10` (CGNAT — the internal network on many hosted
   setups), `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4` (also how
   `255.255.255.255` is caught, since `IsMulticast` tests for `0xe0` and `0xff`
-  slips past), and `64:ff9b::/96` (NAT64) / `2002::/16` (6to4), which each encode
-  an arbitrary v4 target. Addresses are `Unmap`ped first, or `::ffff:100.64.0.1`
-  would miss every v4 prefix. Link-local is not theoretical: `169.254.169.254` is
-  the cloud metadata service. TEST-NET stays allowed on purpose — blocking it buys
-  nothing and costs the only routable-but-dead address a test can point at.
+  slips past), and `64:ff9b::/96` (NAT64), `2002::/16` (6to4) and `2001::/32`
+  (Teredo), which each encode an arbitrary v4 target. Link-local is not
+  theoretical: `169.254.169.254` is the cloud metadata service. TEST-NET stays
+  allowed on purpose — blocking it buys nothing and costs the only
+  routable-but-dead address a test can point at.
+- **There are two v4-in-v6 notations and `Unmap` only reaches one.** Addresses are
+  `Unmap`ped before the prefix scan, or `::ffff:100.64.0.1` would miss every v4
+  prefix — but `Is4In6` requires the `::ffff:` prefix, and so do `net.IP`'s
+  `To4`-backed predicates, so the deprecated IPv4-*compatible* form `::a.b.c.d`
+  reaches neither. `::/96` is in `reservedPrefixes` for exactly that: without it
+  `::169.254.169.254` passed every other check.
 - **`ErrBlocked` means we refused, never "it did not answer".** The dial loop
   partitions with `allowedIPs` first and returns the last real dial error when
   every allowed candidate fails, so a user whose host is simply down is not told we

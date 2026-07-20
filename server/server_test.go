@@ -114,7 +114,7 @@ func TestRunShutsDownPromptlyWithSSEClients(t *testing.T) {
 	}
 	s := newTestServer(t)
 	// Populate a region so a connecting client gets a snapshot frame.
-	s.renderStats()
+	s.render.renderStats()
 
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -224,7 +224,7 @@ func TestConcurrentEventStreams(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			s.stats.set(sysstat.Stats{Set: true, GoRoutines: s.watchers()})
-			s.renderStats()
+			s.render.renderStats()
 		}()
 	}
 	wg.Wait()

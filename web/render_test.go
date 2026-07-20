@@ -176,13 +176,13 @@ func TestFragmentsAreWrappedInElements(t *testing.T) {
 	}
 }
 
-// TestSnapshotIsOneBuffer replaces two tests that pinned machinery the
-// single-region scheme removed: renderer.forget (the final empty event that let
-// htmx's SSE extension collect a per-element listener) and snapshot's
-// membership-first ordering. Both existed only because region names were
-// created and destroyed at runtime. With three fixed names there is no listener
-// lifecycle to manage and no ordering constraint to satisfy — what remains worth
-// asserting is that a connecting client gets every region in one buffer.
+// TestSnapshotIsOneBuffer pins what a connecting client receives: every stored
+// region, in a single buffer, so the first write puts the page in a complete
+// state rather than assembling it over several frames.
+//
+// One buffer is the whole contract. With three fixed region names there is no
+// listener lifecycle to manage and no ordering constraint to satisfy, so
+// nothing else about snapshot is worth asserting.
 func TestSnapshotIsOneBuffer(t *testing.T) {
 	tmpl, err := parseTemplates()
 	if err != nil {

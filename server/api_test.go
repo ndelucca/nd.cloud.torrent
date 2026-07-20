@@ -18,7 +18,7 @@ func TestFailedActionStillKicks(t *testing.T) {
 	s := newTestServer(t)
 	// Drain anything startup left pending, so the assertion is about this call.
 	select {
-	case <-s.kickCh:
+	case <-s.render.kickCh:
 	default:
 	}
 
@@ -31,7 +31,7 @@ func TestFailedActionStillKicks(t *testing.T) {
 		t.Fatalf("setup: expected the action to fail, got %d", rec.Code)
 	}
 	select {
-	case <-s.kickCh:
+	case <-s.render.kickCh:
 	default:
 		t.Fatal("a failed action left the render loop asleep; a partial success " +
 			"would stay invisible until the next tick")

@@ -73,6 +73,14 @@ run where; this doc owns the details behind them.
 - `staticcheck` and `govulncheck` are **pinned**, not `latest`. This is the
   security job: a tool that moves under us can break the build or quietly stop
   checking.
+- **Third-party actions in `release_binaries` and `release_docker` are pinned to
+  commit SHAs**, with the version in a trailing comment. Those two jobs hold
+  `contents: write` and `packages: write` and a registry token, so a mutable
+  `@v4` there is an action that can publish under this repo's name and change
+  underneath it. The line is drawn deliberately: the read-only `test`,
+  `boundaries` and `analyze` jobs stay on major tags, where the same drift costs
+  a broken build rather than a compromised release. Bump a SHA and its comment
+  together — the comment is the only thing that makes the pin readable.
 - Known deprecation, not yet acted on: `archives[].format` in `goreleaser.yml`
   was superseded by `formats` (a list) in GoReleaser v2. It is a warning today
   and will become an error on some future minor, and the action resolves

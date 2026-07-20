@@ -29,6 +29,12 @@ func TestIsDisallowedIP(t *testing.T) {
 		"64:ff9b::7f00:1",   // NAT64 wrapping 127.0.0.1
 		"2002:7f00:1::",     // 6to4 wrapping 127.0.0.1
 		"::ffff:100.64.0.1", // v4-mapped CGNAT: must not slip past the v4 prefixes
+		"2001::7f00:1",      // Teredo wrapping 127.0.0.1
+		// IPv4-compatible, the deprecated ::a.b.c.d form. Unmap does not reach
+		// it — Is4In6 requires the ::ffff: prefix, and net.IP's To4-backed
+		// predicates want it too — so these passed every other check.
+		"::127.0.0.1",
+		"::169.254.169.254", // the metadata service, one notation further out
 	}
 	for _, s := range blocked {
 		if !isDisallowedIP(net.ParseIP(s)) {

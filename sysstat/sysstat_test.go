@@ -1,6 +1,7 @@
 package sysstat
 
 import (
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -54,7 +55,7 @@ func TestSampleReadsTheHost(t *testing.T) {
 // current. The Go-runtime fields are still filled, which is what makes Set —
 // rather than a zero value — the signal.
 func TestSampleReportsPartialFailure(t *testing.T) {
-	s := Sample("/nonexistent-path-for-sysstat-test")
+	s := Sample("/nonexistent-sysstat-root/nonexistent-leaf")
 
 	if s.Set {
 		t.Fatal("a failed disk read must clear Set")
@@ -80,5 +81,54 @@ func TestSampleIsPure(t *testing.T) {
 	}
 	if second.GoRoutines <= 0 {
 		t.Error("the second sample came back empty")
+	}
+}
+
+// TestSampleSurvivesAMissingDownloadDirectory covers a fresh install: the
+// download directory is created lazily by the first write, so before any
+// torrent exists disk.Usage reports ENOENT. That single failure used to clear
+// Set for the whole sample, so the UI hid CPU and memory too — neither of which
+// had failed.
+func TestSampleSurvivesAMissingDownloadDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "downloads")
+
+	s := Sample(missing)
+
+	if !s.Set {
+		t.Fatal("a not-yet-created download directory is a normal state, not a failed sample")
+	}
+	if s.DiskTotal == 0 {
+		t.Error("disk must be read from the nearest existing ancestor, which is " +
+			"the filesystem the directory will land on")
+	}
+	if s.MemoryTotal == 0 {
+		t.Error("memory did not fail and must still be reported")
+	}
+}
+
+// TestDiskTargetSubstitutesTheParent pins the resolution, and in particular
+// where it stops.
+//
+// One level is the whole design. The fresh-install case is a missing leaf whose
+// parent is the filesystem it will be created on, so the parent's reading is
+// the right answer. Anything missing above that is a broken configuration —
+// a download directory under an unmounted /mnt/bigdisk — and substituting an
+// ancestor there would report the root filesystem's free space as though it
+// were the download disk. Those must fail instead, so Set clears.
+func TestDiskTargetSubstitutesTheParent(t *testing.T) {
+	root := t.TempDir()
+
+	if got := diskTarget(filepath.Join(root, "downloads")); got != root {
+		t.Errorf("missing leaf must resolve to its parent: got %q, want %q", got, root)
+	}
+	deep := filepath.Join(root, "a", "b")
+	if got := diskTarget(deep); got != deep {
+		t.Errorf("a path missing more than its leaf must be left to fail: got %q, want %q", got, deep)
+	}
+	if got := diskTarget(root); got != root {
+		t.Errorf("existing path must be returned as-is: got %q", got)
+	}
+	if got := diskTarget(""); got != "." {
+		t.Errorf("empty path: got %q, want %q", got, ".")
 	}
 }

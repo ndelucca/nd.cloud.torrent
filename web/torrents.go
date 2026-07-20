@@ -1,7 +1,6 @@
 package web
 
 import (
-	"log"
 	"path"
 	"sort"
 	"strings"
@@ -78,17 +77,21 @@ func newTorrentViewWithFiles(t *engine.TorrentWithFiles) torrentView {
 	// Sorted by the constructor, not the handler, so an unsorted view is
 	// unrepresentable. Sorted here rather than in the browser: it costs nothing
 	// on this side and the client never has to re-sort on every update.
-	sortFilesByName(v.Files)
+	sort.Slice(v.Files, func(i, j int) bool { return v.Files[i].Name < v.Files[j].Name })
 	return v
 }
 
-// displayName falls back to the infohash: a magnet has no name until its
-// metadata arrives, and an empty <h3> reads as a broken row.
+// displayName falls back to a truncated infohash: a magnet has no name until
+// its metadata arrives, and an empty <h3> reads as a broken row.
+//
+// It carries no "fetching" wording. The template already says that, on the same
+// condition, and having both meant a metadata-less row announced it twice —
+// once in the heading and once below it.
 func displayName(t *engine.Torrent) string {
 	if strings.TrimSpace(t.Name) != "" {
 		return t.Name
 	}
-	return "Fetching metadata… " + t.InfoHash[:min(8, len(t.InfoHash))]
+	return t.InfoHash[:min(8, len(t.InfoHash))] + "…"
 }
 
 // RenderTorrents renders the whole list as one region and broadcasts it if the
@@ -111,8 +114,8 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 		views = append(views, newTorrentView(t))
 	}
 	// Stable order, or the list churns on every map iteration. Sorting by name
-	// also means a magnet moves from its "Fetching metadata…" position to its
-	// real one as soon as the name lands.
+	// also means a magnet moves from its placeholder position to its real one
+	// as soon as the name lands.
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Name != views[j].Name {
 			return views[i].Name < views[j].Name
@@ -120,15 +123,5 @@ func (u *UI) RenderTorrents(torrents map[string]*engine.Torrent) {
 		return views[i].InfoHash < views[j].InfoHash
 	})
 
-	frame, err := u.renderer.render(torrentListEvent, "torrent-list", views)
-	if err != nil {
-		log.Printf("render torrent-list: %s", err)
-		return
-	}
-	u.hub.broadcast(frame)
-}
-
-// sortFilesByName orders a torrent's files for display.
-func sortFilesByName(files []fileView) {
-	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	u.emit(torrentListEvent, "torrent-list", views)
 }

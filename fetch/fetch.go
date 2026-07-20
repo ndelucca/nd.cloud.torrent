@@ -186,6 +186,11 @@ var reservedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),   // reserved; also covers 255.255.255.255, which IsMulticast misses
 	netip.MustParsePrefix("64:ff9b::/96"),  // NAT64 — encodes an arbitrary v4 target
 	netip.MustParsePrefix("2002::/16"),     // 6to4 — likewise
+	netip.MustParsePrefix("2001::/32"),     // Teredo — likewise
+	// IPv4-compatible (::a.b.c.d), the form Unmap does not reach: Is4In6 wants
+	// the ::ffff: prefix, and so do net.IP's To4-backed predicates, so
+	// ::127.0.0.1 and ::169.254.169.254 pass every check above on their own.
+	netip.MustParsePrefix("::/96"),
 }
 
 func isDisallowedIP(ip net.IP) bool {

@@ -86,21 +86,23 @@ type authenticator struct {
 }
 
 func (a *authenticator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A cookie that does not verify falls through to the credentials rather
+	// than denying outright. A browser recovered anyway — the 401 re-prompts —
+	// but a scripted client keeping a cookie jar *and* sending credentials got
+	// a hard 401 on its first request after the expiry boundary, having proved
+	// it knows the password.
 	if c, err := r.Cookie(cookieName); err == nil {
-		expiry, ok := a.verify(c.Value)
-		if !ok {
-			a.deny(w)
+		if expiry, ok := a.verify(c.Value); ok {
+			// Re-issue once the session is old enough, so a browser in
+			// continuous use is not logged out on the fortnight boundary.
+			if time.Until(expiry) < sessionTTL-refreshAfter {
+				if token, exp, err := a.issue(); err == nil {
+					http.SetCookie(w, a.cookie(token, exp))
+				}
+			}
+			a.next.ServeHTTP(w, r)
 			return
 		}
-		// Re-issue once the session is old enough, so a browser in continuous
-		// use is not logged out on the fortnight boundary.
-		if time.Until(expiry) < sessionTTL-refreshAfter {
-			if token, exp, err := a.issue(); err == nil {
-				http.SetCookie(w, a.cookie(token, exp))
-			}
-		}
-		a.next.ServeHTTP(w, r)
-		return
 	}
 
 	user, pass, ok := r.BasicAuth()
