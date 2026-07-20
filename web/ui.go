@@ -8,6 +8,7 @@
 package web
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -91,6 +92,22 @@ func (u *UI) Watchers() int { return u.hub.count() }
 // Close releases every connected browser and latches the hub shut. See
 // hub.close for why this is not the same as dropping a stalled subscriber.
 func (u *UI) Close() { u.hub.close() }
+
+// emit renders a region and broadcasts it if the bytes changed. Callers hold
+// u.mu.
+//
+// The render-or-log-and-drop tail is written once here because it is the part a
+// new region will copy, and dropping the frame is the correct response to a
+// render failure: the browsers keep the last good state rather than being
+// handed a blank one.
+func (u *UI) emit(event, tmpl string, data any) {
+	frame, err := u.renderer.render(event, tmpl, data)
+	if err != nil {
+		log.Printf("render %s: %s", event, err)
+		return
+	}
+	u.hub.broadcast(frame)
+}
 
 func (u *UI) kick() {
 	if u.deps.Kick != nil {

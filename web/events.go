@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -147,10 +148,15 @@ func (u *UI) ServeEvents(w http.ResponseWriter, r *http.Request) {
 	// both legitimately long-lived.
 	rc := http.NewResponseController(w)
 
+	// Logged once per connection, not per write. This is the failure the
+	// middleware contract exists to prevent — a wrapper without Unwrap makes
+	// SetWriteDeadline return ErrNotSupported and the stream runs with no
+	// timeout — and it is invisible unless something says so.
+	deadlineWarned := false
 	write := func(b []byte) bool {
-		if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-			// Not supported by this ResponseWriter; proceed without one.
-			_ = err
+		if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil && !deadlineWarned {
+			deadlineWarned = true
+			log.Printf("sse: no write deadline (%s); a ResponseWriter in the chain is missing Unwrap", err)
 		}
 		if _, err := w.Write(b); err != nil {
 			return false

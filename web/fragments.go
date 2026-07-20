@@ -84,9 +84,11 @@ func (u *UI) writeTemplate(w http.ResponseWriter, status int, name string, data 
 func (u *UI) writeMessage(w http.ResponseWriter, status int, msg string) {
 	body, err := u.renderer.execute("fragment-message", msg)
 	if err != nil {
-		// The last resort, and the only HTML literal in this package: the
-		// template set itself is broken, so there is nothing left to render
-		// with. Kept minimal and classless for that reason.
+		// The last resort: the template set itself is broken, so there is
+		// nothing left to render with. Kept minimal and classless for that
+		// reason. One of two HTML literals in the package — the other is the
+		// downloads ping, which cannot be a template at all; see
+		// RenderDownloads.
 		log.Printf("render fragment-message: %s", err)
 		writeFragment(w, status, []byte("<p>Unavailable.</p>"))
 		return

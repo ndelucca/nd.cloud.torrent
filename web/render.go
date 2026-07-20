@@ -250,8 +250,9 @@ func frameSSE(event string, body []byte) []byte {
 	b.WriteString(event)
 	b.WriteByte('\n')
 	if len(body) == 0 {
-		// An empty data line still delivers the event, which is what makes the
-		// listener-cleanup trick in forget work.
+		// An event with no data line at all is not dispatched by EventSource,
+		// so an empty body still needs one. Splitting nil would produce no
+		// lines and the frame would be silently dropped.
 		b.WriteString("data:\n")
 	} else {
 		body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))

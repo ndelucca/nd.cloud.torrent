@@ -75,11 +75,11 @@ func Save(path string, c engine.Config) error {
 // It returns raw errors; Save wraps them once. Wrapping at each step here was
 // six identical fmt.Errorf calls saying the same thing.
 func writeAtomic(path string, b []byte, perm os.FileMode) error {
+	// filepath.Dir never returns "", so this needs no guard: a bare filename
+	// yields ".", which MkdirAll accepts.
 	dir := filepath.Dir(path)
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
 	}
 	// The temp file goes in the target's directory: rename is only atomic within
 	// a filesystem.

@@ -152,8 +152,10 @@ func TestTreeDeleteReportsItsOutcome(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("no delete button rendered:\n%s", out)
 	}
-	tag := out[strings.LastIndex(out[:i], "<"):]
-	tag = tag[:strings.Index(tag, ">")]
+	tag := tagAround(out, i)
+	if tag == "" {
+		t.Fatalf("could not find the enclosing tag; the scan lost its footing:\n%s", out)
+	}
 
 	if !strings.Contains(tag, `hx-target="#omni-status"`) {
 		t.Errorf("the tree delete must report into the status region: <%s>", tag)
@@ -229,8 +231,10 @@ func TestDownloadsRegionIsMorphed(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("no #downloads element in the page:\n%s", out)
 	}
-	tag := out[strings.LastIndex(out[:i], "<"):]
-	tag = tag[:strings.Index(tag, ">")]
+	tag := tagAround(out, i)
+	if tag == "" {
+		t.Fatalf("could not find the enclosing tag; the scan lost its footing:\n%s", out)
+	}
 
 	if !strings.Contains(tag, `hx-swap="morph:innerHTML"`) {
 		t.Errorf("#downloads must be morphed, not replaced: <%s>", tag)
@@ -411,6 +415,22 @@ func TestVendoredScriptsCarryIntegrity(t *testing.T) {
 // A binding that reintroduces one fails at runtime, in the browser, with nothing
 // in Go noticing. This is a heuristic — a real check would mean running the
 // parser — but it catches the two constructs that actually tempt people.
+// tagAround returns the element tag containing index i, or "" if the scan lost
+// its footing. The hand-rolled form — out[strings.LastIndex(out[:i], "<"):] —
+// panics on -1, which turns a useful failure message into a stack trace exactly
+// when a template edit has broken one of these scanners' assumptions.
+func tagAround(out string, i int) string {
+	start := strings.LastIndex(out[:i], "<")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(out[start:], ">")
+	if end < 0 {
+		return ""
+	}
+	return out[start : start+end]
+}
+
 func TestAlpineExpressionsAreCSPParseable(t *testing.T) {
 	sources, err := templateFS.ReadDir("templates")
 	if err != nil {

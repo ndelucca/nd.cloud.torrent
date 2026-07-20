@@ -6,6 +6,7 @@ import (
 	"path"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ndelucca/nd.cloud.torrent/files"
@@ -127,18 +128,7 @@ func previewKind(name string) string {
 	return ""
 }
 
-func ext(name string) string {
-	e := path.Ext(name)
-	lower := make([]byte, len(e))
-	for i := 0; i < len(e); i++ {
-		c := e[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		lower[i] = c
-	}
-	return string(lower)
-}
+func ext(name string) string { return strings.ToLower(path.Ext(name)) }
 
 // The tree is fingerprinted in two parts because the two halves change on
 // completely different timescales, and one signature over both made the ping
@@ -221,8 +211,16 @@ func (u *UI) RenderDownloads(root *files.Node) {
 		u.dlContentSig = c
 		u.dlContentAt = now
 	}
-	// Wrapped in a comment so the payload is still element-shaped; nothing
-	// swaps this event, it only fires an hx-trigger.
+	// Built here rather than in a template, and it has to be: html/template
+	// *elides* HTML comments during escaping, so `{{define}}<!--{{.}}-->` renders
+	// to nothing at all. The signature would vanish, store would see an
+	// unchanged empty body after the first tick, and the browser would stop
+	// re-fetching the tree — a silent stall, not an error.
+	//
+	// A comment is the right shape anyway: nothing swaps this event, it only
+	// fires an hx-trigger, and a comment is element-shaped enough for
+	// checkFragment's rule while rendering as nothing if it ever were swapped.
+	// It starts with '<' by construction, which is that rule.
 	body := []byte("<!--" +
 		strconv.FormatUint(shapeSignature(root), 36) + "." +
 		strconv.FormatUint(u.dlContentSig, 36) + "-->")
